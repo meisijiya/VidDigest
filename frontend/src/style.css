@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 /* ══════════════════════════════════════════════════════════════
    Design System — VidDownAI
@@ -146,3 +147,57 @@
 
 /* Selection */
 ::selection { background: rgba(37, 99, 235, 0.15); color: #1e40af; }
+
+/* ── 摘要 Markdown 层级样式 ─────────────────────────────── */
+.summary-content h1 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0.25rem 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid #e2e8f0;
+  line-height: 1.4;
+}
+.summary-content h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #1d4ed8;
+  margin: 1.5rem 0 0.75rem;
+  padding-left: 0.6rem;
+  border-left: 4px solid #2563eb;
+  line-height: 1.4;
+}
+.summary-content h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #334155;
+  margin: 1rem 0 0.5rem;
+  line-height: 1.4;
+}
+/* 三级标题下的内容形成层级缩进 */
+.summary-content h3 ~ ul,
+.summary-content h3 ~ ol,
+.summary-content h3 ~ p {
+  margin-left: 1rem;
+  border-left: 2px solid #f1f5f9;
+  padding-left: 0.75rem;
+}
+.summary-content ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+.summary-content ul ul {
+  list-style: circle;
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+.summary-content li {
+  margin: 0.3rem 0;
+  line-height: 1.7;
+}
+.summary-content p {
+  margin: 0.5rem 0;
+  line-height: 1.8;
+  color: #475569;
+}

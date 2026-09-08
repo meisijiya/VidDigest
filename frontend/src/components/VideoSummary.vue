@@ -29,6 +29,28 @@
         <p class="text-sm">⬆ 粘贴视频链接开始解析</p>
       </div>
 
+      <!-- AI 解析待启动：不自动消耗请求次数，由用户手动触发 -->
+      <div v-else-if="!started" class="flex flex-col items-center justify-center py-14 text-center animate-fade-in">
+        <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500/10 to-indigo-500/10 flex items-center justify-center mb-4">
+          <svg class="w-7 h-7 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/>
+            <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/>
+          </svg>
+        </div>
+        <h3 class="text-base font-semibold text-gray-800 mb-1.5">AI 智能解析</h3>
+        <p class="text-sm text-gray-400 max-w-sm leading-relaxed">解析视频字幕，生成总结摘要、思维导图，并支持针对视频内容的 AI 问答</p>
+        <p class="text-xs text-gray-300 mt-1.5 mb-6">仅下载视频的话，无需启动此功能</p>
+        <button @click="startSummarize"
+          class="px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-medium
+                 hover:shadow-lg hover:shadow-blue-500/25 transition-all duration-200 active:scale-95
+                 flex items-center gap-2">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+          开始 AI 解析
+        </button>
+      </div>
+
       <!-- 总结摘要 -->
       <div v-else-if="activeTab === 'summary'" class="prose prose-slate max-w-none prose-headings:text-gray-900 prose-headings:font-semibold prose-p:text-gray-600 prose-p:leading-relaxed prose-strong:text-gray-900">
         <div v-if="noSubtitle" class="flex flex-col items-center justify-center py-10 text-gray-400">
@@ -43,7 +65,7 @@
           <div class="skeleton h-4 w-2/3"></div>
           <div class="text-center text-gray-400 text-sm mt-4 animate-pulse">AI 正在分析视频内容...</div>
         </div>
-        <div v-else v-html="renderedSummary" class="animate-fade-in"></div>
+        <div v-else v-html="renderedSummary" class="summary-content animate-fade-in"></div>
       </div>
 
       <!-- 字幕文本 -->
@@ -58,7 +80,14 @@
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
             共 {{ subtitleData.segments?.length || 0 }} 条字幕
           </div>
-          <p class="whitespace-pre-wrap leading-relaxed">{{ subtitleData.full_text }}</p>
+          <!-- 结构化展示：每条字幕独立一行（代码解析，不经 LLM 处理） -->
+          <div v-if="subtitleData.segments?.length" class="space-y-0.5">
+            <p v-for="(seg, i) in subtitleData.segments" :key="i"
+              class="leading-relaxed text-gray-600 px-1 rounded hover:bg-gray-50 transition-colors">
+              {{ seg.text }}
+            </p>
+          </div>
+          <p v-else class="whitespace-pre-wrap leading-relaxed">{{ subtitleData.full_text }}</p>
         </div>
         <div v-else class="flex flex-col items-center justify-center py-10 text-gray-400">
           <svg class="w-10 h-10 mb-2 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -87,7 +116,8 @@
           </div>
           <pre class="whitespace-pre-wrap text-gray-600 bg-gray-50 rounded-xl p-4 text-xs">{{ mindmapMd }}</pre>
         </div>
-        <div v-else-if="mindmapMd" ref="markmapContainer" class="w-full h-[400px] animate-fade-in"></div>
+        <!-- markmap 要求容器为 <svg> 元素，传 div 会导致图形静默不渲染 -->
+        <svg v-else-if="mindmapMd" ref="markmapContainer" class="w-full h-[480px] animate-fade-in"></svg>
         <div v-else class="flex flex-col items-center justify-center py-10 text-gray-400">
           <svg class="w-10 h-10 mb-2 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           <p class="text-sm">暂无思维导图</p>
@@ -136,6 +166,9 @@ import { Transformer } from 'markmap-lib'
 import { Markmap } from 'markmap-view'
 import { summarizeVideo, chatWithVideo } from '../api/summarize.js'
 
+// 单换行也渲染为换行，避免 LLM 输出被合并成一段
+marked.setOptions({ gfm: true, breaks: true })
+
 const props = defineProps({
   videoUrl: String,
   videoTitle: String,
@@ -151,6 +184,7 @@ const tabs = [
 ]
 
 const loading = ref(false)
+const started = ref(false)
 const summaryMd = ref('')
 const mindmapMd = ref('')
 const subtitleData = ref(null)
@@ -167,9 +201,44 @@ const renderedChatAnswer = computed(() => chatAnswer.value ? marked(chatAnswer.v
 
 let markmapInstance = null
 
+/**
+ * 清洗思维导图 Markdown，保证 markmap 可解析：
+ * 1. 去除代码块围栏；2. 截掉第一个标题前的说明文字；
+ * 3. 保证存在一级根标题；4. 无任何标题时按纯文本行兜底构造导图结构。
+ */
 function sanitizeMindmap(md) {
-  const idx = md.search(/^# /m)
-  return idx >= 0 ? md.slice(idx) : md
+  let text = (md || '').trim()
+  if (!text) return '# 视频思维导图\n- 暂无内容'
+
+  // 1. 去除代码块围栏
+  text = text.replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/i, '')
+
+  // 2. 截掉第一个任意级别标题之前的内容
+  const headingMatch = text.match(/^#{1,6}\s+\S/m)
+  if (headingMatch) {
+    const idx = text.indexOf(headingMatch[0])
+    text = text.slice(idx)
+    // 3. 保证存在 `# ` 一级根标题
+    if (!/^#\s+\S/m.test(text)) {
+      const firstH2 = text.match(/^##\s+(.+)$/m)
+      if (firstH2) {
+        text = `# ${firstH2[1].trim()}\n${text.slice(text.indexOf(firstH2[0]) + firstH2[0].length)}`
+      } else {
+        text = `# 视频思维导图\n${text}`
+      }
+    }
+    return text.trim()
+  }
+
+  // 4. 兜底：没有任何 Markdown 标题时，把非空文本行转为根节点下的列表
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const items = lines
+    .map(l => l.replace(/^[-*•#\d.、\s]+/, '').trim())
+    .filter(Boolean)
+    .slice(0, 50)
+    .map(l => `- ${l}`)
+    .join('\n')
+  return items ? `# 视频思维导图\n${items}` : '# 视频思维导图\n- 暂无内容'
 }
 
 function renderMindmap() {
@@ -206,8 +275,21 @@ watch(activeTab, (tab) => {
   }
 })
 
+// 视频链接变化：仅重置状态，不自动发起 AI 请求（由用户点击"开始 AI 解析"手动触发）
 watch(() => props.videoUrl, (newUrl) => {
-  if (!newUrl) return
+  started.value = false
+  loading.value = false
+  summaryMd.value = ''
+  mindmapMd.value = ''
+  subtitleData.value = null
+  errorMsg.value = ''
+  noSubtitle.value = false
+  chatAnswer.value = ''
+})
+
+function startSummarize() {
+  if (!props.videoUrl || started.value) return
+  started.value = true
   loading.value = true
   summaryMd.value = ''
   mindmapMd.value = ''
@@ -216,7 +298,7 @@ watch(() => props.videoUrl, (newUrl) => {
   noSubtitle.value = false
   chatAnswer.value = ''
 
-  summarizeVideo(newUrl, 'zh', {
+  summarizeVideo(props.videoUrl, 'zh', {
     onSubtitle: (data) => {
       subtitleData.value = data
     },
@@ -238,7 +320,7 @@ watch(() => props.videoUrl, (newUrl) => {
       loading.value = false
     },
   })
-}, { immediate: true })
+}
 
 async function handleChat() {
   if (!chatQuestion.value.trim()) return

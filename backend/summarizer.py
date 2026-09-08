@@ -94,7 +94,7 @@ class SubtitleExtractor:
                     segments = self._download_and_parse_via_ytdlp(url, lang, sub_type)
 
                 if segments:
-                    full_text = " ".join(seg["text"] for seg in segments)
+                    full_text = self._join_segments(segments, lang)
                     return {
                         "has_subtitle": True,
                         "language": lang,
@@ -122,6 +122,12 @@ class SubtitleExtractor:
             if m:
                 return m.group(0) if m.group(0).startswith("BV") else m.group(1)
         return None
+
+    @staticmethod
+    def _join_segments(segments: list[dict], lang: str = "") -> str:
+        """按语言选择连接符：中文用空串（保证语句连贯），其他语言用空格"""
+        sep = "" if (lang or "").lower().startswith("zh") else " "
+        return sep.join(seg["text"] for seg in segments)
 
     def _extract_bilibili(self, url: str) -> dict:
         """B 站专用字幕提取"""
@@ -168,13 +174,23 @@ class SubtitleExtractor:
                 if not subtitle_list:
                     return empty
 
-                # 3. 选择最佳字幕（优先中文）
-                best = subtitle_list[0]
-                for s in subtitle_list:
-                    lang = s.get("lan", "")
-                    if lang == "zh" or lang == "zh-Hans":
+                # 3. 选择最佳字幕：优先任何中文轨道（zh / zh-Hans / ai-zh），
+                #    避免误选英文翻译轨道（ai-en）
+                def _lang(s: dict) -> str:
+                    return (s.get("lan") or "").lower()
+
+                best = None
+                for s in subtitle_list:  # 第一优先：中文轨道
+                    if _lang(s).startswith("zh"):
                         best = s
                         break
+                if best is None:  # 第二优先：非英语轨道
+                    for s in subtitle_list:
+                        if not _lang(s).startswith("en"):
+                            best = s
+                            break
+                if best is None:  # 兜底：列表第一个
+                    best = subtitle_list[0]
 
                 sub_type = "auto" if best.get("lan", "").startswith("ai-") else "manual"
                 sub_url = best.get("subtitle_url", "")
@@ -198,7 +214,7 @@ class SubtitleExtractor:
                         "text": content,
                     })
 
-                full_text = " ".join(seg["text"] for seg in segments)
+                full_text = self._join_segments(segments, best.get("lan", ""))
                 return {
                     "has_subtitle": True,
                     "language": best.get("lan", "zh"),
@@ -225,29 +241,29 @@ class SubtitleExtractor:
     @staticmethod
     def _pick_best_subtitle(manual_subs: dict, auto_subs: dict) -> tuple:
         """从字幕列表中选择最佳字幕，返回 (lang, url, type)"""
-        preferred = ["zh-Hans", "zh", "zh-CN", "en", "ja", "ko"]
+        preferred = ["zh-Hans", "zh", "zh-CN", "ai-zh", "en", "ja", "ko"]
 
-        # 优先人工字幕
-        for lang in preferred + [k for k in manual_subs]:
-            entry = manual_subs.get(lang)
-            if entry:
-                for fmt in entry:
-                    if fmt.get("ext") == "json3":
-                        return lang, fmt["url"], "manual"
-                for fmt in entry:
-                    return lang, fmt["url"], "manual"
+        def _sorted_keys(subs: dict) -> list:
+            """在偏好列表之外，中文轨道（zh*）优先于其他语言"""
+            rest = [k for k in subs if k not in preferred]
+            return preferred + sorted(rest, key=lambda k: (not k.startswith("zh"), k))
 
-        # 其次自动字幕
-        for lang in preferred + [k for k in auto_subs]:
-            entry = auto_subs.get(lang)
-            if entry:
-                for fmt in entry:
-                    if fmt.get("ext") == "json3":
-                        return lang, fmt["url"], "auto"
-                for fmt in entry:
-                    return lang, fmt["url"], "auto"
+        def _pick_from(subs: dict, sub_type: str) -> tuple:
+            for lang in _sorted_keys(subs):
+                entry = subs.get(lang)
+                if entry:
+                    for fmt in entry:
+                        if fmt.get("ext") == "json3":
+                            return lang, fmt["url"], sub_type
+                    for fmt in entry:
+                        return lang, fmt["url"], sub_type
+            return ("", "", "")
 
-        return ("", "", "")
+        # 优先人工字幕，其次自动字幕
+        result = _pick_from(manual_subs, "manual")
+        if result[1]:
+            return result
+        return _pick_from(auto_subs, "auto")
 
     @staticmethod
     def _download_subtitle_json(sub_url: str) -> list:
@@ -597,14 +613,14 @@ class VideoSummarizer:
     # ── 思维导图 ────────────────────────────────────────
 
     def generate_mindmap(self, subtitle_text: str, language: str = "zh") -> str:
-        """生成思维导图 Markdown（非流式）"""
+        """生成思维导图 Markdown（非流式），并做结构清洗保证可被渲染"""
         prompt = self._build_mindmap_prompt(subtitle_text, language)
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {
                     "role": "system",
-                    "content": "你是一个专业的思维导图生成助手。你擅长将内容转化为层级清晰的 Markdown 结构。",
+                    "content": "你是一个专业的思维导图生成助手。你只输出严格符合 Markdown 标题层级结构的导图内容。",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -612,7 +628,43 @@ class VideoSummarizer:
             temperature=0.5,
             max_tokens=4096,
         )
-        return response.choices[0].message.content or ""
+        raw = response.choices[0].message.content or ""
+        return self.clean_mindmap_markdown(raw)
+
+    @staticmethod
+    def clean_mindmap_markdown(md: str) -> str:
+        """清洗 LLM 输出的思维导图 Markdown：
+        1. 去除代码块围栏；2. 截掉第一个标题前的说明文字；
+        3. 确保存在唯一的 `# ` 一级根标题（markmap 渲染必需）。
+        """
+        if not md or not md.strip():
+            return md or ""
+        text = md.strip()
+        # 1. 去除代码块围栏
+        text = re.sub(r"^```(?:markdown|md)?\s*\n?", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\n?```\s*$", "", text)
+        # 2. 截掉第一个标题之前的前导说明文字
+        m = re.search(r"^#{1,6}\s+\S", text, flags=re.MULTILINE)
+        if m:
+            text = text[m.start():]
+            # 3. 确保存在 `# ` 一级根标题
+            if not re.search(r"^#\s+\S", text, flags=re.MULTILINE):
+                first_h2 = re.search(r"^##\s+(.+)$", text, flags=re.MULTILINE)
+                if first_h2:
+                    # 将第一个二级标题提升为一级根标题
+                    text = f"# {first_h2.group(1).strip()}\n" + text[first_h2.end():]
+                else:
+                    text = "# 视频思维导图\n" + text
+            return text.strip()
+        # 4. 兜底：没有任何 Markdown 标题时，把非空文本行转为根节点下的列表
+        items = []
+        for line in text.splitlines():
+            clean = re.sub(r"^[-*•#\d.、\s]+", "", line.strip()).strip()
+            if clean:
+                items.append(f"- {clean}")
+        if items:
+            return "# 视频思维导图\n" + "\n".join(items[:50])
+        return "# 视频思维导图\n- 暂无内容"
 
     # ── AI 问答 ────────────────────────────────────────
 
@@ -645,18 +697,32 @@ class VideoSummarizer:
         lang_hint = "中文" if language.startswith("zh") else "与原文相同的语言"
         return f"""请对以下视频字幕内容进行深度总结分析，使用{lang_hint}输出。
 
-要求输出格式：
+【输出格式要求 —— 必须严格遵守】
+1. 必须输出标准 Markdown，并使用多级标题构建清晰的层级结构：
+   - `# 视频主题`：一级标题，全文有且仅有一个；
+   - `## 章节`：二级标题作为主要章节（如 视频概述 / 内容大纲 / 核心知识要点 / 总结）；
+   - `### 小节`：三级标题用于章节内部的细分要点。
+2. 严禁用 `**加粗**` 代替标题，所有章节标题都必须以 # 号开头独占一行。
+3. 章节内部的要点使用无序列表（`- `）呈现，子要点通过缩进（`  - `）形成层级，禁止整段堆砌文字。
+4. 参考结构（章节名可按实际内容微调，但必须保留多级标题层级）：
+
+# （视频主题）
 ## 视频概述
-（用2-3句话概括视频的主题和核心内容）
-
+（用 2-3 句话概括视频的主题和核心内容）
 ## 内容大纲
-（按视频内容的逻辑顺序，列出主要章节/段落，每个章节包含要点）
-
+### 章节小标题
+- 要点一
+  - 补充细节
+- 要点二
 ## 核心知识要点
-（提取视频中最重要的知识点、观点或结论）
-
+### 分类一
+- 要点
+### 分类二
+- 要点
 ## 总结
-（用1-2句话给出整体评价或一句话总结）
+（用 1-2 句话给出整体评价或一句话总结）
+
+5. 只输出 Markdown 正文，不要输出代码块围栏，也不要任何解释性文字。
 
 ---
 视频字幕内容：
@@ -668,11 +734,23 @@ class VideoSummarizer:
         lang_hint = "中文" if language.startswith("zh") else "与原文相同的语言"
         return f"""请将以下视频字幕内容整理为思维导图结构，使用{lang_hint}输出。
 
-要求：
-1. 使用 Markdown 标题层级格式（# ## ### ####）
-2. 最外层是视频主题，第二层是主要章节，第三层是各章节的要点
-3. 每个节点的文字要简洁精炼
-4. 只输出 Markdown 内容，不要其他说明文字
+【输出格式要求 —— 必须严格遵守】
+1. 只输出 Markdown 标题层级结构，禁止使用代码块围栏（``` ），禁止任何说明、问候或总结性文字。
+2. 层级规定（层级错误的导图无法渲染）：
+   - `# 视频主题`：一级标题，有且仅有一个，作为导图中心主题；
+   - `## 主要章节`：二级标题，作为一级分支（一般 3-6 个）；
+   - `### 次级要点`：三级标题，作为二级分支；
+   - `- 细节要点`：无序列表，作为叶子节点（可选）。
+3. 每个节点文字简洁精炼（尽量不超过 15 个字），全图节点总数控制在 30 个以内。
+
+输出结构示例（仅示意层级，内容需基于实际字幕）：
+# 视频主题
+## 章节一
+### 要点一
+- 细节
+### 要点二
+## 章节二
+### 要点一
 
 ---
 视频字幕内容：
