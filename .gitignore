@@ -39,3 +39,6 @@ data/
 *.tmp
 *.bak
 *.swp
+# git 事故备份残留
+.git.broken
+.git.corrupted-*
