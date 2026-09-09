@@ -1,0 +1,23 @@
+{
+  "name": "VideoParse",
+  "short_name": "VideoParse",
+  "description": "视频解析网站",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F1729",
+  "theme_color": "#0F1729",
+  "icons": [
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

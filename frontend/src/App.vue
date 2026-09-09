@@ -1,13 +1,17 @@
 <template>
-  <div class="min-h-screen flex flex-col bg-gradient-to-b from-gray-50 to-white">
+  <div class="min-h-screen flex flex-col">
     <AppHeader
       :user="currentUser"
+      :page="currentPage"
       @login="showAuthModal('login')"
       @register="showAuthModal('register')"
       @logout="handleLogout"
       @open-vip="handleOpenVip"
+      @go-home="currentPage = 'home'"
+      @open-history="currentPage = 'history'"
     />
     <main class="flex-1 pt-16">
+      <template v-if="currentPage === 'home'">
       <HeroSection
         @parse="handleParse"
         :loading="loading"
@@ -19,10 +23,28 @@
       <Transition name="slide-up">
         <section v-if="videoData" class="py-6 sm:py-10">
           <div class="max-w-7xl mx-auto px-4 sm:px-6">
+            <!-- 缓存复用提示 + 重新解析 -->
+            <div v-if="fromCache"
+              class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs rounded-xl px-4 py-2.5 bg-teal-50 border border-teal-100 text-teal-300">
+              <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+              </svg>
+              <span>已复用历史解析数据，秒开无需等待；AI 结果同样来自历史记录</span>
+              <button @click="reparse" :disabled="reparseLoading"
+                class="ml-auto px-3 py-1 rounded-lg bg-panel border border-teal-200 text-teal-300 font-medium
+                       hover:bg-teal-500 hover:text-ink hover:border-teal-500 disabled:opacity-50
+                       transition-all duration-200 active:scale-95 flex items-center gap-1.5">
+                <svg :class="['w-3.5 h-3.5', reparseLoading && 'animate-spin']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
+                </svg>
+                {{ reparseLoading ? '重新解析中...' : '重新解析' }}
+              </button>
+            </div>
             <div class="flex flex-col lg:flex-row gap-6 lg:gap-8">
               <div class="w-full lg:w-2/5 lg:max-w-[420px] lg:flex-shrink-0">
                 <VideoResult
                   :video="videoData"
+                  :sourceUrl="currentUrl"
                   :downloading="downloading"
                   @download="handleDownload"
                 />
@@ -31,6 +53,8 @@
                 <VideoSummary
                   :videoUrl="currentUrl"
                   :videoTitle="videoData.title"
+                  :videoData="videoData"
+                  :initialHistory="historyDetail"
                   :key="summaryKey"
                   :user="currentUser"
                 />
@@ -48,6 +72,10 @@
         <PricingSection @open-vip="handleOpenVip" @need-login="showAuthModal('login')" />
         <PlatformSection />
       </template>
+      </template>
+
+      <!-- 解析历史页 -->
+      <HistoryPage v-else @back="currentPage = 'home'" @open-record="handleOpenRecord" />
     </main>
 
     <AppFooter />
@@ -65,6 +93,7 @@ import { ref, onMounted } from 'vue'
 import { parseVideo, downloadViaServer } from './api/video.js'
 import { getSavedUser, fetchMe, logout as logoutApi, isLoggedIn } from './api/auth.js'
 import { createCheckoutSession } from './api/payment.js'
+import { fetchHistoryByUrl, saveHistory } from './api/history.js'
 
 import AppHeader from './components/AppHeader.vue'
 import HeroSection from './components/HeroSection.vue'
@@ -75,6 +104,7 @@ import HowToSection from './components/HowToSection.vue'
 import ComparisonSection from './components/ComparisonSection.vue'
 import PricingSection from './components/PricingSection.vue'
 import PlatformSection from './components/PlatformSection.vue'
+import HistoryPage from './components/HistoryPage.vue'
 import AuthModal from './components/AuthModal.vue'
 import AppFooter from './components/AppFooter.vue'
 
@@ -82,23 +112,83 @@ const currentUser = ref(getSavedUser())
 const authModalVisible = ref(false)
 const authModalMode = ref('login')
 
+const currentPage = ref('home')
 const loading = ref(false)
 const downloading = ref(false)
 const videoData = ref(null)
 const currentUrl = ref('')
 const summaryKey = ref(0)
 const demoMode = ref(true)
+const historyDetail = ref(null)
+const fromCache = ref(false)
+const reparseLoading = ref(false)
+
+/** URL 规范化：剥离跟踪参数，提取平台视频 ID 作为历史/缓存的 key，提升命中率 */
+function canonicalUrl(raw) {
+  let url = (raw || '').trim()
+  try {
+    const u = new URL(url)
+    // B 站：以 BV/av 号为 key
+    const bv = url.match(/(BV[0-9A-Za-z]{10})/)
+    if (bv && u.hostname.includes('bilibili')) return `https://www.bilibili.com/video/${bv[1]}`
+    if (u.hostname.includes('bilibili')) {
+      const av = url.match(/av(\d+)/)
+      if (av) return `https://www.bilibili.com/video/av${av[1]}`
+    }
+    // YouTube：以 v 参数 / youtu.be 短链为 key
+    if (u.hostname.includes('youtube.com') && u.searchParams.get('v')) {
+      return `https://www.youtube.com/watch?v=${u.searchParams.get('v')}`
+    }
+    if (u.hostname === 'youtu.be') {
+      return `https://www.youtube.com/watch?v=${u.pathname.slice(1)}`
+    }
+    // 其他平台：仅剥离跟踪查询参数
+    const keep = new URLSearchParams()
+    for (const [k, v] of u.searchParams) {
+      if (!/^(utm_|track|trackid|spm|vd_source|from|request_id)/i.test(k)) keep.append(k, v)
+    }
+    const qs = keep.toString()
+    return `${u.origin}${u.pathname}${qs ? '?' + qs : ''}`
+  } catch { return url }
+}
+
+/** 解析完成（或缓存命中）后落库：无论是否 AI 解析都进入历史记录 */
+function persistParseRecord(url, data) {
+  if (!isLoggedIn()) return
+  saveHistory({
+    url,
+    video_title: data?.title || '',
+    video_data: data || null,
+  })
+}
 
 async function handleParse(url) {
   loading.value = true
   videoData.value = null
+  historyDetail.value = null
+  fromCache.value = false
   summaryKey.value++
-  currentUrl.value = url
+  const key = canonicalUrl(url)
+  currentUrl.value = key
   try {
+    // 登录用户优先复用历史解析数据，同视频不重复解析
+    if (isLoggedIn()) {
+      const cached = await fetchHistoryByUrl(key)
+      if (cached?.video_data?.title) {
+        videoData.value = cached.video_data
+        historyDetail.value = cached
+        fromCache.value = true
+        demoMode.value = false
+        // 触碰 updated_at，使该记录在历史列表中排到最新（合并语义不会改动已有内容）
+        saveHistory({ url: key, video_title: cached.video_title || cached.video_data?.title || '' })
+        return
+      }
+    }
     const res = await parseVideo(url)
     if (res.success) {
       videoData.value = res.data
       demoMode.value = false
+      persistParseRecord(key, res.data)
     } else {
       alert('解析失败：' + (res.error || '未知错误'))
     }
@@ -108,6 +198,46 @@ async function handleParse(url) {
   } finally {
     loading.value = false
   }
+}
+
+/** 重新解析：跳过缓存，强制走完整解析流程 */
+async function reparse() {
+  if (!currentUrl.value || reparseLoading.value) return
+  reparseLoading.value = true
+  videoData.value = null
+  historyDetail.value = null
+  fromCache.value = false
+  summaryKey.value++
+  try {
+    const res = await parseVideo(currentUrl.value)
+    if (res.success) {
+      videoData.value = res.data
+      demoMode.value = false
+      persistParseRecord(currentUrl.value, res.data)
+    } else {
+      alert('解析失败：' + (res.error || '未知错误'))
+    }
+  } catch (err) {
+    const msg = err.response?.data?.detail?.error || err.response?.data?.detail || err.message
+    alert('解析失败：' + msg)
+  } finally {
+    reparseLoading.value = false
+  }
+}
+
+/** 从历史页点击记录：跳回主页并回填视频源与 AI 解析结果 */
+function handleOpenRecord(detail) {
+  currentPage.value = 'home'
+  currentUrl.value = detail.video_url || ''
+  videoData.value = detail.video_data || null
+  historyDetail.value = detail
+  summaryKey.value++
+  if (!detail.video_data) {
+    // 历史记录缺少视频源信息时，重新解析补全（不消耗 AI 次数）
+    handleParse(detail.video_url)
+    historyDetail.value = detail
+  }
+  window.scrollTo({ top: 0 })
 }
 
 async function handleDownload(formatId) {

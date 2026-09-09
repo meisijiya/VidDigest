@@ -1,8 +1,9 @@
 <template>
-  <section ref="sectionRef" class="py-20 sm:py-24 bg-gradient-to-b from-gray-50 to-white relative overflow-hidden">
+  <section ref="sectionRef" class="py-20 sm:py-24 relative overflow-hidden">
     <div class="max-w-5xl mx-auto px-4 sm:px-6">
       <div class="text-center mb-14">
-        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100/50 text-blue-600 text-xs font-medium mb-4">
+        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100/50 text-blue-400 text-xs font-pixel mb-4">
+          <span class="w-1.5 h-1.5 rounded-[1px] bg-blue-500"></span>
           Comparison
         </span>
         <h2 class="text-3xl sm:text-4xl font-bold text-gray-900 mb-3">为什么选择我们</h2>
@@ -10,30 +11,27 @@
       </div>
 
       <div :class="[
-        'overflow-hidden rounded-2xl border border-gray-200/80 shadow-sm transition-all duration-700',
+        'overflow-hidden rounded-2xl border border-line bg-panel transition-all duration-700',
         'opacity-0 translate-y-6',
         visible ? 'opacity-100 translate-y-0' : ''
       ]">
         <table class="w-full text-sm">
           <thead>
-            <tr>
-              <th class="text-left py-4 px-5 text-gray-500 font-medium bg-gray-50/80 w-[140px]">对比项</th>
-              <th class="text-center py-4 px-5 font-semibold bg-gradient-to-r from-blue-50 to-indigo-50/80 text-blue-700 w-1/3">
+            <tr class="border-b border-line">
+              <th class="text-left py-4 px-5 text-gray-500 font-medium bg-panel-2 w-[140px]">对比项</th>
+              <th class="text-center py-4 px-5 font-semibold bg-blue-50 text-blue-400 w-1/3">
                 <span class="flex items-center justify-center gap-2">
-                  <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
+                  <span class="w-2 h-2 rounded-[2px] bg-violet"></span>
                   VidDownAI
                 </span>
               </th>
-              <th class="text-center py-4 px-5 font-medium text-gray-400 bg-gray-50/80 w-1/3">其他工具</th>
+              <th class="text-center py-4 px-5 font-medium text-gray-400 bg-panel-2 w-1/3">其他工具</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(row, i) in rows" :key="row.label"
               :class="[
-                'transition-colors duration-200',
-                i % 2 === 0 ? 'bg-white' : 'bg-gray-50/40',
+                'transition-colors duration-200 border-b border-line/50 last:border-0',
                 hoverRow === i ? 'bg-blue-50/40' : ''
               ]"
               @mouseenter="hoverRow = i"

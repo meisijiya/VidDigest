@@ -2,8 +2,8 @@
   <Teleport to="body">
     <Transition name="modal">
       <div v-if="visible" class="fixed inset-0 z-[100] flex items-center justify-center" @click.self="$emit('close')">
-        <div class="absolute inset-0 bg-black/40 backdrop-blur-sm"></div>
-        <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-8 animate-scale-in">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+        <div class="relative bg-panel border border-line rounded-2xl shadow-2xl shadow-black/50 w-full max-w-md mx-4 p-8 animate-scale-in">
           <!-- 关闭按钮 -->
           <button @click="$emit('close')"
             class="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-all">
@@ -12,8 +12,8 @@
 
           <!-- 标题 -->
           <div class="text-center mb-8">
-            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-500/20">
-              <span class="text-white text-lg font-bold">V</span>
+            <div class="flex justify-center mb-4 group">
+              <PixelLogo :size="48" />
             </div>
             <h2 class="text-2xl font-bold text-gray-900">
               {{ mode === 'login' ? '欢迎回来' : '创建账号' }}
@@ -30,8 +30,8 @@
               <div class="relative">
                 <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
                 <input v-model="email" type="email" required placeholder="name@example.com"
-                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50/50 text-sm
-                         focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white
+                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-line bg-ink/60 text-sm text-gray-800
+                         focus:ring-2 focus:ring-blue-500 focus:border-transparent
                          outline-none transition-all duration-200 placeholder:text-gray-400" />
               </div>
             </div>
@@ -41,8 +41,8 @@
               <div class="relative">
                 <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                 <input v-model="password" type="password" required minlength="6" placeholder="至少 6 位密码"
-                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50/50 text-sm
-                         focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:bg-white
+                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-line bg-ink/60 text-sm text-gray-800
+                         focus:ring-2 focus:ring-blue-500 focus:border-transparent
                          outline-none transition-all duration-200 placeholder:text-gray-400" />
               </div>
             </div>
@@ -50,21 +50,22 @@
             <!-- 错误提示 -->
             <Transition name="error">
               <p v-if="error"
-                class="flex items-center gap-2 text-sm text-red-500 bg-red-50 rounded-lg px-4 py-2.5">
+                class="flex items-center gap-2 text-sm text-red-500 bg-red-50 border border-red-500/20 rounded-lg px-4 py-2.5">
                 <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                 {{ error }}
               </p>
             </Transition>
 
             <button type="submit" :disabled="loading"
-              class="w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium text-sm
-                     hover:shadow-lg hover:shadow-blue-500/25 disabled:opacity-50 disabled:cursor-not-allowed
+              class="w-full py-3 rounded-xl bg-violet text-white font-medium text-sm
+                     hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
                      transition-all duration-200 active:scale-[0.98]">
               <span class="flex items-center justify-center gap-2">
-                <svg v-if="loading" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
+                <span v-if="loading" class="flex items-end gap-[3px] h-4" aria-hidden="true">
+                  <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop"></span>
+                  <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-1"></span>
+                  <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-2"></span>
+                </span>
                 {{ loading ? '处理中...' : (mode === 'login' ? '登录' : '注册') }}
               </span>
             </button>
@@ -73,7 +74,7 @@
           <div class="text-sm text-gray-500 text-center mt-6">
             {{ mode === 'login' ? '还没有账号？' : '已有账号？' }}
             <button @click="mode = mode === 'login' ? 'register' : 'login'"
-              class="text-blue-600 hover:text-blue-700 font-medium transition-colors">
+              class="text-blue-400 hover:text-blue-700 font-medium transition-colors">
               {{ mode === 'login' ? '去注册' : '去登录' }}
             </button>
           </div>
@@ -86,6 +87,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { login, register } from '../api/auth.js'
+import PixelLogo from './PixelLogo.vue'
 
 const props = defineProps({
   visible: Boolean,

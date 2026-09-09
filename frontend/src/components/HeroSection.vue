@@ -3,24 +3,36 @@
     'flex flex-col items-center justify-center transition-all duration-700 ease-out relative overflow-hidden',
     compact ? 'px-4 py-8' : 'px-4 min-h-[70vh] pt-24 pb-16'
   ]">
-    <!-- 背景装饰 -->
-    <div class="absolute inset-0 pointer-events-none overflow-hidden">
-      <div class="absolute -top-40 -right-40 w-80 h-80 bg-blue-100/60 rounded-full blur-3xl"></div>
-      <div class="absolute -bottom-40 -left-40 w-80 h-80 bg-indigo-100/60 rounded-full blur-3xl"></div>
-      <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-gradient-to-br from-blue-50 via-transparent to-indigo-50 rounded-full blur-3xl"></div>
+    <!-- 背景装饰：漂浮像素方块（平涂低透明度，依次点亮/下坠） -->
+    <div class="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
+      <span class="absolute top-[18%] left-[12%] w-3 h-3 rounded-[3px] bg-violet/25 animate-pixel-blink"></span>
+      <span class="absolute top-[30%] left-[20%] w-2 h-2 rounded-[2px] bg-purple/25 animate-pixel-blink delay-2"></span>
+      <span class="absolute top-[16%] right-[16%] w-3 h-3 rounded-[3px] bg-pink/25 animate-pixel-blink delay-3"></span>
+      <span class="absolute top-[42%] right-[10%] w-2 h-2 rounded-[2px] bg-cyan/30 animate-pixel-blink delay-1"></span>
+      <span class="absolute bottom-[28%] left-[8%] w-2.5 h-2.5 rounded-[2px] bg-cyan/25 animate-pixel-blink delay-4"></span>
+      <span class="absolute bottom-[36%] right-[22%] w-2 h-2 rounded-[2px] bg-violet/25 animate-pixel-blink delay-5"></span>
+      <!-- 大号像素箭头母题（右侧，极淡） -->
+      <svg class="absolute -right-6 top-1/2 -translate-y-1/2 w-64 h-64 opacity-[0.05] hidden lg:block" viewBox="0 0 64 64" fill="none">
+        <rect x="14" y="14" width="12" height="12" rx="2" fill="#7C3AED"/>
+        <rect x="26" y="14" width="12" height="12" rx="2" fill="#A855F7"/>
+        <rect x="38" y="14" width="12" height="12" rx="2" fill="#EC4899"/>
+        <rect x="26" y="26" width="12" height="12" rx="2" fill="#A855F7"/>
+        <rect x="38" y="26" width="12" height="12" rx="2" fill="#06B6D4"/>
+        <rect x="38" y="38" width="12" height="12" rx="2" fill="#06B6D4"/>
+      </svg>
     </div>
 
     <div class="relative z-10 w-full max-w-3xl flex flex-col items-center">
       <!-- 标语 -->
       <Transition name="slogan">
         <div v-if="showSlogan" class="text-center mb-10">
-          <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-50/80 border border-blue-100/50 text-blue-600 text-xs font-medium mb-6 animate-fade-in">
-            <span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+          <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-panel border border-line text-cyan-400 text-xs font-pixel mb-6 animate-fade-in">
+            <span class="w-1.5 h-1.5 rounded-[1px] bg-cyan-500 animate-pulse"></span>
             支持 1800+ 平台
           </div>
           <h1 class="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight mb-4">
             <span class="text-gray-900">AI 万能</span>
-            <span class="gradient-text">视频下载器</span>
+            <span class="text-coral-500">视频下载器</span>
           </h1>
           <p class="text-lg sm:text-xl text-gray-500 max-w-xl mx-auto leading-relaxed">
             粘贴链接，一键解析下载 + <span class="text-gray-700 font-medium">AI 智能总结</span>
@@ -34,8 +46,9 @@
         showSlogan ? '' : 'mt-2'
       ]">
         <div class="relative group">
-          <div class="absolute -inset-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-500 rounded-2xl blur-xl opacity-20 group-hover:opacity-30 transition-opacity duration-500"></div>
-          <div class="relative flex items-center bg-white rounded-2xl shadow-lg shadow-gray-200/60 border border-gray-200/80 focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-100 transition-all duration-300">
+          <div class="relative flex items-center bg-panel rounded-2xl border border-line
+                      shadow-lg shadow-black/30
+                      focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-50 transition-all duration-300">
             <svg class="ml-5 w-5 h-5 text-gray-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
@@ -43,21 +56,23 @@
               v-model="url"
               type="url"
               placeholder="粘贴视频链接，例如 https://www.bilibili.com/video/BV..."
-              class="flex-1 px-4 py-4 bg-transparent text-sm text-gray-700 placeholder-gray-400 focus:outline-none"
+              class="flex-1 px-4 py-4 bg-transparent text-sm text-gray-800 placeholder-gray-400 focus:outline-none"
               @keyup.enter="handleParse"
             />
             <button
               @click="handleParse"
               :disabled="loading"
-              class="mr-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-medium
-                     hover:shadow-lg hover:shadow-blue-500/25 disabled:opacity-50 disabled:cursor-not-allowed
+              class="mr-2 px-6 py-2.5 rounded-xl bg-violet text-white text-sm font-medium
+                     hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
                      transition-all duration-200 active:scale-95 whitespace-nowrap"
             >
               <span class="flex items-center gap-2">
-                <svg v-if="loading" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
+                <!-- 加载中：像素方块下坠动画 -->
+                <span v-if="loading" class="flex items-end gap-[3px] h-4" aria-hidden="true">
+                  <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop"></span>
+                  <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-1"></span>
+                  <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-2"></span>
+                </span>
                 <svg v-else class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>
                 </svg>
@@ -67,6 +82,31 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 底部像素阶梯装饰（仅完整模式） -->
+    <div v-if="!compact" class="absolute bottom-0 left-0 right-0 pointer-events-none" aria-hidden="true">
+      <svg class="w-full h-14 sm:h-20" viewBox="0 0 1440 80" preserveAspectRatio="none">
+        <g fill="#161F36">
+          <rect x="0" y="40" width="120" height="40"/>
+          <rect x="120" y="48" width="120" height="32"/>
+          <rect x="240" y="32" width="120" height="48"/>
+          <rect x="360" y="52" width="120" height="28"/>
+          <rect x="480" y="40" width="120" height="40"/>
+          <rect x="600" y="56" width="120" height="24"/>
+          <rect x="720" y="36" width="120" height="44"/>
+          <rect x="840" y="48" width="120" height="32"/>
+          <rect x="960" y="28" width="120" height="52"/>
+          <rect x="1080" y="52" width="120" height="28"/>
+          <rect x="1200" y="40" width="120" height="40"/>
+          <rect x="1320" y="48" width="120" height="32"/>
+        </g>
+        <g>
+          <rect x="240" y="32" width="120" height="3" fill="#7C3AED" opacity="0.55"/>
+          <rect x="720" y="36" width="120" height="3" fill="#EC4899" opacity="0.55"/>
+          <rect x="960" y="28" width="120" height="3" fill="#06B6D4" opacity="0.55"/>
+        </g>
+      </svg>
     </div>
   </section>
 </template>

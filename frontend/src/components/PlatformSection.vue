@@ -1,8 +1,9 @@
 <template>
-  <section ref="sectionRef" class="py-20 sm:py-24 bg-gradient-to-b from-white to-gray-50 relative overflow-hidden">
+  <section ref="sectionRef" class="py-20 sm:py-24 relative overflow-hidden">
     <div class="max-w-5xl mx-auto px-4 sm:px-6 text-center">
       <div class="mb-14">
-        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100/50 text-blue-600 text-xs font-medium mb-4">
+        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-teal-50 border border-teal-100/50 text-teal-300 text-xs font-pixel mb-4">
+          <span class="w-1.5 h-1.5 rounded-[1px] bg-cyan-500"></span>
           Platforms
         </span>
         <h2 class="text-3xl sm:text-4xl font-bold text-gray-900 mb-3">支持的海量平台</h2>
@@ -10,25 +11,26 @@
       </div>
 
       <div class="flex flex-wrap justify-center gap-3">
-        <span v-for="(p, i) in platforms" :key="p"
+        <span v-for="(p, i) in platforms" :key="p.name"
           :class="[
-            'px-5 py-2.5 rounded-full border text-sm shadow-sm transition-all duration-300',
+            'inline-flex items-center gap-2 px-5 py-2.5 rounded-full border text-sm transition-all duration-300',
             'opacity-0 scale-90',
             visible ? 'opacity-100 scale-100' : '',
-            hoveredPlatform === p
-              ? 'border-blue-300 bg-blue-50 text-blue-700 shadow-md -translate-y-0.5'
-              : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:shadow-md hover:-translate-y-0.5'
+            hoveredPlatform === p.name
+              ? 'border-gray-300 bg-panel-2 text-gray-800 -translate-y-0.5'
+              : 'border-line bg-panel text-gray-500 hover:border-gray-300 hover:-translate-y-0.5'
           ]"
           :style="{ transitionDelay: `${i * 50}ms` }"
-          @mouseenter="hoveredPlatform = p"
+          @mouseenter="hoveredPlatform = p.name"
           @mouseleave="hoveredPlatform = null"
         >
-          {{ p }}
+          <span class="w-1.5 h-1.5 rounded-[1px]" :class="p.color"></span>
+          {{ p.name }}
         </span>
       </div>
 
-      <p class="text-sm text-gray-400 mt-8 flex items-center justify-center gap-2">
-        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <p class="text-sm text-gray-400 mt-8 flex items-center justify-center gap-2 font-pixel">
+        <span class="w-1.5 h-1.5 rounded-[1px] bg-cyan-500 animate-pixel-blink"></span>
         ...以及 1800+ 其他平台
       </p>
     </div>
@@ -38,11 +40,17 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 
-const platforms = [
+/* 平台徽章：像素点循环使用品牌四色 */
+const brandColors = ['bg-violet', 'bg-purple', 'bg-pink', 'bg-cyan-500']
+const platformNames = [
   'YouTube', 'Bilibili', '抖音', 'Twitter/X', 'Instagram',
   'Facebook', 'TikTok', 'Vimeo', 'Twitch', 'SoundCloud',
   'Reddit', 'Pinterest', 'DailyMotion', 'LinkedIn',
 ]
+const platforms = platformNames.map((name, i) => ({
+  name,
+  color: brandColors[i % brandColors.length],
+}))
 
 const hoveredPlatform = ref(null)
 const visible = ref(false)

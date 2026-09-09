@@ -1,14 +1,40 @@
 <template>
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden card-hover">
-    <!-- 缩略图 -->
-    <div class="relative aspect-video bg-gray-100 overflow-hidden">
+  <div class="bg-panel rounded-2xl border border-line overflow-hidden card-hover">
+    <!-- 缩略图：点击跳转视频源页面 -->
+    <a
+      v-if="sourceUrl"
+      :href="sourceUrl"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="relative block aspect-video bg-gray-100 overflow-hidden group"
+      title="在新标签页打开视频源"
+    >
+      <img
+        :src="proxyThumbnail(video.thumbnail)"
+        :alt="video.title"
+        class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+      />
+      <div class="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent"></div>
+      <!-- 悬浮提示：外链图标 -->
+      <span class="absolute top-3 right-3 w-7 h-7 rounded-lg bg-black/55 backdrop-blur-sm flex items-center justify-center
+                   opacity-0 group-hover:opacity-100 transition-opacity duration-200 text-cyan-300">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+        </svg>
+      </span>
+      <span class="absolute bottom-3 right-3 bg-black/60 backdrop-blur-sm text-white text-xs font-pixel px-2.5 py-1 rounded-full flex items-center gap-1.5">
+        <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        {{ video.duration_string }}
+      </span>
+    </a>
+    <div v-else class="relative aspect-video bg-gray-100 overflow-hidden">
       <img
         :src="proxyThumbnail(video.thumbnail)"
         :alt="video.title"
         class="w-full h-full object-cover transition-transform duration-500 hover:scale-105"
       />
-      <div class="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent"></div>
-      <span class="absolute bottom-3 right-3 bg-black/60 backdrop-blur-sm text-white text-xs px-2.5 py-1 rounded-full flex items-center gap-1.5">
+      <div class="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent"></div>
+      <span class="absolute bottom-3 right-3 bg-black/60 backdrop-blur-sm text-white text-xs font-pixel px-2.5 py-1 rounded-full flex items-center gap-1.5">
         <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         {{ video.duration_string }}
       </span>
@@ -18,7 +44,7 @@
     <div class="p-5 space-y-4">
       <div>
         <h3 class="font-semibold text-gray-900 line-clamp-2 leading-snug">{{ video.title }}</h3>
-        <div class="flex items-center gap-2 text-sm text-gray-400 mt-2">
+        <div class="flex items-center gap-2 text-sm text-gray-500 mt-2">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
           <span>{{ video.uploader }}</span>
           <span>·</span>
@@ -38,11 +64,11 @@
             :class="[
               'px-3 py-2.5 text-sm rounded-xl border transition-all duration-200 text-left relative overflow-hidden',
               selectedFormat?.format_id === fmt.format_id
-                ? 'border-blue-500 bg-blue-50 text-blue-700 ring-1 ring-blue-500/20'
-                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                ? 'border-blue-500 bg-blue-50 text-blue-400 ring-1 ring-blue-500/30'
+                : 'border-line text-gray-700 hover:border-gray-300 hover:bg-gray-100'
             ]"
           >
-            <div class="font-medium">{{ fmt.resolution }}</div>
+            <div class="font-medium font-pixel">{{ fmt.resolution }}</div>
             <div class="text-xs text-gray-500 mt-0.5">{{ fmt.label }}</div>
           </button>
         </div>
@@ -52,14 +78,15 @@
       <button
         @click="handleDownload"
         :disabled="!selectedFormat || downloading"
-        class="w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium text-sm
-               hover:shadow-lg hover:shadow-blue-500/25 disabled:opacity-50 disabled:cursor-not-allowed
+        class="w-full py-3 rounded-xl bg-violet text-white font-medium text-sm
+               hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
                transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2"
       >
-        <svg v-if="downloading" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-        </svg>
+        <span v-if="downloading" class="flex items-end gap-[3px] h-4" aria-hidden="true">
+          <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop"></span>
+          <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-1"></span>
+          <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-2"></span>
+        </span>
         <svg v-else class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         {{ downloading ? '下载中...' : '下载视频' }}
       </button>
@@ -72,6 +99,7 @@ import { ref } from 'vue'
 
 const props = defineProps({
   video: Object,
+  sourceUrl: String,
   downloading: Boolean,
 })
 const emit = defineEmits(['download'])

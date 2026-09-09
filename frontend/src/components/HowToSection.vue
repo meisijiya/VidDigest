@@ -1,8 +1,9 @@
 <template>
-  <section ref="sectionRef" class="py-20 sm:py-24 bg-white relative overflow-hidden">
+  <section ref="sectionRef" class="py-20 sm:py-24 bg-panel/40 border-y border-line relative overflow-hidden">
     <div class="max-w-5xl mx-auto px-4 sm:px-6">
       <div class="text-center mb-16">
-        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100/50 text-blue-600 text-xs font-medium mb-4">
+        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100/50 text-blue-400 text-xs font-pixel mb-4">
+          <span class="w-1.5 h-1.5 rounded-[1px] bg-blue-500"></span>
           How It Works
         </span>
         <h2 class="text-3xl sm:text-4xl font-bold text-gray-900 mb-3">三步使用</h2>
@@ -10,8 +11,9 @@
       </div>
 
       <div class="relative grid md:grid-cols-3 gap-8">
-        <!-- 连接线 -->
-        <div class="hidden md:block absolute top-16 left-[calc(16.67%+2rem)] right-[calc(16.67%+2rem)] h-0.5 bg-gradient-to-r from-blue-200 via-indigo-200 to-blue-200">
+        <!-- 连接线：像素虚线 -->
+        <div class="hidden md:flex absolute top-16 left-[calc(16.67%+2rem)] right-[calc(16.67%+2rem)] gap-2 items-center" aria-hidden="true">
+          <span v-for="n in 40" :key="n" class="w-1.5 h-[3px] rounded-[1px] bg-gray-300 flex-shrink-0"></span>
         </div>
 
         <div v-for="(step, i) in steps" :key="i"
@@ -22,17 +24,18 @@
           ]"
           :style="{ transitionDelay: `${i * 200}ms` }"
         >
-          <!-- 步骤编号 -->
+          <!-- 步骤编号：像素方块 -->
           <div class="relative mb-6">
-            <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 text-white text-xl font-bold">
+            <div class="w-14 h-14 rounded-2xl border flex items-center justify-center text-xl font-bold font-pixel"
+              :class="step.numClass">
               {{ i + 1 }}
             </div>
           </div>
 
           <!-- 内容 -->
-          <div class="bg-gray-50/80 rounded-2xl p-6 border border-gray-100/60 w-full card-hover">
+          <div class="bg-panel rounded-2xl p-6 border border-line w-full card-hover">
             <div :class="[
-              'w-10 h-10 rounded-xl flex items-center justify-center mx-auto mb-4',
+              'w-10 h-10 rounded-xl border border-line flex items-center justify-center mx-auto mb-4',
               step.iconBg
             ]">
               <component :is="step.icon" class="w-5 h-5" :class="step.iconColor" />
@@ -55,9 +58,9 @@ import IconPackage from './icons/IconPackage.vue'
 import IconZap from './icons/IconZap.vue'
 
 const steps = [
-  { icon: IconSearch, title: '粘贴链接', desc: '复制你想下载的视频链接，粘贴到搜索框，点击解析', iconBg: 'bg-blue-50', iconColor: 'text-blue-600' },
-  { icon: IconPackage, title: '解析下载', desc: '一键解析视频信息，选择清晰度，快速下载到本地', iconBg: 'bg-amber-50', iconColor: 'text-amber-600' },
-  { icon: IconZap, title: 'AI 总结', desc: '自动生成视频摘要、思维导图，还可与 AI 对话提问', iconBg: 'bg-emerald-50', iconColor: 'text-emerald-600' },
+  { icon: IconSearch, title: '粘贴链接', desc: '复制你想下载的视频链接，粘贴到搜索框，点击解析', iconBg: 'bg-blue-50', iconColor: 'text-blue-400', numClass: 'bg-blue-50 border-blue-200 text-blue-400' },
+  { icon: IconPackage, title: '解析下载', desc: '一键解析视频信息，选择清晰度，快速下载到本地', iconBg: 'bg-coral-50', iconColor: 'text-coral-400', numClass: 'bg-coral-50 border-coral-200 text-coral-400' },
+  { icon: IconZap, title: 'AI 总结', desc: '自动生成视频摘要、思维导图，还可与 AI 对话提问', iconBg: 'bg-teal-50', iconColor: 'text-teal-400', numClass: 'bg-teal-50 border-teal-200 text-teal-300' },
 ]
 
 const sectionRef = useSectionAnimation()

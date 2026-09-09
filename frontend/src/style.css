@@ -2,19 +2,129 @@
 @plugin "@tailwindcss/typography";
 
 /* ══════════════════════════════════════════════════════════════
-   Design System — VidDownAI
+   Design System — VidDownAI · Pixel Grid 深色像素矩阵
+   ink 深空蓝底 · violet 紫罗兰主色 · pink 品红强调 · cyan 信息青
+   全站平涂，零彩色渐变；像素方块为品牌母题
    ══════════════════════════════════════════════════════════════ */
 
-/* ── CSS Custom Properties ──────────────────────────────── */
+@theme {
+  /* gray → 深空蓝中性色（反向映射：数值越小越深，适配深色面板语义） */
+  --color-gray-50: #161f36;
+  --color-gray-100: #1d2742;
+  --color-gray-200: #263152;
+  --color-gray-300: #3a4568;
+  --color-gray-400: #76819d;
+  --color-gray-500: #8b94ad;
+  --color-gray-600: #a7afc4;
+  --color-gray-700: #c6ccdc;
+  --color-gray-800: #dde2ee;
+  --color-gray-900: #e8ecf5;
+
+  /* slate → 同系深空蓝（prose 等场景） */
+  --color-slate-50: #161f36;
+  --color-slate-100: #1d2742;
+  --color-slate-200: #263152;
+  --color-slate-300: #3a4568;
+  --color-slate-400: #76819d;
+  --color-slate-500: #8b94ad;
+  --color-slate-600: #a7afc4;
+  --color-slate-700: #c6ccdc;
+  --color-slate-800: #dde2ee;
+  --color-slate-900: #e8ecf5;
+
+  /* blue → violet 紫罗兰主色 */
+  --color-blue-50: #221a3d;
+  --color-blue-100: #2e2453;
+  --color-blue-200: #3d3069;
+  --color-blue-300: #54418c;
+  --color-blue-400: #a78bfa;
+  --color-blue-500: #7c3aed;
+  --color-blue-600: #8b5cf6;
+  --color-blue-700: #a78bfa;
+  --color-blue-800: #c4b5fd;
+  --color-blue-900: #ddd6fe;
+
+  /* indigo → purple 亮紫辅助 */
+  --color-indigo-50: #251a40;
+  --color-indigo-100: #33234f;
+  --color-indigo-200: #49306b;
+  --color-indigo-300: #6b4599;
+  --color-indigo-400: #c084fc;
+  --color-indigo-500: #a855f7;
+  --color-indigo-600: #c084fc;
+  --color-indigo-700: #d8b4fe;
+  --color-indigo-800: #e9d5ff;
+  --color-indigo-900: #f3e8ff;
+
+  /* coral → pink 品红强调 */
+  --color-coral-50: #33152b;
+  --color-coral-100: #451b3a;
+  --color-coral-200: #5f2651;
+  --color-coral-300: #8a3370;
+  --color-coral-400: #f472b6;
+  --color-coral-500: #ec4899;
+  --color-coral-600: #f472b6;
+
+  /* teal/cyan → 信息青 */
+  --color-teal-50: #0e2a38;
+  --color-teal-100: #123849;
+  --color-teal-200: #1b4b5e;
+  --color-teal-300: #67e8f9;
+  --color-teal-400: #22d3ee;
+  --color-teal-500: #06b6d4;
+  --color-teal-600: #22d3ee;
+  --color-teal-700: #67e8f9;
+  --color-cyan-50: #0e2a38;
+  --color-cyan-100: #123849;
+  --color-cyan-200: #1b4b5e;
+  --color-cyan-300: #67e8f9;
+  --color-cyan-400: #22d3ee;
+  --color-cyan-500: #06b6d4;
+  --color-cyan-600: #22d3ee;
+  --color-cyan-700: #67e8f9;
+
+  /* 状态/点缀色（深色适配） */
+  --color-amber-50: #35260f;
+  --color-amber-100: #4a3517;
+  --color-amber-600: #fbbf24;
+  --color-emerald-50: #0e2e22;
+  --color-emerald-100: #14402f;
+  --color-emerald-600: #34d399;
+  --color-purple-50: #2a1b45;
+  --color-purple-100: #3a2658;
+  --color-purple-600: #c084fc;
+  --color-rose-50: #38121f;
+  --color-rose-100: #4c1828;
+  --color-rose-600: #fb7185;
+  --color-yellow-50: #352a0e;
+  --color-yellow-100: #4a3a15;
+  --color-yellow-200: #6b531f;
+  --color-yellow-700: #fde047;
+  --color-red-50: #3a1518;
+  --color-red-500: #f87171;
+
+  /* 品牌语义色 */
+  --color-ink: #0f1729;
+  --color-panel: #161f36;
+  --color-panel-2: #1d2742;
+  --color-line: #263152;
+  --color-violet: #7c3aed;
+  --color-purple: #a855f7;
+  --color-pink: #ec4899;
+  --color-cyan: #06b6d4;
+
+  --font-pixel: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+/* ── CSS Custom Properties ─────────────────────────────── */
 :root {
-  --color-primary: #2563eb;
-  --color-primary-dark: #1d4ed8;
-  --color-primary-light: #60a5fa;
-  --color-accent: #7c3aed;
-  --color-accent-light: #a78bfa;
-  --glass-bg: rgba(255, 255, 255, 0.7);
-  --glass-border: rgba(255, 255, 255, 0.2);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --color-primary: #7c3aed;
+  --color-primary-light: #a78bfa;
+  --color-accent: #ec4899;
+  --color-info: #06b6d4;
+  --glass-bg: rgba(22, 31, 54, 0.82);
+  --glass-border: rgba(148, 163, 216, 0.14);
+  --glass-shadow: 0 8px 32px rgba(3, 7, 18, 0.45);
 }
 
 /* ── Keyframe Animations ──────────────────────────────── */
@@ -38,33 +148,29 @@
   0%   { background-position: -200% 0; }
   100% { background-position: 200% 0; }
 }
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-6px); }
-}
-@keyframes pulseGlow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.3); }
-  50%      { box-shadow: 0 0 0 8px rgba(37, 99, 235, 0); }
-}
-@keyframes gradientShift {
-  0%   { background-position: 0% 50%; }
-  50%  { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
-}
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-8px) scaleY(0.96); }
   to   { opacity: 1; transform: translateY(0) scaleY(1); }
 }
+/* 像素母题：方块依次点亮（加载/点缀动画） */
+@keyframes pixelBlink {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 1; }
+}
+/* 像素母题：方块下坠（下载语义） */
+@keyframes pixelDrop {
+  0%   { transform: translateY(-6px); opacity: 0; }
+  35%  { opacity: 1; }
+  70%  { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(0); opacity: 0.35; }
+}
 
 /* ── Utility Classes ──────────────────────────────────── */
-
-/* Entrance animations (use with intersection observer) */
 .animate-fade-in     { animation: fadeIn 0.5s ease-out both; }
 .animate-fade-in-up  { animation: fadeInUp 0.6s ease-out both; }
 .animate-scale-in    { animation: scaleIn 0.4s ease-out both; }
-.animate-float       { animation: float 3s ease-in-out infinite; }
-.animate-shimmer     { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: shimmer 1.5s ease-in-out infinite; }
-.animate-gradient    { background-size: 200% 200%; animation: gradientShift 4s ease infinite; }
+.animate-pixel-blink { animation: pixelBlink 1.6s ease-in-out infinite; }
+.animate-pixel-drop  { animation: pixelDrop 1.4s ease-in-out infinite; }
 
 /* Staggered delay helpers */
 .delay-1 { animation-delay: 0.1s; }
@@ -73,7 +179,7 @@
 .delay-4 { animation-delay: 0.4s; }
 .delay-5 { animation-delay: 0.5s; }
 
-/* Glass morphism */
+/* 深色面板（替代原毛玻璃） */
 .glass {
   background: var(--glass-bg);
   backdrop-filter: blur(12px);
@@ -84,49 +190,16 @@
 
 /* Card hover lift */
 .card-hover {
-  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
 }
 .card-hover:hover {
   transform: translateY(-4px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1);
+  border-color: #3d3069;
+  box-shadow: 0 12px 40px rgba(3, 7, 18, 0.5);
 }
 
-/* Gradient text */
-.gradient-text {
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-/* Glow button */
-.btn-glow {
-  position: relative;
-  overflow: hidden;
-}
-.btn-glow::after {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  background: linear-gradient(135deg, #2563eb, #7c3aed, #2563eb);
-  background-size: 200% 200%;
-  animation: gradientShift 3s ease infinite;
-  z-index: -1;
-  border-radius: inherit;
-  opacity: 0;
-  transition: opacity 0.3s;
-}
-.btn-glow:hover::after {
-  opacity: 1;
-}
-
-/* Skeleton loading */
-.skeleton {
-  background: linear-gradient(90deg, #f0f0f0 25%, #e8e8e8 50%, #f0f0f0 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
-  border-radius: 8px;
-}
+/* 像素等宽标签 */
+.font-pixel { font-family: var(--font-pixel); }
 
 /* Smooth section entrance - applied via JS */
 .section-enter {
@@ -142,35 +215,78 @@
 /* Custom scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+::-webkit-scrollbar-thumb { background: #263152; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3a4568; }
 
 /* Selection */
-::selection { background: rgba(37, 99, 235, 0.15); color: #1e40af; }
+::selection { background: rgba(124, 58, 237, 0.35); color: #e8ecf5; }
 
-/* ── 摘要 Markdown 层级样式 ─────────────────────────────── */
+/* ── 像素矩阵氛围：深空蓝底 + 细网格线（平涂线条，非彩色渐变） ── */
+body {
+  background-color: #0f1729;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(148, 163, 216, 0.045) 0 1px, transparent 1px 56px),
+    repeating-linear-gradient(90deg, rgba(148, 163, 216, 0.045) 0 1px, transparent 1px 56px);
+  background-attachment: fixed;
+  color: #e8ecf5;
+}
+
+/* ── typography 插件深色适配：--tw-prose-* 变量不随 @theme 重映射，需显式覆盖 ── */
+.prose {
+  --tw-prose-body: #c6ccdc;
+  --tw-prose-headings: #e8ecf5;
+  --tw-prose-lead: #a7afc4;
+  --tw-prose-links: #22d3ee;
+  --tw-prose-bold: #e8ecf5;
+  --tw-prose-counters: #a78bfa;
+  --tw-prose-bullets: #54418c;
+  --tw-prose-hr: #263152;
+  --tw-prose-quotes: #c6ccdc;
+  --tw-prose-quote-borders: #7c3aed;
+  --tw-prose-captions: #8b94ad;
+  --tw-prose-kbd: #dde2ee;
+  --tw-prose-code: #c4b5fd;
+  --tw-prose-pre-code: #e8ecf5;
+  --tw-prose-pre-bg: #161f36;
+  --tw-prose-th-borders: #3a4568;
+  --tw-prose-td-borders: #263152;
+}
+
+/* ── 摘要 Markdown 层级样式（深色适配） ─────────────────── */
+.summary-content {
+  color: #c6ccdc;
+}
+.summary-content li {
+  color: #c6ccdc;
+}
+.summary-content li::marker {
+  color: #7c3aed;
+}
+.summary-content ol li::marker {
+  color: #a78bfa;
+}
 .summary-content h1 {
   font-size: 1.35rem;
   font-weight: 700;
-  color: #1e293b;
+  color: #e8ecf5;
   margin: 0.25rem 0 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid #e2e8f0;
+  border-bottom: 2px solid #263152;
   line-height: 1.4;
 }
 .summary-content h2 {
   font-size: 1.1rem;
   font-weight: 700;
-  color: #1d4ed8;
+  color: #a78bfa;
   margin: 1.5rem 0 0.75rem;
   padding-left: 0.6rem;
-  border-left: 4px solid #2563eb;
+  border-left: 4px solid #7c3aed;
   line-height: 1.4;
 }
 .summary-content h3 {
   font-size: 1rem;
   font-weight: 600;
-  color: #334155;
+  color: #c6ccdc;
   margin: 1rem 0 0.5rem;
   line-height: 1.4;
 }
@@ -179,7 +295,7 @@
 .summary-content h3 ~ ol,
 .summary-content h3 ~ p {
   margin-left: 1rem;
-  border-left: 2px solid #f1f5f9;
+  border-left: 2px solid #1d2742;
   padding-left: 0.75rem;
 }
 .summary-content ul {
@@ -199,5 +315,29 @@
 .summary-content p {
   margin: 0.5rem 0;
   line-height: 1.8;
-  color: #475569;
+  color: #b8c0d4;
+}
+.summary-content strong { color: #dde2ee; }
+.summary-content a { color: #22d3ee; }
+.summary-content code {
+  font-family: var(--font-pixel);
+  background: #1d2742;
+  border: 1px solid #263152;
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  font-size: 0.88em;
+  color: #c4b5fd;
+}
+
+/* Skeleton loading 深空蓝色调 */
+.skeleton {
+  background: linear-gradient(90deg, #161f36 25%, #1d2742 50%, #161f36 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 8px;
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, #161f36 25%, #1d2742 50%, #161f36 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
 }
