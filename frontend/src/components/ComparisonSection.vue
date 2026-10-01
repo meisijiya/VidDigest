@@ -66,9 +66,9 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 
 const rows = [
-  { label: '支持平台', us: '1800+', them: '单一平台' },
   { label: 'AI 功能', us: '总结 + 导图 + 问答', them: '无或收费附加' },
   { label: '无水印', us: '抖音无水印（内置）', them: '需额外工具' },
+  { label: '支持平台', us: '1800+', them: '单一平台' },
   { label: '价格', us: '免费版 + 低价 VIP', them: '按次收费或高价' },
 ]
 

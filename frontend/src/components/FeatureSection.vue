@@ -61,7 +61,7 @@ import IconHeart from './icons/IconHeart.vue'
 
 const features = [
   { icon: IconVideo, title: '多平台下载', desc: '支持 YouTube、B站、抖音等 1800+ 平台视频解析下载', iconBg: 'bg-blue-50 group-hover:bg-blue-100', iconColor: 'text-blue-400', barColor: 'bg-violet' },
-  { icon: IconZap, title: 'AI 总结', desc: 'DeepSeek 智能分析视频内容，一键生成深度摘要', iconBg: 'bg-amber-50 group-hover:bg-amber-100', iconColor: 'text-amber-600', barColor: 'bg-amber-600' },
+  { icon: IconZap, title: 'AI 总结', desc: 'LLM 智能分析视频内容，一键生成深度摘要', iconBg: 'bg-amber-50 group-hover:bg-amber-100', iconColor: 'text-amber-600', barColor: 'bg-amber-600' },
   { icon: IconMapPin, title: '思维导图', desc: '自动提取知识结构，生成可视化思维导图', iconBg: 'bg-emerald-50 group-hover:bg-emerald-100', iconColor: 'text-emerald-600', barColor: 'bg-emerald-600' },
   { icon: IconFileText, title: '字幕导出', desc: 'SRT/VTT/TXT 多格式字幕下载，支持离线语音转写', iconBg: 'bg-indigo-50 group-hover:bg-indigo-100', iconColor: 'text-indigo-400', barColor: 'bg-purple' },
   { icon: IconHeart, title: '免费试用', desc: '每日 3 次免费 AI 总结额度，开通 VIP 无限使用', iconBg: 'bg-coral-50 group-hover:bg-coral-100', iconColor: 'text-coral-400', barColor: 'bg-pink' },

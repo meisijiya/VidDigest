@@ -31,11 +31,11 @@
             支持 1800+ 平台
           </div>
           <h1 class="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight mb-4">
-            <span class="text-gray-900">AI 万能</span>
-            <span class="text-coral-500">视频下载器</span>
+            <span class="text-gray-900">AI 视频</span>
+            <span class="text-coral-500">理解平台</span>
           </h1>
           <p class="text-lg sm:text-xl text-gray-500 max-w-xl mx-auto leading-relaxed">
-            粘贴链接，一键解析下载 + <span class="text-gray-700 font-medium">AI 智能总结</span>
+            粘贴链接，生成 <span class="text-gray-700 font-medium">总结 / 思维导图 / 问答</span>
           </p>
         </div>
       </Transition>

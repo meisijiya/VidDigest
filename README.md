@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/Vue_3-4FC08D?logo=vuedotgithub&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/yt--dlp-1800+-blue" alt="yt-dlp 1800+">
-  <img src="https://img.shields.io/badge/DeepSeek-AI-8b5cf6" alt="DeepSeek AI">
+  <img src="https://img.shields.io/badge/LLM-AI-8b5cf6" alt="LLM AI">
   <img src="https://img.shields.io/badge/Stripe-Payments-6366f1?logo=stripe&logoColor=white" alt="Stripe">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
@@ -26,8 +26,8 @@
 ---
 
 <p align="center">
-  <b>VidDigest</b> 是一个全栈视频下载与 AI 总结工具。<br>
-  支持 <b>1800+</b> 平台视频解析下载，集成 DeepSeek AI 智能总结、思维导图、AI 问答。
+  <b>VidDigest</b> 是一个基于 yt-dlp + LLM 的全栈视频理解与下载平台。<br>
+  粘贴链接即可获得 <b>AI 总结、思维导图、AI 问答</b>，同时支持 <b>1800+</b> 平台视频解析下载。
 </p>
 
 ---
@@ -36,11 +36,11 @@
 
 | 功能 | 说明 | 免费 |
 |------|------|:----:|
-| 🎬 **视频解析下载** | YouTube、B站、抖音等 1800+ 平台，选择清晰度一键下载 | ✅ |
-| 🧠 **AI 总结摘要** | DeepSeek 自动分析字幕，生成结构化视频总结（概述、大纲、要点） | 每日 3 次 |
+| 🧠 **AI 总结摘要** | LLM 自动分析字幕，生成结构化视频总结（概述、大纲、要点） | 每日 3 次 |
 | 🗺️ **思维导图** | AI 自动提取知识结构，生成可交互的 SVG 思维导图 | 每日 3 次 |
 | 💬 **AI 问答** | 基于视频内容对话，追问细节、深入理解 | 每日 3 次 |
 | 📝 **字幕导出** | 提取并导出 SRT/VTT/TXT 格式字幕 | 每日 3 次 |
+| 🎬 **视频解析下载** | YouTube、B站、抖音等 1800+ 平台，选择清晰度一键下载 | ✅ |
 | 🌟 **VIP 会员** | 无限次 AI 功能，¥9.90/月 | — |
 
 > 视频解析下载无需登录，AI 功能需要注册账号（免费）。
@@ -126,7 +126,7 @@ STRIPE_PRICE_ID_MONTHLY=
 FRONTEND_URL=http://localhost:5173
 ```
 
-> 不配置 DeepSeek API Key 时，视频下载功能仍可用，AI 功能不可用。
+> 不配置 LLM API Key 时，视频下载功能仍可用，AI 功能不可用。
 
 完整的配置说明和 Stripe 支付设置见 [docs/](docs/)。
 
@@ -182,7 +182,7 @@ VIP 通过 Stripe 安全支付，续期自动叠加。
 | 前端 | Vue 3 + Vite + TailwindCSS 4 | SPA 框架 |
 | 后端 | FastAPI + Uvicorn | REST API + SSE 流式 |
 | 视频解析 | yt-dlp + 抖音独立模块 | 1800+ 平台 |
-| AI | DeepSeek API (deepseek-chat) | 总结 / 导图 / 问答 |
+| AI | OpenAI 兼容接口（DeepSeek / 阿里云百炼等） | 总结 / 导图 / 问答 |
 | ASR 回退 | OpenAI Whisper API | 语音转文字（需配置） |
 | 支付 | Stripe | 会员订阅 |
 | 认证 | JWT + bcrypt | 用户鉴权 |
@@ -241,5 +241,5 @@ sqlite3 backend/data/app.db "SELECT * FROM orders;"
 ---
 
 <p align="center">
-  <sub>Built with Vue 3 + FastAPI + yt-dlp + DeepSeek + Stripe</sub>
+  <sub>Built with Vue 3 + FastAPI + yt-dlp + LLM + Stripe</sub>
 </p>

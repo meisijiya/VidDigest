@@ -37,8 +37,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="万能视频下载器 API",
-    description="基于 yt-dlp 的万能视频下载服务，支持 1800+ 平台",
+    title="VidDigest API",
+    description="基于 yt-dlp + LLM 的视频理解与下载服务，支持 1800+ 平台",
     version="1.0.0",
     lifespan=lifespan,
 )
