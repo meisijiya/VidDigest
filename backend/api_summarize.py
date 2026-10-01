@@ -50,7 +50,7 @@ def _check_summary_permission(user: dict | None):
 
     allowed, remaining = check_summary_quota(user["id"])
     if not allowed:
-        return False, 0, f"今日免费次数已用完（每日 {FREE_DAILY_SUMMARY_LIMIT} 次），开通 VIP 可无限使用"
+        return False, 0, f"今日免费次数已用完（每日 {FREE_DAILY_SUMMARY_LIMIT} 次），明日 0 点重置"
 
     return True, remaining, None
 

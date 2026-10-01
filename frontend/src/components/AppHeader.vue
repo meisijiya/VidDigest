@@ -43,7 +43,7 @@
         <template v-if="user">
           <div class="flex items-center gap-2 mr-1">
             <span class="text-sm text-gray-500 hidden sm:block max-w-[120px] truncate">{{ user.email }}</span>
-            <span v-if="user.is_vip"
+            <span v-if="showVipEntry && user.is_vip"
               class="inline-flex items-center gap-1 text-xs bg-yellow-50 text-yellow-700 px-2.5 py-0.5 rounded-full font-medium border border-yellow-200/60">
               <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
               VIP
@@ -77,6 +77,7 @@ import PixelLogo from './PixelLogo.vue'
 defineProps({
   user: { type: Object, default: null },
   page: { type: String, default: 'home' },
+  showVipEntry: { type: Boolean, default: false },
 })
 defineEmits(['login', 'register', 'logout', 'open-vip', 'go-home', 'open-history'])
 

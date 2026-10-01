@@ -19,7 +19,6 @@
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/yt--dlp-1800+-blue" alt="yt-dlp 1800+">
   <img src="https://img.shields.io/badge/LLM-AI-8b5cf6" alt="LLM AI">
-  <img src="https://img.shields.io/badge/Stripe-Payments-6366f1?logo=stripe&logoColor=white" alt="Stripe">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
 
@@ -41,9 +40,8 @@
 | 💬 **AI 问答** | 基于视频内容对话，追问细节、深入理解 | 每日 3 次 |
 | 📝 **字幕导出** | 提取并导出 SRT/VTT/TXT 格式字幕 | 每日 3 次 |
 | 🎬 **视频解析下载** | YouTube、B站、抖音等 1800+ 平台，选择清晰度一键下载 | ✅ |
-| 🌟 **VIP 会员** | 无限次 AI 功能，¥9.90/月 | — |
 
-> 视频解析下载无需登录，AI 功能需要注册账号（免费）。
+> 视频解析下载无需登录，AI 功能需要注册账号（免费，每账号每日 3 次）。
 
 ---
 
@@ -128,7 +126,7 @@ FRONTEND_URL=http://localhost:5173
 
 > 不配置 LLM API Key 时，视频下载功能仍可用，AI 功能不可用。
 
-完整的配置说明和 Stripe 支付设置见 [docs/](docs/)。
+完整的配置说明见 [docs/](docs/)。
 
 ---
 
@@ -163,15 +161,14 @@ FRONTEND_URL=http://localhost:5173
 | **字幕文本** | 提取到的原始字幕，含时间戳 |
 | **AI 问答** | 基于视频内容自由提问，AI 实时回答 |
 
-### 💎 VIP 会员
+### 💎 免费额度
 
 | 用户类型 | AI 总结次数 |
 |:--------:|:-----------:|
 | 未登录 | 0 次/日 |
-| 免费用户 | **3 次/日** |
-| VIP 会员 | **无限次**（¥9.90/月） |
+| 注册用户 | **3 次/日** |
 
-VIP 通过 Stripe 安全支付，续期自动叠加。
+每个账号每日 3 次，0 点重置。本项目不设会员制。
 
 ---
 
@@ -184,7 +181,7 @@ VIP 通过 Stripe 安全支付，续期自动叠加。
 | 视频解析 | yt-dlp + 抖音独立模块 | 1800+ 平台 |
 | AI | OpenAI 兼容接口（DeepSeek / 阿里云百炼等） | 总结 / 导图 / 问答 |
 | ASR 回退 | OpenAI Whisper API | 语音转文字（需配置） |
-| 支付 | Stripe | 会员订阅 |
+| 前端 | Vue 3 + Vite | 界面与流式渲染 |
 | 认证 | JWT + bcrypt | 用户鉴权 |
 | 数据库 | SQLite | 用户 / 订单存储 |
 
@@ -204,9 +201,9 @@ VIP 通过 Stripe 安全支付，续期自动叠加。
 <summary><b>AI 总结用不了？</b></summary>
 
 - **"没有可用的字幕"** → 该视频没有字幕轨道，不支持 AI 总结
-- **"今日次数已用完"** → 免费用户每日 3 次，开通 VIP 无限用
+- **"今日次数已用完"** → 每账号每日 3 次，次日 0 点重置
 - **"请先登录"** → 注册/登录后使用
-- **无响应** → 检查 `.env` 中的 `DEEPSEEK_API_KEY`
+- **无响应** → 检查 `.env` 中的 LLM API Key（`ALIYUN_BAILIAN_API_KEY` 或 `DEEPSEEK_API_KEY`）
 </details>
 
 <details>
@@ -241,5 +238,5 @@ sqlite3 backend/data/app.db "SELECT * FROM orders;"
 ---
 
 <p align="center">
-  <sub>Built with Vue 3 + FastAPI + yt-dlp + LLM + Stripe</sub>
+  <sub>Built with Vue 3 + FastAPI + yt-dlp + LLM</sub>
 </p>

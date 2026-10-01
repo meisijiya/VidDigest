@@ -19,12 +19,12 @@
         </div>
 
         <p class="text-sm text-gray-500 max-w-md leading-relaxed">
-          AI 视频理解与下载平台 — 基于 Vue 3 + FastAPI + yt-dlp + LLM + Stripe 构建
+          AI 视频理解与下载平台 — 基于 Vue 3 + FastAPI + yt-dlp + LLM 构建
         </p>
 
         <!-- 技术栈徽章 -->
         <div class="flex flex-wrap items-center justify-center gap-2 mt-6">
-          <span v-for="tech in ['Vue 3', 'FastAPI', 'yt-dlp', 'LLM', 'Stripe']" :key="tech"
+          <span v-for="tech in ['Vue 3', 'FastAPI', 'yt-dlp', 'LLM']" :key="tech"
             class="text-[11px] font-pixel px-2.5 py-1 rounded-full bg-panel border border-line text-gray-500">
             {{ tech }}
           </span>

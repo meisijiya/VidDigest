@@ -2,6 +2,11 @@
 
 > 本文档面向**运维 / 部署 / 故障排查**场景。开发期的快速启动请看 [README.md](../README.md)，API 细节请看 [API.md](API.md)。
 
+> ⚠️ **会员制已停用（代码保留）**：项目当前不做会员制，所有用户统一为每日 3 次免费额度。
+> 前端付费入口由 `frontend/src/config/features.js` 的 `MEMBERSHIP_ENABLED = false` 关闭。
+> 后端 `api_payment.py`、`is_vip_active()`、`orders` 表与 Stripe 相关配置**均保留未删**，
+> 恢复会员制时把该开关改回 `true` 即可。下方涉及 Stripe 的章节仅供恢复时参考，当前无需配置。
+
 ---
 
 ## 📑 目录
@@ -511,7 +516,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 | 下载视频有画面无声音                                  | 没装 ffmpeg                 | 安装 ffmpeg 并加入 PATH                  |
 | `抖音解析失败`                                    | 短链过期 / 接口变更               | 重试 + 升级 yt-dlp                      |
 | AI 总结 `请先登录`                                | 未鉴权                       | 注册 / 登录后重试                          |
-| AI 总结 `今日次数已用完`                             | 免费配额 3 次/日                | 开 VIP 或等次日                          |
+| AI 总结 `今日次数已用完`                             | 免费配额 3 次/日                | 等次日重置（当前无会员制）                   |
 | AI 总结 `没有可用的字幕`                             | 视频无字幕轨                    | 上传视频不会支持；选有字幕的视频                    |
 | AI 总结无响应 / 卡住                               | DeepSeek 限流 / 网络          | 看 `hub logs` + 重试                   |
 | Stripe 支付 500                               | 缺少 `STRIPE_SECRET_KEY`    | 填 `.env` 并重启                        |

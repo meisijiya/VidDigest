@@ -6,7 +6,7 @@
       @login="showAuthModal('login')"
       @register="showAuthModal('register')"
       @logout="handleLogout"
-      @open-vip="handleOpenVip"
+      :show-vip-entry="membershipEnabled"
       @go-home="currentPage = 'home'"
       @open-history="currentPage = 'history'"
     />
@@ -69,7 +69,11 @@
         <FeatureSection />
         <HowToSection />
         <ComparisonSection />
-        <PricingSection @open-vip="handleOpenVip" @need-login="showAuthModal('login')" />
+        <PricingSection
+          v-if="membershipEnabled"
+          @open-vip="handleOpenVip"
+          @need-login="showAuthModal('login')"
+        />
         <PlatformSection />
       </template>
       </template>
@@ -103,6 +107,7 @@ import FeatureSection from './components/FeatureSection.vue'
 import HowToSection from './components/HowToSection.vue'
 import ComparisonSection from './components/ComparisonSection.vue'
 import PricingSection from './components/PricingSection.vue'
+import { MEMBERSHIP_ENABLED as membershipEnabled } from './config/features.js'
 import PlatformSection from './components/PlatformSection.vue'
 import HistoryPage from './components/HistoryPage.vue'
 import AuthModal from './components/AuthModal.vue'

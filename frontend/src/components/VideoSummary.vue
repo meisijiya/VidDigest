@@ -283,7 +283,7 @@ const quotaLabel = computed(() => {
   const q = quotaInfo.value
   if (!q) return '—'
   if (!q.logged_in) return '登录后可用'
-  if (q.unlimited) return 'VIP · 无限次'
+  if (q.unlimited) return '无限次'
   if (q.remaining <= 0) return `今日已用完（0 / ${q.limit}）`
   return `今日剩余 ${q.remaining} / ${q.limit} 次`
 })
