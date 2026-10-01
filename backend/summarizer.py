@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -17,28 +18,25 @@ logger = logging.getLogger("summarizer")
 
 
 def _find_ffmpeg() -> str:
-    """查找系统中可用的 ffmpeg 路径"""
-    # 常见安装路径
-    candidates = [
-        "ffmpeg",
-        r"C:\Users\<user>\AppData\Roaming\npm\node_modules\@ffmpeg-installer\ffmpeg\node_modules\@ffmpeg-installer\win32-x64\ffmpeg.exe",
-        r"C:\Users\<user>\AppData\Roaming\bilibili\ffmpeg\ffmpeg.exe",
-    ]
-    for c in candidates:
-        try:
-            subprocess.run([c, "-version"], capture_output=True, timeout=5)
-            return c
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    # 尝试从 PATH 查找
+    """查找 ffmpeg 可执行文件路径。
+
+    只用 shutil.which + PATH 扫描，不再硬编码任何人的用户目录，
+    也不通过 `ffmpeg -version` 子进程探测（探测是 import 阶段的副作用来源）。
+    """
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+
+    # PATH 里带引号或相对项时 which 可能漏掉，补一次直接扫描
     for path_dir in os.environ.get("PATH", "").split(os.pathsep):
-        full = os.path.join(path_dir, "ffmpeg.exe") if path_dir else ""
-        if full and os.path.exists(full):
-            return full
-        full = os.path.join(path_dir, "ffmpeg")
-        if full and os.path.exists(full):
-            return full
-    return "ffmpeg"  # 兜底
+        if not path_dir:
+            continue
+        for name in ("ffmpeg.exe", "ffmpeg"):
+            full = os.path.join(path_dir, name)
+            if os.path.isfile(full):
+                return full
+
+    return "ffmpeg"  # 兜底：交给调用方报错
 
 
 def _is_bilibili_url(url: str) -> bool:
@@ -375,7 +373,20 @@ class SubtitleExtractor:
 
 # ── ASR 语音转写（回退方案 - Whisper API）──────────────
 
-FFMPEG_PATH = _find_ffmpeg()
+_FFMPEG_PATH: Optional[str] = None
+
+
+def _ffmpeg_path() -> str:
+    """惰性解析并缓存 ffmpeg 路径。
+
+    原实现在 import 阶段就执行 `ffmpeg -version`，让任何 import 本模块的
+    脚本、测试或工具都无条件付出一次子进程探测的代价。
+    """
+    global _FFMPEG_PATH
+    if _FFMPEG_PATH is None:
+        _FFMPEG_PATH = _find_ffmpeg()
+        logger.debug("ffmpeg resolved to %s", _FFMPEG_PATH)
+    return _FFMPEG_PATH
 
 
 def _transcribe_audio(url: str) -> dict:
@@ -479,7 +490,7 @@ def _download_audio_for_asr(url: str) -> str | None:
 
 def _extract_audio_for_asr(video_path: str, output_path: str):
     """从视频文件中提取音频"""
-    cmd = [FFMPEG_PATH, "-i", video_path, "-vn",
+    cmd = [_ffmpeg_path(), "-i", video_path, "-vn",
            "-acodec", "libmp3lame", "-ar", "16000", "-ac", "1",
            output_path, "-y"]
     subprocess.run(cmd, capture_output=True, timeout=300)

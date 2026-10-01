@@ -19,6 +19,19 @@
       </button>
     </div>
 
+    <!-- 额度显式 + 停止入口：常驻可见，停止按钮在整个流式期间都可用 -->
+    <div v-if="videoUrl" class="flex items-center justify-between gap-3 px-5 py-2 border-b border-line bg-panel-2/30">
+      <span class="text-xs text-gray-500">每日免费 AI 额度</span>
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-medium px-2 py-0.5 rounded-full" :class="quotaBadgeClass">{{ quotaLabel }}</span>
+        <button v-if="loading || chatLoading" @click="loading ? stopSummarize() : stopChat()"
+          class="px-2 py-0.5 rounded-full border border-line text-xs text-gray-500
+                 hover:text-gray-900 hover:bg-gray-100 transition-all duration-200 active:scale-95">
+          停止
+        </button>
+      </div>
+    </div>
+
     <!-- Tab 内容 -->
     <div class="p-5 min-h-[200px]">
       <!-- 空状态 -->
@@ -220,11 +233,11 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import { Transformer } from 'markmap-lib'
 import { Markmap } from 'markmap-view'
-import { summarizeVideo, chatWithVideo } from '../api/summarize.js'
+import { summarizeVideo, chatWithVideo, fetchQuota } from '../api/summarize.js'
 import { saveHistory, saveChatToHistory } from '../api/history.js'
 
 // 单换行也渲染为换行，避免 LLM 输出被合并成一段
@@ -263,6 +276,45 @@ const chatLoading = ref(false)
 const renderedChatAnswer = computed(() => chatAnswer.value ? marked(chatAnswer.value) : '')
 const chatHistoryList = ref([])
 const showChatHistory = ref(false)
+
+// 额度显式：只读展示，不消耗
+const quotaInfo = ref(null)
+const quotaLabel = computed(() => {
+  const q = quotaInfo.value
+  if (!q) return '—'
+  if (!q.logged_in) return '登录后可用'
+  if (q.unlimited) return 'VIP · 无限次'
+  if (q.remaining <= 0) return `今日已用完（0 / ${q.limit}）`
+  return `今日剩余 ${q.remaining} / ${q.limit} 次`
+})
+const quotaBadgeClass = computed(() => {
+  const q = quotaInfo.value
+  if (!q || !q.logged_in) return 'bg-ink/60 text-gray-500'
+  if (q.unlimited) return 'bg-amber-100 text-amber-700'
+  if (q.remaining <= 0) return 'bg-red-50 text-red-600'
+  return 'bg-blue-50 text-blue-600'
+})
+
+async function refreshQuota() {
+  try {
+    quotaInfo.value = await fetchQuota()
+  } catch {
+    quotaInfo.value = null
+  }
+}
+
+function applyQuotaEvent(d) {
+  quotaInfo.value = {
+    logged_in: true,
+    unlimited: !!d.unlimited,
+    remaining: d.remaining,
+    limit: d.limit,
+  }
+}
+
+// 进行中的流句柄，用于用户主动停止
+let summaryStream = null
+let chatStream = null
 
 let markmapInstance = null
 
@@ -355,6 +407,9 @@ watch(activeTab, (tab) => {
 
 // 视频链接变化：仅重置状态，不自动发起 AI 请求（由用户点击"开始 AI 解析"手动触发）
 watch(() => props.videoUrl, (newUrl) => {
+  // 换视频时先中止上一个视频的流
+  summaryStream?.cancel()
+  chatStream?.cancel()
   started.value = false
   loading.value = false
   summaryMd.value = ''
@@ -380,7 +435,9 @@ function startSummarize() {
   chatHistoryList.value = []
   showChatHistory.value = false
 
-  summarizeVideo(props.videoUrl, 'zh', {
+  let failed = false
+  let stopped = false
+  summaryStream = summarizeVideo(props.videoUrl, 'zh', {
     onSubtitle: (data) => {
       subtitleData.value = data
     },
@@ -390,8 +447,12 @@ function startSummarize() {
     onMindmap: (data) => {
       mindmapMd.value = data.markdown
     },
-    onQuota: () => {},
+    onQuota: applyQuotaEvent,
+    onCancel: () => {
+      stopped = true
+    },
     onError: (err) => {
+      failed = true
       if (err.message.includes('没有可用的字幕')) {
         noSubtitle.value = true
       } else {
@@ -399,10 +460,21 @@ function startSummarize() {
       }
     },
     onDone: () => {
+      // 断流 / 异常 / 主动取消都会走到这里（onDone 保证恰好一次）
       loading.value = false
-      persistHistory()
+      summaryStream = null
+      if (!failed && !stopped) {
+        persistHistory()
+      } else {
+        // 出错或用户主动停止：额度可能已经扣掉，重新拉一次真实值
+        refreshQuota()
+      }
     },
   })
+}
+
+function stopSummarize() {
+  summaryStream?.cancel()
 }
 
 /** AI 解析完成后保存到解析历史（仅登录用户；失败静默，不影响主流程） */
@@ -420,19 +492,32 @@ function persistHistory() {
 }
 
 async function handleChat() {
-  if (!chatQuestion.value.trim()) return
+  if (!chatQuestion.value.trim() || chatStream) return
   chatLoading.value = true
   chatAnswer.value = ''
   const question = chatQuestion.value.trim()
-  await chatWithVideo(props.videoUrl, question, subtitleData.value?.full_text || '', {
+  let failed = false
+  let stopped = false
+  const stream = chatWithVideo(props.videoUrl, question, subtitleData.value?.full_text || '', {
     onAnswer: (token) => {
       chatAnswer.value += token
     },
+    onQuota: applyQuotaEvent,
+    onCancel: () => {
+      stopped = true
+    },
     onError: (err) => {
+      failed = true
       chatAnswer.value = `错误：${err.message}`
     },
     onDone: () => {
+      // 断流 / 异常 / 主动取消都会走到这里（onDone 保证恰好一次）
       chatLoading.value = false
+      if (chatStream === stream) chatStream = null
+      if (failed || stopped) {
+        refreshQuota()
+        return
+      }
       // 记录问答历史（组件内即时展示 + 后端持久化）
       const entry = { question, answer: chatAnswer.value }
       chatHistoryList.value.push(entry)
@@ -442,6 +527,12 @@ async function handleChat() {
       }
     },
   })
+  chatStream = stream
+  await stream.done
+}
+
+function stopChat() {
+  chatStream?.cancel()
 }
 
 /** 点击历史记录行：回填问题与已保存的答复（不发起新 AI 请求，零消耗） */
@@ -489,6 +580,19 @@ function exportSubtitle(format) {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+// ── 生命周期 ──────────────────────────────────────────────
+onMounted(() => {
+  refreshQuota()
+})
+
+onUnmounted(() => {
+  // 组件被卸载/换页时中止在途请求，避免往已销毁的组件上写状态
+  summaryStream?.cancel()
+  chatStream?.cancel()
+  markmapInstance?.destroy?.()
+  markmapInstance = null
+})
 </script>
 
 <style scoped>

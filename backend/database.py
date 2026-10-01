@@ -118,10 +118,28 @@ def create_user(email: str, password_hash: str) -> dict:
 
 # ── AI 总结次数限制 ───────────────────────────────────────
 
-def check_and_increment_summary(user_id: int) -> tuple[bool, int]:
+def is_vip_active(user) -> bool:
+    """VIP 权益判定——本项目唯一一份实现。
+
+    naive datetime 兜底在此收口：所有 vip_expire_at 的比较都必须走这里，
+    否则同一个"还是不是 VIP"的问题会在多处得到不同答案。
     """
-    检查用户是否可以使用 AI 总结，并自增计数。
-    返回 (allowed, remaining_count)
+    if not user["is_vip"] or not user["vip_expire_at"]:
+        return False
+    try:
+        expire = datetime.fromisoformat(user["vip_expire_at"])
+    except (ValueError, TypeError):
+        return False
+    # 兜底：SQLite 里存的可能是 naive datetime，统一按 UTC 处理
+    if expire.tzinfo is None:
+        expire = expire.replace(tzinfo=timezone.utc)
+    return expire > datetime.now(timezone.utc)
+
+
+def check_summary_quota(user_id: int) -> tuple[bool, int]:
+    """只判定、不扣减。返回 (allowed, remaining)，remaining = -1 表示 VIP 无限。
+
+    与 consume_summary_quota 拆成两步的原因：字幕提取失败时不应该扣掉用户额度。
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with get_db() as conn:
@@ -129,30 +147,43 @@ def check_and_increment_summary(user_id: int) -> tuple[bool, int]:
         if not user:
             return False, 0
 
-        if user["is_vip"] and user["vip_expire_at"]:
-            expire = datetime.fromisoformat(user["vip_expire_at"])
-            # 兜底：SQLite 里存的可能是 naive datetime，统一按 UTC 处理
-            if expire.tzinfo is None:
-                expire = expire.replace(tzinfo=timezone.utc)
-            if expire > datetime.now(timezone.utc):
-                return True, -1
+        if is_vip_active(user):
+            return True, -1
+
+        if user["last_summary_date"] != today:
+            # 今天还没用过，额度是满的（此函数不写库）
+            return True, FREE_DAILY_SUMMARY_LIMIT
+
+        current = user["daily_summary_count"]
+        if current >= FREE_DAILY_SUMMARY_LIMIT:
+            return False, 0
+        return True, FREE_DAILY_SUMMARY_LIMIT - current
+
+
+def consume_summary_quota(user_id: int) -> int:
+    """扣减一次 AI 额度，返回扣减后的 remaining。调用前须已通过 check_summary_quota。"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            return 0
+
+        if is_vip_active(user):
+            return -1
 
         if user["last_summary_date"] != today:
             conn.execute(
                 "UPDATE users SET daily_summary_count = 1, last_summary_date = ? WHERE id = ?",
                 (today, user_id),
             )
-            return True, FREE_DAILY_SUMMARY_LIMIT - 1
+            return FREE_DAILY_SUMMARY_LIMIT - 1
 
         current = user["daily_summary_count"]
-        if current >= FREE_DAILY_SUMMARY_LIMIT:
-            return False, 0
-
         conn.execute(
             "UPDATE users SET daily_summary_count = daily_summary_count + 1 WHERE id = ?",
             (user_id,),
         )
-        return True, FREE_DAILY_SUMMARY_LIMIT - current - 1
+        return FREE_DAILY_SUMMARY_LIMIT - current - 1
 
 
 # ── 订单操作 ──────────────────────────────────────────────
