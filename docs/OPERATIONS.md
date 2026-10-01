@@ -1,4 +1,4 @@
-# VidDownAI 运维手册
+# VidDigest 运维手册
 
 > 本文档面向**运维 / 部署 / 故障排查**场景。开发期的快速启动请看 [README.md](../README.md)，API 细节请看 [API.md](API.md)。
 
@@ -83,8 +83,8 @@ sudo apt update && sudo apt install -y ffmpeg sqlite3
 ### 3.1 拉取代码
 
 ```bash
-git clone <your-repo-url> universal-video-downloader
-cd universal-video-downloader
+git clone <your-repo-url> viddigest
+cd viddigest
 ```
 
 ### 3.2 后端
@@ -269,7 +269,7 @@ hub stop --name frontend-dev
 
 ```ini
 [Unit]
-Description=VidDownAI Backend (FastAPI)
+Description=VidDigest Backend (FastAPI)
 After=network.target
 
 [Service]

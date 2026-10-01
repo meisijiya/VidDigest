@@ -1,4 +1,4 @@
-# VidDownAI 文档
+# VidDigest 文档
 
 ## 用户文档
 

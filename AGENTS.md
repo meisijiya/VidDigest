@@ -1,6 +1,6 @@
 # AGENTS.md
 
-VidDownAI —— 通用视频解析 / 下载 + AI 字幕总结工具。
+VidDigest —— 通用视频解析 / 下载 + AI 字幕总结工具。
 `backend/` FastAPI（Python 3.11）+ `frontend/` Vue 3 + Vite。两个进程独立启动，没有 monorepo 编排。
 
 ## 环境事实（实测，勿凭猜测推翻）

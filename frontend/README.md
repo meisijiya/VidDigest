@@ -1,6 +1,6 @@
-# VidDownAI Frontend
+# VidDigest Frontend
 
-Vue 3 + Vite SPA for VidDownAI video downloader & AI summarizer.
+Vue 3 + Vite SPA for VidDigest video downloader & AI summarizer.
 
 ## Commands
 

@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/VidDownAI-万能视频下载总结器-7c3aed?style=for-the-badge&logo=github">
-    <img alt="VidDownAI" src="https://img.shields.io/badge/VidDownAI-万能视频下载总结器-2563eb?style=for-the-badge&logo=github">
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/VidDigest-AI%20视频理解与下载平台-7c3aed?style=for-the-badge&logo=github">
+    <img alt="VidDigest" src="https://img.shields.io/badge/VidDigest-AI%20视频理解与下载平台-2563eb?style=for-the-badge&logo=github">
   </picture>
 </p>
 
@@ -26,7 +26,7 @@
 ---
 
 <p align="center">
-  <b>VidDownAI</b> 是一个全栈视频下载与 AI 总结工具。<br>
+  <b>VidDigest</b> 是一个全栈视频下载与 AI 总结工具。<br>
   支持 <b>1800+</b> 平台视频解析下载，集成 DeepSeek AI 智能总结、思维导图、AI 问答。
 </p>
 

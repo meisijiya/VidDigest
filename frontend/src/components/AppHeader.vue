@@ -10,8 +10,7 @@
       <div class="flex items-center gap-2.5 group cursor-pointer" @click="$emit('go-home')">
         <PixelLogo :size="32" />
         <div class="flex items-baseline gap-1.5">
-          <span class="text-lg font-bold text-gray-900">VidDown</span>
-          <span class="text-lg font-light text-blue-400 font-pixel">AI</span>
+          <span class="text-lg font-bold text-gray-900">VidDigest</span>
         </div>
       </div>
 

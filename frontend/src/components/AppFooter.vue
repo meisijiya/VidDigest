@@ -14,8 +14,7 @@
         <div class="flex items-center gap-2.5 mb-4 group">
           <PixelLogo :size="36" />
           <div class="flex items-baseline gap-1.5">
-            <span class="text-xl font-bold text-gray-900">VidDown</span>
-            <span class="text-xl font-light text-cyan-300 font-pixel">AI</span>
+            <span class="text-xl font-bold text-gray-900">VidDigest</span>
           </div>
         </div>
 
@@ -32,7 +31,7 @@
         </div>
 
         <div class="flex items-center gap-4 mt-8 pt-6 w-full max-w-md border-t border-line">
-          <span class="text-xs font-pixel text-gray-400 mx-auto">© 2026 VidDownAI · All rights reserved.</span>
+          <span class="text-xs font-pixel text-gray-400 mx-auto">© 2026 VidDigest · All rights reserved.</span>
         </div>
       </div>
     </div>

@@ -7,7 +7,7 @@
           Comparison
         </span>
         <h2 class="text-3xl sm:text-4xl font-bold text-gray-900 mb-3">为什么选择我们</h2>
-        <p class="text-gray-500">全方位对比，看看 VidDownAI 的优势</p>
+        <p class="text-gray-500">全方位对比，看看 VidDigest 的优势</p>
       </div>
 
       <div :class="[
@@ -22,7 +22,7 @@
               <th class="text-center py-4 px-5 font-semibold bg-blue-50 text-blue-400 w-1/3">
                 <span class="flex items-center justify-center gap-2">
                   <span class="w-2 h-2 rounded-[2px] bg-violet"></span>
-                  VidDownAI
+                  VidDigest
                 </span>
               </th>
               <th class="text-center py-4 px-5 font-medium text-gray-400 bg-panel-2 w-1/3">其他工具</th>

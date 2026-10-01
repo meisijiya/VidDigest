@@ -1,6 +1,6 @@
 {
-  "name": "VideoParse",
-  "short_name": "VideoParse",
+  "name": "VidDigest",
+  "short_name": "VidDigest",
   "description": "视频解析网站",
   "start_url": "/",
   "display": "standalone",

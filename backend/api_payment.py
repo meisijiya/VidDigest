@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/payment", tags=["payment"])
 
 PLANS = {
     "monthly": {
-        "name": "VidDownAI VIP 月度会员",
+        "name": "VidDigest VIP 月度会员",
         "amount": 990,
         "currency": "cny",
     },

@@ -1,4 +1,4 @@
-# VidDownAI API 文档
+# VidDigest API 文档
 
 > 基础地址：`http://localhost:8000`
 
