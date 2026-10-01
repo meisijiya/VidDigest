@@ -30,4 +30,10 @@ The five canonical triage roles, using the default label strings verbatim. See `
 
 ### Domain docs
 
-Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `docs/agents/domain.md`。
+
+## 已定但尚未实现：社区功能
+
+`CONTEXT.md` 与 `docs/adr/0001`–`0006` 记录了 2026-10-01 grill 敲定的社区/BYOK 设计。
+**代码里目前一项都还没有实现**——现有 `parse_history` 单表、合并额度、无标签体系。
+动这块前先读那两份文档，别重新推导已经定过的东西。
