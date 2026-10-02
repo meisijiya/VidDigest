@@ -19,6 +19,7 @@ import json
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -739,3 +740,58 @@ class TestConcurrentSameUrl:
         assert seen[0] == ["唯一一份"], seen
         assert seen[1] == ["唯一一份"], seen
 
+
+
+# ── 陈旧占位回收（独立复审 MEDIUM-1）─────────────────────────
+
+class TestStalePlaceholderReclamation:
+    """陈旧占位必须能被接管——否则进程一死，那个链接就永久不可解析。
+
+    独立复审抓到的洞：`release_video` 只在请求的 `finally` 里跑。进程被杀、
+    机器断电、模型无限挂起时它跑不到那里，那一行就永远停在 `pending`，
+    之后**任何**人都拿不到「首次解析者」身份，只能一直等到超时。
+    """
+
+    @staticmethod
+    def _age_row(seconds: int) -> None:
+        """把占位行的 updated_at 往前推，模拟「占位者已经死了这么久」。"""
+        old = (
+            datetime.now(timezone.utc) - timedelta(seconds=seconds)
+        ).isoformat()
+        with database.get_db() as conn:
+            conn.execute("UPDATE videos SET updated_at = ?", (old,))
+
+    def test_stale_pending_is_taken_over(self, db, make_user):
+        first = make_user("first@example.com")
+        second = make_user("second@example.com")
+        assert db.reserve_video(URL, first)[0] == "reserved"
+
+        self._age_row(db.VIDEO_PENDING_TTL_SECONDS + 60)
+
+        outcome, _row = db.reserve_video(URL, second)
+        assert outcome == "reserved", "陈旧占位没被接管，这个链接会永久卡死"
+
+    def test_fresh_pending_is_not_stolen(self, db, make_user):
+        """反向检查：还在正常工作的占位**不能**被偷走。
+
+        偷走 = 两个人同时调模型、同时扣额度——正是本设计要防的那件事。
+        所以 TTL 必须大于一次正常解析的最长耗时，这条测试守着这个前提。
+        """
+        first = make_user("first@example.com")
+        second = make_user("second@example.com")
+        assert db.reserve_video(URL, first)[0] == "reserved"
+
+        outcome, _row = db.reserve_video(URL, second)
+        assert outcome == "pending", "新鲜占位被偷走了：会出现重复调模型 + 重复扣额度"
+
+    def test_ready_row_is_never_taken_over(self, db, make_user):
+        """已完成的结果谁都改不了——哪怕它已经很「旧」。"""
+        first = make_user("first@example.com")
+        second = make_user("second@example.com")
+        db.reserve_video(URL, first)
+        db.complete_video(URL, summary_md="社区里那一份")
+        self._age_row(db.VIDEO_PENDING_TTL_SECONDS * 10)
+
+        outcome, row = db.reserve_video(URL, second)
+        assert outcome == "ready", "已完成的内容被当成可抢占的占位了"
+        assert row["summary_md"] == "社区里那一份"

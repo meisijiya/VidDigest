@@ -749,6 +749,31 @@ def delete_parse_history(user_id: int, history_id: int) -> bool:
 VIDEO_STATUS_PENDING = "pending"
 VIDEO_STATUS_READY = "ready"
 
+#: 陈旧占位的回收阈值（秒）。占位者只在 `finally` 里还位——进程被杀、
+#: 机器断电、模型无限挂起时它跑不到那里，那一行就永远停在 pending，
+#: **这个链接从此再也没人能解析**。所以这里给占位加一个上限。
+#:
+#: ⚠️ 这个值必须**大于一次正常解析的最长耗时**（字幕提取 + 一次模型调用）。
+#: 调小它会在占位者还在好好干活时把位置偷走，于是两个人同时调模型、
+#: 同时扣额度——正好是本设计要防的那件事。它是「可恢复性」与
+#: 「不重复扣费」之间的取舍，取后者优先。
+VIDEO_PENDING_TTL_SECONDS = _env_int("VIDDIGEST_VIDEO_PENDING_TTL_SECONDS", 1800)
+
+
+def _pending_is_stale(row: dict) -> bool:
+    """占位行是否已经老到可以安全接管。解析不了时间就当它还活着。"""
+    raw = row.get("updated_at")
+    if not raw:
+        return False
+    try:
+        updated = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return False
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - updated).total_seconds()
+    return age > VIDEO_PENDING_TTL_SECONDS
+
 
 def reserve_video(video_url: str, user_id: int | None) -> tuple[str, dict | None]:
     """抢占一个链接的解析权。返回 (outcome, row)。
@@ -782,6 +807,21 @@ def reserve_video(video_url: str, user_id: int | None) -> tuple[str, dict | None
             return "pending", None
         if row["status"] == VIDEO_STATUS_READY:
             return "ready", row
+
+        # 别人占着位，但那个占位可能早就死了（进程被杀、模型挂死）——
+        # 不回收的话这个链接就永久不可解析。条件写进 WHERE，保证并发下
+        # 只有一个人接管成功；抢输的人下一轮再试。
+        if _pending_is_stale(row):
+            now = datetime.now(timezone.utc).isoformat()
+            with get_db() as conn:
+                cursor = conn.execute(
+                    """UPDATE videos SET parsed_by = ?, created_at = ?, updated_at = ?
+                       WHERE video_url = ? AND status = ? AND updated_at = ?""",
+                    (user_id, now, now, video_url,
+                     VIDEO_STATUS_PENDING, row["updated_at"]),
+                )
+                if cursor.rowcount == 1:
+                    return "reserved", None
         return "pending", row
 
 
