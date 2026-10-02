@@ -12,9 +12,12 @@ from pydantic import BaseModel
 
 from auth import get_optional_user
 from database import (
+    append_chat_turn,
     check_quota_kind,
     complete_video,
     consume_quota,
+    get_recent_chat_messages,
+    get_video_by_url,
     quota_limit,
     refund_quota,
     release_video,
@@ -33,6 +36,13 @@ _QUOTA_LABELS = {"parse": "解析", "chat": "追问"}
 #: 一次在抢占位之前（未登录的人不该去占一个位置让别人干等），
 #: 一次在额度检查里。两处文案必须一致，所以只能有一份来源。
 _NOT_LOGGED_IN = "请先登录后使用 AI 功能"
+
+#: 送给模型的上下文里保留几轮对话，**含本轮**。
+#:
+#: 本轮问题自己占一轮，所以历史只取 CHAT_CONTEXT_TURNS - 1 轮——
+#: 第 4 轮时第 1 轮就该掉出去了（票面 AC3）。「刚才那个」这类指代
+#: 跨 3 轮以内还接得上；再多只是烧 token，还会把真正相关的那句挤出去。
+CHAT_CONTEXT_TURNS = 3
 
 
 @router.get("/quota")
@@ -441,7 +451,16 @@ async def chat_with_video(
 
     quota_spent = False
     try:
-        if not req.subtitle_text.strip():
+        # 字幕来源顺序：社区视频表 → 入参 → 跑字幕提取。
+        #
+        # 社区表优先有两个理由：那省掉一次字幕提取（社区场景下字幕早就
+        # 由首次解析者存好了），也不给前端篡改字幕的机会——入参那条路是
+        # 老调用方的兼容路径，社区场景不依赖它。
+        video = get_video_by_url(req.url)
+        subtitle_text = ((video or {}).get("subtitle_text") or "").strip()
+        if not subtitle_text:
+            subtitle_text = (req.subtitle_text or "").strip()
+        if not subtitle_text:
             extractor = _get_extractor()
             subtitle_data = await _run_in_thread(extractor.extract, req.url)
             if not subtitle_data["has_subtitle"]:
@@ -456,8 +475,6 @@ async def chat_with_video(
                 )
                 return
             subtitle_text = subtitle_data["full_text"]
-        else:
-            subtitle_text = req.subtitle_text
 
         # 即将调用 AI，此刻才扣额度（无字幕 / 未登录 / 超额都不扣）
         consume_quota(user["id"], "chat")
@@ -471,12 +488,30 @@ async def chat_with_video(
             event="quota",
         )
 
+        # 上下文取的是**这次追问之前**的会话，不含本轮 question——
+        # 本轮问题由 chat_stream 单独追加在最后。取在前、拼在后，
+        # 本轮问题就不可能被重复塞两遍。
+        history = [
+            (m["role"], m["content"])
+            for m in get_recent_chat_messages(
+                user["id"], req.url, CHAT_CONTEXT_TURNS - 1
+            )
+        ]
+
         summarizer = _get_summarizer()
-        for token in summarizer.chat_stream(subtitle_text, req.question):
+        answer_parts: list[str] = []
+        for token in summarizer.chat_stream(subtitle_text, req.question, history):
+            answer_parts.append(token)
             yield ServerSentEvent(
                 raw_data=json.dumps(token, ensure_ascii=False),
                 event="answer",
             )
+
+        # 答案已完整产出，这一轮由此成为记录。落库在这里而不是让前端回调：
+        # 追问记录是用户自己的数据，只能由服务端在真答出来时落。
+        # 与扣费结清同一个位置——此后即便客户端断流，也不回滚也不重写，
+        # 用户看到的半截答案不会被记成「他没问过」。
+        append_chat_turn(user["id"], req.url, req.question, "".join(answer_parts))
 
         # 回答已完整产出，扣费就此结清：此后即便客户端断流也不回滚。
         quota_spent = False

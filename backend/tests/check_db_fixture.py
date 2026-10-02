@@ -33,7 +33,8 @@ DB_FUNCS = {
     "list_community_videos", "get_community_video",
     "get_community_video_by_url", "publish_video_card",
     "search_community_videos",
-    "append_chat_history",
+    # 追问会话（工单 #8）：append_chat_history 已退役，追问记录改存 chat_messages
+    "append_chat_turn", "get_recent_chat_messages", "get_chat_session",
     "upsert_parse_history", "get_parse_histories", "get_parse_history_detail",
     "delete_parse_history", "get_user_orders",
     "update_order_stripe_session", "complete_order",

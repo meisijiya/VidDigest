@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs'
 import axios from 'axios'
 
 import { fetchCommunityVideos, searchCommunity } from '../src/api/community.js'
+import { fetchChatSession } from '../src/api/history.js'
 
 /** 归一化行尾符：本仓库是 CRLF，直接按 \n 切块会切空。 */
 function read(...parts) {
@@ -363,5 +364,61 @@ describe('App.vue 接线', () => {
       appCode.indexOf('function reparse('),
     )
     assert.match(publish, /\.catch\(\(\) => \{\}\)/, '回填失败会打断解析流程')
+  })
+})
+
+
+describe('追问会话读出口（工单 #8 补单）', () => {
+  test('按 url 取当前用户的会话，返回的正是 [{question, answer}]', async () => {
+    const calls = spyFetch(() => jsonResponse({
+      chat_history: [{ question: 'B 问的', answer: '答案::B 问的' }],
+    }))
+    const turns = await fetchChatSession('https://example.com/v/shared')
+
+    assert.match(calls[0].url, /\/api\/history\/chat/, '打错了端点')
+    assert.match(calls[0].url, /url=/, 'url 没作为查询参数传出去')
+    assert.equal(calls[0].auth, 'Bearer test-token', '读自己的会话也要带鉴权头')
+    assert.deepEqual(turns, [{ question: 'B 问的', answer: '答案::B 问的' }])
+  })
+
+  test('后端没给记录时返回空数组，不是 undefined', async () => {
+    spyFetch(() => jsonResponse({}))
+    assert.deepEqual(await fetchChatSession('u'), [])
+  })
+
+  test('读不到时把错误抛出去，不静默变成空列表', async () => {
+    spyFetch(() => new Response('nope', { status: 401 }))
+    await assert.rejects(() => fetchChatSession('u'))
+  })
+
+  test('VideoSummary 在解析完成与追问完成两条路上都回填', () => {
+    const code = stripComments(summaryVue)
+    const bodyOf = (name) => {
+      const start = code.indexOf(`function ${name}(`)
+      assert.ok(start >= 0, `找不到 ${name}`)
+      const rest = code.slice(start)
+      // 边界必须连 async function 一起算：只认 '\nfunction ' 的话，
+      // 下一段 hydrateChatHistory 的**定义**会被算进上一个函数体里，
+      // 于是把调用删掉这个用例照样绿（实测踩过）。
+      const next = rest.slice(1).match(/\n(?:async )?function /)
+      return next ? rest.slice(0, next.index + 1) : rest
+    }
+    assert.match(bodyOf('startSummarize'), /hydrateChatHistory\(\)/, '解析完成后没回填')
+    assert.match(bodyOf('handleChat'), /hydrateChatHistory\(\)/, '追问完成后没回填')
+  })
+
+  test('回填排在 chatHistoryList 清空之后', () => {
+    const code = stripComments(summaryVue)
+    // 早于清空调用，填进去的记录会在同一次挂载里被抹掉
+    const clear = code.indexOf('chatHistoryList.value = []')
+    const hydrate = code.indexOf('hydrateChatHistory()')
+    assert.ok(clear >= 0, '前提：找不到 chatHistoryList 的清空')
+    assert.ok(hydrate > clear, '回填写在清空之前，会被同一次挂载抹掉')
+  })
+
+  test('组件内即时 push 保留，持久化仍然只由服务端落', () => {
+    const code = stripComments(summaryVue)
+    assert.match(code, /chatHistoryList\.value\.push\(/, '即时展示被去掉了，那是为了流畅性')
+    assert.doesNotMatch(code, /saveChatToHistory/, '前端不该再有保存会话的调用')
   })
 })

@@ -63,7 +63,7 @@ class StubSummarizer:
         yield ("mindmap", "# mindmap")
         yield ("tags", ["编程"])
 
-    def chat_stream(self, text, question):
+    def chat_stream(self, text, question, history=()):
         self.calls += 1
         yield "answer-1"
 

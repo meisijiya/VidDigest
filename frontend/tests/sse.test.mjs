@@ -209,10 +209,18 @@ describe('summarizeVideo', () => {
 
 
 describe('chatWithVideo', () => {
+  test('请求体不再带字幕全文（工单 #8）', async () => {
+    let body = null
+    globalThis.fetch = async (url, opts) => { body = JSON.parse(opts.body); return fakeStream(['event: done\n', 'data: [DONE]\n']) }
+    const r = recorder()
+    await chatWithVideo('u', 'q', r.cb).done
+    assert.deepEqual(body, { url: 'u', question: 'q' })
+  })
+
   test('断流也保证 onDone', async () => {
     globalThis.fetch = async () => fakeStream(['event: answer\n', 'data: "a"\n', 'data: "b"\n'])
     const r = recorder()
-    await chatWithVideo('u', 'q', 'sub', r.cb).done
+    await chatWithVideo('u', 'q', r.cb).done
     assert.deepEqual(r.log.events, [['answer', 'a'], ['answer', 'b']])
     assert.equal(r.log.done, 1)
   })
@@ -223,14 +231,14 @@ describe('chatWithVideo', () => {
       'event: answer\n', 'data: "x"\n', 'event: done\n', 'data: [DONE]\n',
     ])
     const r = recorder()
-    await chatWithVideo('u', 'q', 'sub', r.cb).done
+    await chatWithVideo('u', 'q', r.cb).done
     assert.deepEqual(r.log.events[0], ['quota', { remaining: 2, limit: 3, unlimited: false }])
   })
 
   test('取消生效', LIMIT, async () => {
     globalThis.fetch = async (url, opts) => fakeStream(['event: answer\n', 'data: "a"\n'], { signal: opts.signal, close: false })
     const r = recorder()
-    const stream = chatWithVideo('u', 'q', 'sub', r.cb)
+    const stream = chatWithVideo('u', 'q', r.cb)
     await r.first()
     stream.cancel()
     await stream.done

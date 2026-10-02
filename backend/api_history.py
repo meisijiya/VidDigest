@@ -6,8 +6,8 @@ from pydantic import BaseModel
 from auth import get_current_user
 from database import (
     MAX_PARSE_HISTORY_PER_USER,
-    append_chat_history,
     delete_parse_history,
+    get_chat_session,
     get_community_video_by_url,
     get_parse_histories,
     get_parse_history_detail,
@@ -24,12 +24,6 @@ class SaveHistoryRequest(BaseModel):
     summary_md: str = ""
     mindmap_md: str = ""
     subtitle_data: dict | None = None
-
-
-class SaveChatRequest(BaseModel):
-    url: str
-    question: str
-    answer: str
 
 
 @router.get("")
@@ -53,13 +47,6 @@ async def save_history(req: SaveHistoryRequest, user: dict = Depends(get_current
     return {"success": True, "id": history_id}
 
 
-@router.post("/chat")
-async def save_chat(req: SaveChatRequest, user: dict = Depends(get_current_user)):
-    """向指定视频的解析历史追加一条 AI 问答"""
-    append_chat_history(user["id"], req.url, req.question, req.answer)
-    return {"success": True}
-
-
 @router.get("/by-url")
 async def history_by_url(url: str, user: dict = Depends(get_current_user)):
     """按视频 URL 问「社区里有没有这一份」，返回社区视频表的那一行。
@@ -81,6 +68,25 @@ async def history_by_url(url: str, user: dict = Depends(get_current_user)):
     个人访问记录，滚动保留 30 条。
     """
     return {"item": get_community_video_by_url(url)}
+
+
+@router.get("/chat")
+async def chat_session(url: str, user: dict = Depends(get_current_user)):
+    """当前用户与某个视频的追问会话，只有他自己读得到。
+
+    为什么需要这个读出口：追问记录按 (user_id, video_url) 存在 chat_messages，
+    而**不依赖这个用户有没有解析过这个视频**。此前的唯一读路径
+    /api/history/{id} 由 parse_history 行驱动，B 追问 A 解析的视频时
+    他并没有那一行——「B 读不到 A」因此是假通过，实际上是谁的都读不到。
+
+    响应沿用 get_chat_session 的 [{question, answer}]：前端 chatHistoryList
+    吃的就是这个形状，详情接口给的也是它。不新造形状，是为了老数据回填
+    那一行和这个端点在同一处汇合。
+
+    注册位置同 by-url：**必须在 /{history_id} 之前**，否则 "chat" 会被
+    当成 int 路径参数解析，直接 422。
+    """
+    return {"chat_history": get_chat_session(user["id"], url)}
 
 
 @router.get("/{history_id}")

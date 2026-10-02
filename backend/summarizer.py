@@ -833,18 +833,17 @@ class VideoSummarizer:
 
     # ── AI 问答 ────────────────────────────────────────
 
-    def chat_stream(self, subtitle_text: str, question: str):
-        """基于视频内容的 AI 问答，流式返回"""
-        prompt = self._build_chat_prompt(subtitle_text, question)
+    def chat_stream(self, subtitle_text: str, question: str, history=()):
+        """基于视频内容的 AI 问答，流式返回。
+
+        ``history`` 是**更早**几轮的 ``(role, content)`` 序列，让模型接得住
+        「刚才那个」这类指代。带默认值是必须的：解析路径之外没有别的地方
+        调它，不给默认值等于逼所有调用方都关心上下文。
+        """
+        messages = self._build_chat_prompt(subtitle_text, question, history)
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是一个视频内容问答助手。根据提供的字幕内容回答用户的问题。",
-                },
-                {"role": "user", "content": prompt},
-            ],
+            messages=messages,
             stream=True,
             temperature=0.7,
             max_tokens=2048,
@@ -908,14 +907,31 @@ class VideoSummarizer:
 {truncated}"""
 
     @staticmethod
-    def _build_chat_prompt(subtitle_text: str, question: str) -> str:
+    def _build_chat_prompt(subtitle_text: str, question: str, history=()) -> list:
+        """构造追问的 messages 数组。
+
+        结构：system → 字幕块（首条 user，沿用改动前就有的做法）→ 历史
+        user/assistant 交替 → 本轮 question 独占最后一条。
+
+        本轮问题放在最后而不是像改动前那样拼进字幕块，是因为历史一旦接进来，
+        混在中间的「用户问题：…」会让模型分不清哪句是这次问的、哪句是上轮问的。
+        字幕块那侧的「请基于视频内容给出准确、详细的回答」留在原处不动。
+        """
         truncated = subtitle_text[:12000]
-        return f"""以下是一个视频的字幕内容，请根据这些内容回答用户的问题。
+        messages = [{
+            "role": "system",
+            "content": "你是一个视频内容问答助手。根据提供的字幕内容回答用户的问题。",
+        }, {
+            "role": "user",
+            "content": f"""以下是一个视频的字幕内容，请根据这些内容回答用户的问题。
 
 视频字幕内容：
 {truncated}
 
 ---
-用户问题：{question}
-
-请基于视频内容给出准确、详细的回答。如果视频内容中没有相关信息，请诚实说明。"""
+请基于视频内容给出准确、详细的回答。如果视频内容中没有相关信息，请诚实说明。""",
+        }]
+        for role, content in history:
+            messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": question})
+        return messages

@@ -131,8 +131,12 @@ export function summarizeVideo(url, language, callbacks) {
   })
 }
 
-export function chatWithVideo(url, question, subtitleText, callbacks) {
-  return streamSse('/api/chat', { url, question, subtitle_text: subtitleText }, {
+/**
+ * 追问。不再传字幕全文——服务端从社区视频表取（工单 #8）。
+ * 字幕全文在网络上白跑两趟没有意义，还让前端有机会篡改它。
+ */
+export function chatWithVideo(url, question, callbacks) {
+  return streamSse('/api/chat', { url, question }, {
     route: (event, data) => callbacks[CHAT_ROUTES[event]]?.(data),
     onError: callbacks.onError,
     onCancel: callbacks.onCancel,

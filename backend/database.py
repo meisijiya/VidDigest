@@ -281,6 +281,30 @@ def init_db():
             );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_url ON videos(video_url);
+
+            -- 追问会话（工单 #8）：明细表。一次「会话」= (user_id, video_url) 的聚合。
+            --
+            -- **刻意不做条数裁剪**：parse_history 的 30 条滚动规则是它自己那张表的
+            -- 规矩，与本表无关。追问记录被裁掉是静默的数据丢失——用户问过的东西
+            -- 不该因为他最近解析得有点多就消失。工单点名的缺陷正是这个。
+            --
+            -- role 拆成两行（一问一行、一答一行），而不是 {question, answer} 一行：
+            -- 「最近 3 轮」天然是消息序列，按 id 取最近 2 倍条数即可，不用反解配对；
+            -- 而两列结构会让断流时那半条「有问无答」的记录**看起来完整**，
+            -- 于是被当成有效历史塞进模型上下文。
+            --
+            -- 不建 user_id 外键：与 videos.parsed_by 同一理由——
+            -- 用户注销后会话记录应随该用户一起消失，而不是变成孤儿行。
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                video_url TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_user_url ON chat_messages(user_id, video_url, id);
         """)
 
         _migrate_quota_columns(conn)
@@ -999,35 +1023,98 @@ def upsert_parse_history(
         return history_id
 
 
-def append_chat_history(user_id: int, video_url: str, question: str, answer: str) -> bool:
-    """向指定视频的解析历史追加一条问答；该视频无历史记录时自动创建占位记录"""
-    now = datetime.now(timezone.utc).isoformat()
+# ── 追问会话（工单 #8）────────────────────────────────────
+#
+# 真相源唯一：只有服务端在答案**完整产出后**才调 append_chat_turn。
+# 前端不再回调任何保存接口——记录存不存在取决于服务端有没有真答出这句话，
+# 而不是取决于浏览器有没有多发一个请求（改一行 JS、或写库前断流，
+# 记录都会不见；反过来伪造一条 {question, answer} 也只是一行请求的事）。
+#
+# 隔离在查询条件里：每个读函数都以 user_id 打头，别人的记录读不出来。
+
+
+def append_chat_turn(user_id: int, video_url: str, question: str, answer: str) -> None:
+    """把一整轮追问（一问 + 一答）写进会话表。
+
+    两行在**同一个事务**里写：只有问没有答的半轮记录配不出 answer，
+    分两次写等于在两次写之间留一个窗口，而那个窗口里的会话读出来是残的。
+    """
+    with get_db() as conn:
+        for role, content in (("user", question), ("assistant", answer)):
+            conn.execute(
+                """INSERT INTO chat_messages (user_id, video_url, role, content)
+                   VALUES (?, ?, ?, ?)""",
+                (user_id, video_url, role, content),
+            )
+
+
+def get_recent_chat_messages(user_id: int, video_url: str, turns: int | None = 3) -> list:
+    """某个用户与某个视频最近的追问明细，按 id **升序**返回。
+
+    `turns` 轮 = 2 * turns 条（写入永远成对）；`turns=None` 取全部，
+    聚合整段会话时用。升序是拼 prompt 的要求：时间序给模型才读得通。
+    取「最近的一段」却在 SQL 里正序查会拿到最早的，所以先倒序取再翻回来。
+    """
+    sql = ("SELECT role, content FROM chat_messages"
+           " WHERE user_id = ? AND video_url = ? ORDER BY id DESC")
+    params = [user_id, video_url]
+    if turns is not None:
+        sql += " LIMIT ?"
+        params.append(max(0, int(turns)) * 2)
+    with get_db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+
+def _pair_up_chat_messages(messages: list) -> list:
+    """把消息明细配成 [{question, answer}]。
+
+    相邻的 user / assistant 两条配成一轮。末尾若剩一个孤立的 user 行
+    （有问无答），**丢弃**：半轮对话展示成一条空回答比不展示更糟。
+    """
+    turns: list = []
+    pending: str | None = None
+    for msg in messages:
+        if msg["role"] == "user":
+            # 新的问题开始。上一轮若没配上答案（脏数据），就此丢弃，
+            # 不让它顺延到这一轮上把两问配成一次回答。
+            pending = msg["content"]
+        elif msg["role"] == "assistant" and pending is not None:
+            turns.append({"question": pending, "answer": msg["content"]})
+            pending = None
+    return turns
+
+
+def get_chat_session(user_id: int, video_url: str) -> list:
+    """某个用户与某个视频的完整会话，形状恒为 [{question, answer}]。
+
+    **所有读点都必须走这里**，别再自己拼一份：新表为空时回退读旧列这条
+    规则散在两处就一定会漂移（详情接口给老记录、新端点给空）。
+    """
+    turns = _pair_up_chat_messages(get_recent_chat_messages(user_id, video_url, turns=None))
+    if turns:
+        return turns
+    # 下面这条查询**同样**按 user_id 过滤：旧列挂在 parse_history 行上，
+    # 漏掉它就是别人的追问记录被读出来。
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, chat_history FROM parse_history WHERE user_id = ? AND video_url = ?",
+            "SELECT chat_history FROM parse_history WHERE user_id = ? AND video_url = ?",
             (user_id, video_url),
         ).fetchone()
-        if row:
-            try:
-                chats = json.loads(row["chat_history"] or "[]")
-            except (ValueError, TypeError):
-                chats = []
-            chats.append({"question": question, "answer": answer})
-            conn.execute(
-                "UPDATE parse_history SET chat_history=?, updated_at=? WHERE id=?",
-                (json.dumps(chats, ensure_ascii=False), now, row["id"]),
-            )
-        else:
-            conn.execute(
-                """INSERT INTO parse_history
-                   (user_id, video_url, chat_history, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (user_id, video_url,
-                 json.dumps([{"question": question, "answer": answer}], ensure_ascii=False),
-                 now, now),
-            )
-        _trim_parse_history(conn, user_id)
-    return True
+    return _legacy_chat_history(row["chat_history"]) if row else []
+
+
+def _legacy_chat_history(raw: str | None) -> list:
+    """读老库里的 parse_history.chat_history（工单 #8 之前唯一的存放处）。
+
+    **为什么还留着这条路**：老库里已有的记录还躺在那一列，尚未迁移；
+    新表为空时回退读它，那些历史才不至于凭空消失。旧列从此只读不写。
+    """
+    try:
+        chats = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        return []
+    return chats if isinstance(chats, list) else []
 
 
 def get_parse_histories(user_id: int, limit: int = MAX_PARSE_HISTORY_PER_USER) -> list:
@@ -1037,7 +1124,13 @@ def get_parse_histories(user_id: int, limit: int = MAX_PARSE_HISTORY_PER_USER) -
             """SELECT id, video_url, video_title, summary_md,
                       COALESCE(updated_at, created_at) AS updated_at,
                       created_at,
-                      (chat_history IS NOT NULL AND chat_history != '[]') AS has_chat
+                      -- 追问记录在 chat_messages（工单 #8）。
+                      -- 后面 OR 的是老库那一列：新表为空时它仍然是唯一有记录的地方，
+                      -- 漏掉它会让「详情里读得到记录、列表里却没有」自相矛盾。
+                      (EXISTS (SELECT 1 FROM chat_messages m
+                               WHERE m.user_id = parse_history.user_id
+                                 AND m.video_url = parse_history.video_url)
+                       OR (chat_history IS NOT NULL AND chat_history != '[]')) AS has_chat
                FROM parse_history WHERE user_id = ?
                ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?""",
             (user_id, limit),
@@ -1069,11 +1162,11 @@ def get_parse_history_detail(user_id: int, history_id: int) -> dict | None:
                 item[field] = json.loads(item[field]) if item[field] else None
             except (ValueError, TypeError):
                 item[field] = None
-        try:
-            item["chat_history"] = json.loads(item["chat_history"] or "[]")
-        except (ValueError, TypeError):
-            item["chat_history"] = []
-        return item
+
+    # 读在 with 块**外面**做，与那个事务彻底分开。会话读法只有一个入口，
+    # 老列回退也归它管——这里不再另写一份。
+    item["chat_history"] = get_chat_session(user_id, item["video_url"])
+    return item
 
 
 def delete_parse_history(user_id: int, history_id: int) -> bool:

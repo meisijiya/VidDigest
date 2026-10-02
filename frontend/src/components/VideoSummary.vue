@@ -248,7 +248,7 @@ import { marked } from 'marked'
 import { Transformer } from 'markmap-lib'
 import { Markmap } from 'markmap-view'
 import { summarizeVideo, chatWithVideo, fetchQuota } from '../api/summarize.js'
-import { saveHistory, saveChatToHistory } from '../api/history.js'
+import { fetchChatSession, saveHistory } from '../api/history.js'
 import { describeQuota, quotaBadgeClass as quotaBadgeClassOf } from '../lib/quota.js'
 
 // 单换行也渲染为换行，避免 LLM 输出被合并成一段
@@ -481,6 +481,9 @@ function startSummarize() {
       // 断流 / 异常 / 主动取消都会走到这里（onDone 保证恰好一次）
       loading.value = false
       summaryStream = null
+      // 必须在上面的 chatHistoryList 清空**之后**回填：
+      // startSummarize 开头把列表清空了，早于它调就会白填一次。
+      hydrateChatHistory()
       if (!failed && !stopped) {
         persistHistory()
       } else {
@@ -489,6 +492,24 @@ function startSummarize() {
       }
     },
   })
+}
+
+/**
+ * 从服务端回填追问记录。
+ *
+ * 为什么必须由服务端给：追问记录按 (user_id, video_url) 存，**不依赖这个
+ * 用户解析过这个视频**。B 追问 A 解析的视频时他并没有 parse_history 行，
+ * 只读 initialHistory.chat_history 的话，刷新一次就再也看不到自己问过什么。
+ *
+ * 空结果不覆盖本地列表：服务端返回空说明这一轮没能落库（写失败或被拒），
+ * 拿空列表盖掉用户刚看到的回答，比不同步更糟。
+ */
+async function hydrateChatHistory() {
+  if (!props.user || !props.videoUrl) return
+  try {
+    const turns = await fetchChatSession(props.videoUrl)
+    if (turns.length) chatHistoryList.value = turns
+  } catch { /* 读不到就保持现状，不影响主流程 */ }
 }
 
 function stopSummarize() {
@@ -516,7 +537,7 @@ async function handleChat() {
   const question = chatQuestion.value.trim()
   let failed = false
   let stopped = false
-  const stream = chatWithVideo(props.videoUrl, question, subtitleData.value?.full_text || '', {
+  const stream = chatWithVideo(props.videoUrl, question, {
     onAnswer: (token) => {
       chatAnswer.value += token
     },
@@ -536,13 +557,12 @@ async function handleChat() {
         refreshQuota()
         return
       }
-      // 记录问答历史（组件内即时展示 + 后端持久化）
-      const entry = { question, answer: chatAnswer.value }
-      chatHistoryList.value.push(entry)
+      // 组件内即时展示。持久化由服务端在答案产出时自己落（工单 #8）：
+      // 前端不再回调保存接口——记录存不存在不该取决于浏览器有没有多发一个请求。
+      chatHistoryList.value.push({ question, answer: chatAnswer.value })
       showChatHistory.value = false
-      if (props.user && props.videoUrl) {
-        saveChatToHistory(props.videoUrl, question, chatAnswer.value)
-      }
+      // 以服务端为准再拉一次：刷新后回来读的就是它，不依赖这次 push。
+      hydrateChatHistory()
     },
   })
   chatStream = stream
