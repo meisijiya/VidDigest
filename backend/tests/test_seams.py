@@ -533,7 +533,7 @@ class TestHttpSeamResolvesAuth:
         with make_client(app) as c:
             r = c.get("/api/quota", headers=auth_headers(token))
         assert r.json()["logged_in"] is True
-        assert r.json()["remaining"] == database.FREE_DAILY_SUMMARY_LIMIT
+        assert r.json()["parse"]["remaining"] == database.DAILY_PARSE_LIMIT
 
     def test_optional_auth_route_binds_to_the_right_user(self, client_app):
         """可选鉴权必须解析成 token 里那个用户，不只是「某个已登录用户」。
@@ -545,7 +545,7 @@ class TestHttpSeamResolvesAuth:
         first = make_user("first@example.com")
         second = make_user("second@example.com")
         # 只有 second 用掉额度：若鉴权错绑到 first，first 的额度会变
-        database.consume_summary_quota(second)
+        database.consume_quota(second, "parse")
 
         token = auth.create_token(first, "first@example.com")
         with make_client(app) as c:
@@ -555,10 +555,10 @@ class TestHttpSeamResolvesAuth:
             headers=auth_headers(auth.create_token(second, "second@example.com")),
             ).json()
 
-        assert first_view["remaining"] == database.FREE_DAILY_SUMMARY_LIMIT, (
+        assert first_view["parse"]["remaining"] == database.DAILY_PARSE_LIMIT, (
         "first 没用过额度，不该被扣"
         )
-        assert second_view["remaining"] == database.FREE_DAILY_SUMMARY_LIMIT - 1, (
+        assert second_view["parse"]["remaining"] == database.DAILY_PARSE_LIMIT - 1, (
         "second 用掉过一次，读到的却是别人的额度"
         )
 

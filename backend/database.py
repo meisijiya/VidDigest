@@ -46,6 +46,30 @@ def get_connection_generation() -> int:
 FREE_DAILY_SUMMARY_LIMIT = 3
 MAX_PARSE_HISTORY_PER_USER = 30
 
+# 两个额度上限都从环境变量读取，改配置不必发版。
+# 各自独立取值：解析产出内容、追问消耗对话，用量节奏本就不同。
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        # 配错时退回默认值，而不是让整个应用起不来——
+        # 一个环境变量写错不该让整个站点不可用。
+        return default
+
+
+DAILY_PARSE_LIMIT = _env_int("VIDDIGEST_DAILY_PARSE_LIMIT", 3)
+DAILY_CHAT_LIMIT = _env_int("VIDDIGEST_DAILY_CHAT_LIMIT", 10)
+
+#: 额度种类 → (计数字段, 日期字段, 上限常量名)
+#: 两个计数器在同一张 users 表上，但各占自己的列与日期字段。
+_QUOTA_KINDS = {
+    "parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT"),
+    "chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT"),
+}
+
 
 def get_db_path():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -183,6 +207,10 @@ def init_db():
                 vip_expire_at TEXT,
                 daily_summary_count INTEGER DEFAULT 0,
                 last_summary_date TEXT,
+                daily_parse_count INTEGER DEFAULT 0,
+                last_parse_date TEXT,
+                daily_chat_count INTEGER DEFAULT 0,
+                last_chat_date TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
@@ -224,6 +252,28 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_history_user ON parse_history(user_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_history_user_url ON parse_history(user_id, video_url);
         """)
+
+        _migrate_quota_columns(conn)
+
+
+def _migrate_quota_columns(conn) -> None:
+    """给已存在的 users 表补上额度拆分需要的新列（expand 阶段）。
+
+    为什么必须单独一步：`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作，
+    老库里不会有新列，代码一读就报 no such column。
+
+    逐列判断再 ALTER：SQLite 没有 `ADD COLUMN IF NOT EXISTS`，
+    重复执行会抛 duplicate column name，所以先查列是否存在。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    for column, ddl in (
+        ("daily_parse_count", "ALTER TABLE users ADD COLUMN daily_parse_count INTEGER DEFAULT 0"),
+        ("daily_chat_count", "ALTER TABLE users ADD COLUMN daily_chat_count INTEGER DEFAULT 0"),
+        ("last_parse_date", "ALTER TABLE users ADD COLUMN last_parse_date TEXT"),
+        ("last_chat_date", "ALTER TABLE users ADD COLUMN last_chat_date TEXT"),
+    ):
+        if column not in existing:
+            conn.execute(ddl)
 
 
 # ── 用户操作 ──────────────────────────────────────────────
@@ -317,6 +367,126 @@ def consume_summary_quota(user_id: int) -> int:
             (user_id,),
         )
         return FREE_DAILY_SUMMARY_LIMIT - current - 1
+
+
+# ── 额度拆分：解析额度 / 对话额度（工单 #4）────────────────
+#
+# 旧实现（check_summary_quota / consume_summary_quota）保留不动：
+# 它锁的是「单一额度」语义，现有测试仍依赖它。这里是并行的新实现，
+# 路由层切过去之后再另行清理旧路径（contract 阶段，不在本工单）。
+
+
+def _quota_spec(kind: str) -> tuple[str, str, str]:
+    """取出某类额度对应的 (计数字段, 日期字段, 上限常量名)。
+
+    拼错的 kind 立刻抛错：静默 fallback 会让「扣了对话额度却记到解析头上」
+    这类错误一路走到用户面前才发现。
+    """
+    spec = _QUOTA_KINDS.get(kind)
+    if spec is None:
+        raise ValueError(
+            f"未知的额度类型 {kind!r}；可用：{sorted(_QUOTA_KINDS)}"
+        )
+    return spec
+
+
+def _quota_limit(kind: str) -> int:
+    """按模块当前值取上限——而不是导入时冻结的常量。
+
+    刻意不写成 `from DAILY_PARSE_LIMIT`：测试会 monkeypatch 模块属性，
+    导入时冻结会让「改配置后行为随之改变」这条 AC 无法验证。
+    """
+    return globals()[_quota_spec(kind)[2]]
+
+
+def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
+    """判定单类额度。只读，不写库。返回 (allowed, remaining)，-1 表示无限。"""
+    count_col, date_col, _ = _quota_spec(kind)
+    limit = _quota_limit(kind)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            return False, 0
+        if is_vip_active(user):
+            return True, -1
+        # 日期不是今天，说明今天还没用过，额度是满的
+        if user[date_col] != today:
+            return True, limit
+
+        current = user[count_col] or 0
+        if current >= limit:
+            return False, 0
+        return True, limit - current
+
+
+def check_quota(user_id: int) -> dict:
+    """一次判定全部额度。键固定为 parse / chat。"""
+    return {kind: check_quota_kind(user_id, kind) for kind in _QUOTA_KINDS}
+
+
+def consume_quota(user_id: int, kind: str) -> int:
+    """扣减一次额度，返回扣减后的 remaining。调用前须已通过 check_quota_kind。"""
+    count_col, date_col, _ = _quota_spec(kind)
+    limit = _quota_limit(kind)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            return 0
+        if is_vip_active(user):
+            return -1
+
+        if user[date_col] != today:
+            conn.execute(
+                f"UPDATE users SET {count_col} = 1, {date_col} = ? WHERE id = ?",
+                (today, user_id),
+            )
+            return limit - 1
+
+        current = user[count_col] or 0
+        conn.execute(
+            f"UPDATE users SET {count_col} = {count_col} + 1 WHERE id = ?",
+            (user_id,),
+        )
+        return limit - current - 1
+
+
+def refund_quota(user_id: int, kind: str) -> int:
+    """把一次扣减还回去，返回回滚后的 remaining。
+
+    用途：模型调用抛异常时不让用户白扣。扣减与调用之间没有事务，
+    所以回滚本身是幂等且原子的（单条 UPDATE，不做读-改-写）：
+    绝不会把计数压到负数，也不会跨天给今天白送额度，
+    更不会把并发的另一次扣减覆盖掉。
+    """
+    count_col, date_col, _ = _quota_spec(kind)
+    limit = _quota_limit(kind)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            return 0
+        if is_vip_active(user):
+            return -1
+        # 跨天了：扣的是昨天的，回滚会让今天的额度凭空多出来，不做。
+        if user[date_col] != today:
+            return limit
+
+        # 单条 UPDATE 里完成减一。读-改-写两步会和并发的 consume_quota
+        # 交叉：中间那次扣减会被本处的绝对值覆盖掉，等于白送额度。
+        conn.execute(
+            f"UPDATE users SET {count_col} = MAX(COALESCE({count_col}, 0) - 1, 0) "
+            f"WHERE id = ?",
+            (user_id,),
+        )
+        row = conn.execute(
+            f"SELECT {count_col} FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        return limit - (row[count_col] or 0)
 
 
 # ── 订单操作 ──────────────────────────────────────────────

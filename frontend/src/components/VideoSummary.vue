@@ -21,7 +21,7 @@
 
     <!-- 额度显式 + 停止入口：常驻可见，停止按钮在整个流式期间都可用 -->
     <div v-if="videoUrl" class="flex items-center justify-between gap-3 px-5 py-2 border-b border-line bg-panel-2/30">
-      <span class="text-xs text-gray-500">每日免费 AI 额度</span>
+      <span class="text-xs text-gray-500">每日免费额度</span>
       <div class="flex items-center gap-2">
         <span class="text-xs font-medium px-2 py-0.5 rounded-full" :class="quotaBadgeClass">{{ quotaLabel }}</span>
         <button v-if="loading || chatLoading" @click="loading ? stopSummarize() : stopChat()"
@@ -239,6 +239,7 @@ import { Transformer } from 'markmap-lib'
 import { Markmap } from 'markmap-view'
 import { summarizeVideo, chatWithVideo, fetchQuota } from '../api/summarize.js'
 import { saveHistory, saveChatToHistory } from '../api/history.js'
+import { describeQuota, quotaBadgeClass as quotaBadgeClassOf } from '../lib/quota.js'
 
 // 单换行也渲染为换行，避免 LLM 输出被合并成一段
 marked.setOptions({ gfm: true, breaks: true })
@@ -277,23 +278,10 @@ const renderedChatAnswer = computed(() => chatAnswer.value ? marked(chatAnswer.v
 const chatHistoryList = ref([])
 const showChatHistory = ref(false)
 
-// 额度显式：只读展示，不消耗
+// 额度显式：只读展示，不消耗。解析与追问是两个独立计数器，各显示各的。
 const quotaInfo = ref(null)
-const quotaLabel = computed(() => {
-  const q = quotaInfo.value
-  if (!q) return '—'
-  if (!q.logged_in) return '登录后可用'
-  if (q.unlimited) return '无限次'
-  if (q.remaining <= 0) return `今日已用完（0 / ${q.limit}）`
-  return `今日剩余 ${q.remaining} / ${q.limit} 次`
-})
-const quotaBadgeClass = computed(() => {
-  const q = quotaInfo.value
-  if (!q || !q.logged_in) return 'bg-ink/60 text-gray-500'
-  if (q.unlimited) return 'bg-amber-100 text-amber-700'
-  if (q.remaining <= 0) return 'bg-red-50 text-red-600'
-  return 'bg-blue-50 text-blue-600'
-})
+const quotaLabel = computed(() => describeQuota(quotaInfo.value))
+const quotaBadgeClass = computed(() => quotaBadgeClassOf(quotaInfo.value))
 
 async function refreshQuota() {
   try {
@@ -304,11 +292,15 @@ async function refreshQuota() {
 }
 
 function applyQuotaEvent(d) {
+  // SSE 的 quota 事件带完整的两个额度，整体替换而不是只取顶层字段——
+  // 只留 remaining/limit 会把 parse/chat 丢掉，界面退回单数字。
   quotaInfo.value = {
     logged_in: true,
     unlimited: !!d.unlimited,
     remaining: d.remaining,
     limit: d.limit,
+    parse: d.parse ?? null,
+    chat: d.chat ?? null,
   }
 }
 
