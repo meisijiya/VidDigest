@@ -284,6 +284,8 @@ def init_db():
         """)
 
         _migrate_quota_columns(conn)
+        _migrate_video_card_columns(conn)
+        _create_video_search_index(conn)
 
 
 def _migrate_quota_columns(conn) -> None:
@@ -304,6 +306,332 @@ def _migrate_quota_columns(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+# ── 社区浏览与搜索（工单 #7）─────────────────────────────────
+#
+# 可见性是这个工单的全部难点：社区列表对**任何人**开放，而字幕、总结、
+# 思维导图只对已登录的人开放。两条规则一旦写反就是真实的隐私事故，
+# 所以下面的实现有一条硬约定——对外响应**按字段白名单投影**，不靠逐个剔除。
+
+
+def _migrate_video_card_columns(conn) -> None:
+    """给 videos 补上社区卡片要用的两列（expand 阶段，与额度列同一套路）。
+
+    为什么必须单独一步：`CREATE TABLE IF NOT EXISTS videos` 对已存在的表
+    是空操作，#6 建的老库里不会凭空多出列，而列表要显示的标题与封面恰恰
+    是 #6 建表时没有的。不补列，代码一 SELECT 就报 no such column。
+
+    只**新增**两列可空带默认值的列。videos 已有的每一列、唯一索引、
+    pending/ready 状态机都不动：那是 #6 定下的承诺，不该被后一张工单
+    顺带改掉——两张表职责分离的边界仍然是 #6 划的那条。
+
+    标题与封面由谁写入：解析时服务端拿不到它们（字幕流里没有平台标题，
+    也没有缩略图地址），因此由前端解析成功后回填，见 publish_video_card。
+    在此之前这两列为空串——社区列表会显示占位文本，但**不会**显示错误的值。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
+    for column, ddl in (
+        ("video_title", "ALTER TABLE videos ADD COLUMN video_title TEXT DEFAULT ''"),
+        ("cover_url", "ALTER TABLE videos ADD COLUMN cover_url TEXT DEFAULT ''"),
+    ):
+        if column not in existing:
+            conn.execute(ddl)
+
+
+#: 全文检索索引表名。
+#:
+#: 它是 videos 的**派生索引**，不是第二份数据：content='videos' 让索引的行
+#: 直接指向内容表的那一行，存两份文本就意味着两份可能不一致的数据——
+#: 那正是工单 #7 要消灭的「同一链接两份总结」的同源问题。
+_VIDEO_SEARCH_INDEX = "videos_fts"
+
+#: FTS5 分词器。
+#:
+#: 中文只能用 trigram：默认的 unicode61 按空白与标点切词，一整句没有空格
+#: 的中文会被当成**一个**词，于是搜「异步」永远匹配不上「深入理解异步编程」
+#: ——实测召回 0。trigram 按 3 字符滑窗切，中文子串因此可召回。
+_VIDEO_SEARCH_TOKENIZER = "trigram"
+
+#: trigram 的最小可匹配长度：不足 3 个字符的词在索引里没有对应 trigram，
+#: 查了必然是空（实测 2 字中文词召回 0，3 字起正常）。
+#: 按标签精确筛选不受此限——它走 json_each，不经 FTS。
+MIN_FTS_TERM_CHARS = 3
+
+_VIDEO_SEARCH_TRIGGER_SETUP = f"""
+    CREATE TRIGGER IF NOT EXISTS videos_fts_ai AFTER INSERT ON videos BEGIN
+        INSERT INTO {_VIDEO_SEARCH_INDEX}(rowid, video_title, tags, video_url)
+        VALUES (new.id, new.video_title, new.tags, new.video_url);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS videos_fts_ad AFTER DELETE ON videos BEGIN
+        INSERT INTO {_VIDEO_SEARCH_INDEX}({_VIDEO_SEARCH_INDEX}, rowid,
+            video_title, tags, video_url)
+        VALUES ('delete', old.id, old.video_title, old.tags, old.video_url);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS videos_fts_au AFTER UPDATE ON videos BEGIN
+        INSERT INTO {_VIDEO_SEARCH_INDEX}({_VIDEO_SEARCH_INDEX}, rowid,
+            video_title, tags, video_url)
+        VALUES ('delete', old.id, old.video_title, old.tags, old.video_url);
+        INSERT INTO {_VIDEO_SEARCH_INDEX}(rowid, video_title, tags, video_url)
+        VALUES (new.id, new.video_title, new.tags, new.video_url);
+    END;
+"""
+
+
+def _create_video_search_index(conn) -> None:
+    """建（或补齐）社区全文检索索引：外部内容 FTS5 表 + 三个同步触发器。
+
+    触发器是这张表与 videos 之间唯一的同步机制，写在库里而不是应用代码里：
+    任何一条 UPDATE videos 的路径——包括 complete_video——都会自动重建该行的
+    索引，不必记得回头调一次「重新索引」。漏掉一次就是一条静默搜不到的视频。
+
+    'rebuild' 幂等：老库里在触发器建立之前就有的行会被全量灌进索引，
+    重复执行只是重建，不会重复插入。
+    """
+    conn.executescript(f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS {_VIDEO_SEARCH_INDEX} USING fts5(
+            video_title, tags, video_url,
+            content='videos', content_rowid='id',
+            tokenize='{_VIDEO_SEARCH_TOKENIZER}'
+        );
+    """)
+    conn.executescript(_VIDEO_SEARCH_TRIGGER_SETUP)
+    conn.execute(
+        f"INSERT INTO {_VIDEO_SEARCH_INDEX}({_VIDEO_SEARCH_INDEX}) VALUES ('rebuild')"
+    )
+
+
+# ── 可见性：对外投影的字段白名单 ────────────────────────────
+#
+# 白名单，不是黑名单。差别在于**新增列会不会自动泄漏**：
+# 逐个剔除的写法里，往 videos 加一列的人不必改任何东西，那一列就已经
+# 出现在未登录访客的响应里了；白名单下它根本不会被构造出来。
+#
+# 键集合由测试逐个断言（set(...) == {...}），不是「断言某个键不在」。
+
+#: 未登录访客在社区**列表**里能看到的全部键。id / video_url 是标识而非内容：
+#: 卡片要能被点开、详情要能被寻址，没有它们列表页无法导航；
+#: 它们不承载任何字幕 / 总结 / 思维导图文本。
+COMMUNITY_CARD_FIELDS = ("id", "video_url", "cover_url", "video_title", "tags")
+
+#: 已登录用户看**详情**时能拿到的键。列表无论登录与否都只用上面的白名单——
+#: 列表是公开入口，把内容塞进去等于让未登录访客多拿一份。
+COMMUNITY_DETAIL_FIELDS = COMMUNITY_CARD_FIELDS + (
+    "summary_md", "mindmap_md", "subtitle_text", "created_at", "updated_at",
+)
+
+COMMUNITY_PAGE_SIZE_DEFAULT = 20
+COMMUNITY_PAGE_SIZE_MAX = 100
+
+
+def _project_video(row, fields: tuple) -> dict:
+    """按字段白名单投影一行，tags 由 JSON 文本还原成数组。
+
+    tags 的清洗与 get_video_by_url 同一套：类型不对就当没有，
+    不让脏数据变成下游的 TypeError。
+    """
+    item = {name: row[name] for name in fields}
+    try:
+        parsed = json.loads(item.get("tags") or "[]")
+    except (ValueError, TypeError):
+        parsed = []
+    item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
+    return item
+
+
+def _clamp_page(page: int, page_size: int) -> tuple[int, int]:
+    """页码与页长收敛到安全范围。
+
+    page_size 必须收敛：它直接进 LIMIT，而一个巨大的 OFFSET 会让数据库
+    先扫过整张表再丢掉。页码 < 1 归一到 1，页长封顶在最大值。
+    """
+    try:
+        page = int(page)
+        page_size = int(page_size)
+    except (TypeError, ValueError):
+        page, page_size = 1, COMMUNITY_PAGE_SIZE_DEFAULT
+    return max(1, page), max(1, min(page_size, COMMUNITY_PAGE_SIZE_MAX))
+
+
+def _paginate(from_clause: str, where: str, params: tuple, page: int,
+              page_size: int, order_by: str) -> dict:
+    """跑一次 count 与一次取页，返回统一的分页信封。
+
+    from / where / order 都由调用方给全，**不套子查询**：FTS5 的 bm25() 是
+    辅助函数，必须与 FTS 表在**同一条 SELECT** 里可见，一旦裹进
+    `SELECT * FROM ( ... JOIN videos_fts f ... )` 就会报
+    no such column: bm25 —— 索引还在，只是排不了序。
+    """
+    page, page_size = _clamp_page(page, page_size)
+    with get_db() as conn:
+        total = conn.execute(
+            f"SELECT count(*) FROM {from_clause} WHERE {where}", params
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT v.* FROM {from_clause} WHERE {where} ORDER BY {order_by}"
+            " LIMIT ? OFFSET ?",
+            (*params, page_size, (page - 1) * page_size),
+        ).fetchall()
+    return {
+        "items": rows,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) // page_size,
+    }
+
+
+#: 社区内容的可见条件。status='ready' 是硬条件：pending 行是**占位**，
+#: 里面没有总结也没有字幕，把它当内容展示就是给用户看一个空壳。
+#: （brief 与票面都点名过这条。）
+_COMMUNITY_VISIBLE = "v.status = 'ready'"
+
+
+def _tag_clause(tag: str, alias: str = "v") -> tuple[str, tuple]:
+    """按标签精确筛选。
+
+    刻意走 json_each 而不是 FTS：trigram 匹配不到 2 个字符的词
+    （实测「编程」召回 0），而标签里大量是 2 字词。标签是**枚举值**，
+    精确匹配既更快也更准。
+    """
+    if not tag:
+        return "", ()
+    return (
+        f" AND EXISTS (SELECT 1 FROM json_each({alias}.tags) WHERE value = ?)",
+        (tag,),
+    )
+
+
+def list_community_videos(page: int = 1, page_size: int = COMMUNITY_PAGE_SIZE_DEFAULT,
+                         tag: str = "") -> dict:
+    """社区列表（对未登录访客公开）。返回白名单投影后的行。
+
+    翻页与按标签筛选都在这里，且**不要求登录**——它们是列表本身的用法，
+    不是特权。
+    """
+    clause, params = _tag_clause(tag)
+    where = f"{_COMMUNITY_VISIBLE}{clause}"
+    order = "v.created_at DESC, v.id DESC"
+    result = _paginate("videos v", where, params, page, page_size, order)
+    result["items"] = [_project_video(r, COMMUNITY_CARD_FIELDS) for r in result["items"]]
+    return result
+
+
+def get_community_video(video_id: int) -> dict | None:
+    """社区视频详情（调用方必须已鉴权）。仅 ready 行。"""
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT v.* FROM videos v WHERE v.id = ? AND {_COMMUNITY_VISIBLE}",
+            (video_id,),
+        ).fetchone()
+    return _project_video(row, COMMUNITY_DETAIL_FIELDS) if row else None
+
+
+def get_community_video_by_url(video_url: str) -> dict | None:
+    """按 URL 取社区**卡片**（列表级白名单投影）。没有或尚未 ready 则 None。
+
+    刻意只给卡片、不给详情：这条查询的前端用途是「社区里有没有这一份」
+    （要不要重新解析），不是「把内容取回来渲染」。要内容只有详情与
+    /api/summarize 两条路，都要求登录。
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT v.* FROM videos v WHERE v.video_url = ? AND {_COMMUNITY_VISIBLE}",
+            (video_url,),
+        ).fetchone()
+    return _project_video(row, COMMUNITY_CARD_FIELDS) if row else None
+
+
+def publish_video_card(video_url: str, video_title: str = "", cover_url: str = "") -> int:
+    """回填社区卡片的标题与封面，返回更新的行数。
+
+    三条约束，各有代价，都不是随手加的：
+
+    1. 必须是 ready。占位（pending）行还没有社区内容，此刻写标题等于
+       给一个迟早可能被 release_video 删掉的行做卡片，列表会闪出一条
+       点进去什么都没有的记录。
+    2. 只写这两列。标题封面是**平台元数据**，与谁解析、何时解析无关；
+       顺带把 tags 或 summary 一起改掉就是绕过 #6「ready 行谁都不能改写」
+       的承诺，从后门开了一条写路径。
+    3. **只填空，不覆盖**。标题与封面是用户判断内容和搜索的入口：任何登录
+       用户都能改写它，就等于给了一条「把别人的视频改成别的样子」的路子，
+       还会静默改动 FTS 索引——与「社区内容不会被别人改写」直接冲突。
+       所以已填的字段谁都动不了，先到先得。
+       代价：第一个填的人如果填错了，这个字段就错下去了；修它需要人工改库。
+    """
+    if not video_title and not cover_url:
+        return 0
+    with get_db() as conn:
+        cursor = conn.execute(
+            """UPDATE videos
+                  SET video_title = CASE WHEN video_title = '' THEN ? ELSE video_title END,
+                      cover_url    = CASE WHEN cover_url    = '' THEN ? ELSE cover_url    END,
+                      updated_at   = ?
+                WHERE video_url = ? AND status = 'ready'
+                  AND (video_title = '' OR cover_url = '')""",
+            (video_title, cover_url,
+             datetime.now(timezone.utc).isoformat(), video_url),
+        )
+        return cursor.rowcount
+
+
+def _fts_phrase(q: str) -> str:
+    """把用户输入包成 FTS5 字符串字面量。
+
+    这一步是**必需**的，不是洁癖：FTS5 查询串有自己的语法，直接把用户输入
+    当查询丢进去会抛 OperationalError——实测 '"unterminated'、'a OR'、
+    "foo'bar" 三种都抛。后果是「搜一下就把搜索接口打成 500」，
+    而且 500 看起来与输入有关，用户只会以为自己输错了。
+    FTS5 字符串字面量的转义是**双写单引号**，不是反斜杠。
+    """
+    return '"' + q.replace('"', '""') + '"'
+
+
+def search_community_videos(q: str = "", page: int = 1,
+                           page_size: int = COMMUNITY_PAGE_SIZE_DEFAULT,
+                           tag: str = "") -> dict:
+    """社区搜索：视频名称关键词 / 视频链接精确定位 / 标签，三种入口。
+
+    - q 以 http(s):// 开头 → 按 video_url **精确**匹配。链接定位要的是「就是
+      这一条」，而 FTS 只能在原文里找子串，搜到的是「包含这段链接的东西」，
+      两者不是一回事。URL 规范化由前端负责（它已有 canonicalUrl）。
+    - 其余 q → FTS5 MATCH，索引覆盖标题、标签、链接三个字段。
+    - tag → json_each 精确筛选，可与 q 取交集。
+
+    调用方**必须已鉴权**：搜索是登录用户的能力，未登录返回 401（路由层
+    的 Depends 负责），这里只管检索。
+    """
+    q = (q or "").strip()
+    tag_clause, tag_params = _tag_clause(tag)
+
+    if q.startswith(("http://", "https://")):
+        where = f"{_COMMUNITY_VISIBLE} AND v.video_url = ?{tag_clause}"
+        order = "v.created_at DESC, v.id DESC"
+        result = _paginate("videos v", where, (q, *tag_params), page, page_size, order)
+    elif q:
+        phrase = _fts_phrase(q)
+        where = f"{_VIDEO_SEARCH_INDEX} MATCH ? AND {_COMMUNITY_VISIBLE}{tag_clause}"
+        # 相关度优先，其次按时间倒序——同分时让新内容在前，顺序稳定可测。
+        #
+        # bm25() 的参数必须写 FTS 表**名**，不能写 FROM 子句里的别名：
+        # 写成 bm25(f) 会报 no such column: f（SQLite 认不出这是个辅助函数，
+        # 就当成列引用去找）。MATCH 左侧同理，所以 FROM 里给了别名 f、
+        # 条件里仍写表名——这个不一致是实测逼出来的，不是笔误。
+        result = _paginate(
+            f"{_VIDEO_SEARCH_INDEX} f JOIN videos v ON v.id = f.rowid",
+            where, (phrase, *tag_params), page, page_size,
+            f"bm25({_VIDEO_SEARCH_INDEX}), v.created_at DESC, v.id DESC",
+        )
+    else:
+        where = f"{_COMMUNITY_VISIBLE}{tag_clause}"
+        result = _paginate("videos v", where, tag_params, page, page_size,
+                           "v.created_at DESC, v.id DESC")
+
+    result["items"] = [_project_video(r, COMMUNITY_CARD_FIELDS) for r in result["items"]]
+    result["mode"] = "url" if q.startswith(("http://", "https://")) else ("text" if q else "browse")
+    return result
 
 
 # ── 用户操作 ──────────────────────────────────────────────

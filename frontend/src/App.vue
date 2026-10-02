@@ -29,7 +29,7 @@
               <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
               </svg>
-              <span>已复用历史解析数据，秒开无需等待；AI 结果同样来自历史记录</span>
+              <span>社区里已有这一份总结，直接复用，不用重复解析也不扣次数</span>
               <button @click="reparse" :disabled="reparseLoading"
                 class="ml-auto px-3 py-1 rounded-lg bg-panel border border-teal-200 text-teal-300 font-medium
                        hover:bg-teal-500 hover:text-ink hover:border-teal-500 disabled:opacity-50
@@ -66,6 +66,10 @@
 
       <!-- 营销区域（仅在无视频数据时展示） -->
       <template v-if="!videoData || demoMode">
+        <button @click="currentPage = 'community'"
+          class="block mx-auto mt-6 px-5 py-2.5 rounded-xl bg-panel border border-line
+                 text-sm text-gray-600 hover:border-blue-200 hover:text-blue-500
+                 transition-colors">浏览社区 →</button>
         <FeatureSection />
         <HowToSection />
         <ComparisonSection />
@@ -77,6 +81,13 @@
         <PlatformSection />
       </template>
       </template>
+
+      <!-- 社区页：列表与标签筛选对访客开放，搜索与详情需登录 -->
+      <CommunityPage v-else-if="currentPage === 'community'"
+        @back="currentPage = 'home'"
+        @need-login="showAuthModal('login')"
+        @open-video="openCommunityVideo"
+      />
 
       <!-- 解析历史页 -->
       <HistoryPage v-else @back="currentPage = 'home'" @open-record="handleOpenRecord" />
@@ -98,6 +109,7 @@ import { parseVideo, downloadViaServer } from './api/video.js'
 import { getSavedUser, fetchMe, logout as logoutApi, isLoggedIn } from './api/auth.js'
 import { createCheckoutSession } from './api/payment.js'
 import { fetchHistoryByUrl, saveHistory } from './api/history.js'
+import { publishCommunityCard } from './api/community.js'
 
 import AppHeader from './components/AppHeader.vue'
 import HeroSection from './components/HeroSection.vue'
@@ -110,6 +122,7 @@ import PricingSection from './components/PricingSection.vue'
 import { MEMBERSHIP_ENABLED as membershipEnabled } from './config/features.js'
 import PlatformSection from './components/PlatformSection.vue'
 import HistoryPage from './components/HistoryPage.vue'
+import CommunityPage from './components/CommunityPage.vue'
 import AuthModal from './components/AuthModal.vue'
 import AppFooter from './components/AppFooter.vue'
 
@@ -176,24 +189,30 @@ async function handleParse(url) {
   const key = canonicalUrl(url)
   currentUrl.value = key
   try {
-    // 登录用户优先复用历史解析数据，同视频不重复解析
+    // 问一句「社区里有没有这一份」，只用于提示，不用于取内容。
+    //
+    // 原来这里是命中就**直接返回**：不解析、不请求 AI，拿个人历史里的
+    // summary_md 渲染。那条路径会永久绕过社区视频表——社区里明明只有
+    // 一份总结，有过个人历史的人看到的却是另一份（工单 #7 顺带修）。
+    // 现在它只决定要不要显示「社区已有」这条提示；内容一律由
+    // VideoSummary 请求 /api/summarize 拿，那条路读的就是社区视频表。
     if (isLoggedIn()) {
-      const cached = await fetchHistoryByUrl(key)
-      if (cached?.video_data?.title) {
-        videoData.value = cached.video_data
-        historyDetail.value = cached
-        fromCache.value = true
-        demoMode.value = false
-        // 触碰 updated_at，使该记录在历史列表中排到最新（合并语义不会改动已有内容）
-        saveHistory({ url: key, video_title: cached.video_title || cached.video_data?.title || '' })
-        return
+      try {
+        fromCache.value = !!(await fetchHistoryByUrl(key))
+      } catch {
+        fromCache.value = false
       }
     }
+    // 视频源信息（标题/封面/时长/格式）仍走 /api/parse：它不消耗额度，
+    // 而且下载与时长这些字段只有解析结果里有，社区卡片不存。
     const res = await parseVideo(url)
     if (res.success) {
       videoData.value = res.data
       demoMode.value = false
       persistParseRecord(key, res.data)
+      // 回填社区卡片的标题与封面：社区列表要显示它们，而服务端解析时
+      // 拿不到（字幕流里没有平台标题与缩略图地址）。失败不影响主流程。
+      publishCard(key, res.data)
     } else {
       alert('解析失败：' + (res.error || '未知错误'))
     }
@@ -205,7 +224,33 @@ async function handleParse(url) {
   }
 }
 
-/** 重新解析：跳过缓存，强制走完整解析流程 */
+/** 回填社区卡片展示信息（静默失败：卡片少个封面不该打断解析流程） */
+function publishCard(url, data) {
+  if (!isLoggedIn()) return
+  publishCommunityCard({
+    url,
+    video_title: data?.title || '',
+    cover_url: data?.thumbnail || '',
+  }).catch(() => {})
+}
+
+/**
+ * 从社区点开一条视频。
+ *
+ * 详情需登录——但**判登录放在这里**，而不是让请求去撞 401：
+ * 详情内容统一由 VideoSummary 请求 /api/summarize 拿（读的是社区视频表），
+ * 未登录时那条请求会返回 SSE 的 need_login 错误事件。这里先拦一道，
+ * 访客点卡片立刻得到登录框，而不是先白跑一次请求再看到报错。
+ */
+function openCommunityVideo(item) {
+  if (!isLoggedIn()) {
+    showAuthModal('login')
+    return
+  }
+  handleParse(item.video_url)
+}
+
+/** 重新解析：强制走完整解析流程（社区那份仍然复用，不重复调模型） */
 async function reparse() {
   if (!currentUrl.value || reparseLoading.value) return
   reparseLoading.value = true
@@ -219,6 +264,7 @@ async function reparse() {
       videoData.value = res.data
       demoMode.value = false
       persistParseRecord(currentUrl.value, res.data)
+      publishCard(currentUrl.value, res.data)
     } else {
       alert('解析失败：' + (res.error || '未知错误'))
     }
@@ -230,11 +276,14 @@ async function reparse() {
   }
 }
 
-/** 从历史页点击记录：跳回主页并回填视频源与 AI 解析结果 */
+/** 从历史页点击记录：回填视频源，并带上个人问答历史 */
 function handleOpenRecord(detail) {
   currentPage.value = 'home'
   currentUrl.value = detail.video_url || ''
   videoData.value = detail.video_data || null
+  // 只为了个人问答历史（VideoSummary 只读 chat_history 一个字段）。
+  // 总结 / 思维导图 / 字幕一律由 /api/summarize 从社区视频表出，
+  // 不再从个人记录回填——那正是让同一链接呈现两份总结的根因。
   historyDetail.value = detail
   summaryKey.value++
   if (!detail.video_data) {

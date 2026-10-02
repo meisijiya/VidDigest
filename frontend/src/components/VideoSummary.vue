@@ -258,6 +258,8 @@ const props = defineProps({
   videoUrl: String,
   videoTitle: String,
   videoData: Object,
+  // 只用于回填**个人问答历史**，不再用于回填总结 / 思维导图 / 字幕。
+  // 原因写在 setup 里那段注释处：那些内容只走 /api/summarize（社区视频表）。
   initialHistory: Object,
   user: Object,
 })
@@ -322,15 +324,22 @@ let chatStream = null
 
 let markmapInstance = null
 
-// 从历史记录回填：直接展示已保存的 AI 结果，不重新请求（不消耗次数）
-if (props.initialHistory?.id) {
-  const h = props.initialHistory
-  started.value = true
-  summaryMd.value = h.summary_md || ''
-  mindmapMd.value = h.mindmap_md || ''
-  subtitleData.value = h.subtitle_data || null
-  chatHistoryList.value = Array.isArray(h.chat_history) ? h.chat_history : []
-  if (!summaryMd.value && !subtitleData.value) started.value = false
+// 刻意**没有**「从个人历史回填 AI 结果」这条捷径（工单 #7 顺带修）。
+//
+// 原来这里是：拿到 initialHistory.id 就直接渲染自己那份 summary_md，
+// 根本不请求 /api/summarize。后果是社区里明明只有一份总结，有过个人
+// 历史的人却永远看不到它——同一链接在两个人屏幕上呈现两份不同内容，
+// 与「无论谁先解析，看到的都是同一份」直接抵触。
+//
+// 现在唯一的详情数据源是 /api/summarize，它读的就是社区视频表：
+// 已有结果原样回放（不调模型、不扣额度），没有才真正解析。
+// 少一条路径，就少一处能让内容来源分叉的地方。
+//
+// 唯一还从个人记录里读的，是**问答历史**：追问本来就是按用户隔离的个人
+// 对话，社区视频表里没有、也不该有它（ADR 0001 的两表分工）。
+// 注意只读 chat_history 一个字段，summary / mindmap / subtitle 一律不碰。
+if (Array.isArray(props.initialHistory?.chat_history)) {
+  chatHistoryList.value = props.initialHistory.chat_history
 }
 
 /**

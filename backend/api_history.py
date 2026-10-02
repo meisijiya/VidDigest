@@ -8,8 +8,8 @@ from database import (
     MAX_PARSE_HISTORY_PER_USER,
     append_chat_history,
     delete_parse_history,
+    get_community_video_by_url,
     get_parse_histories,
-    get_parse_history_by_url,
     get_parse_history_detail,
     upsert_parse_history,
 )
@@ -62,12 +62,25 @@ async def save_chat(req: SaveChatRequest, user: dict = Depends(get_current_user)
 
 @router.get("/by-url")
 async def history_by_url(url: str, user: dict = Depends(get_current_user)):
-    """按视频 URL 查历史记录（用于同视频解析复用，避免重复解析）。
+    """按视频 URL 问「社区里有没有这一份」，返回社区视频表的那一行。
 
     注意：必须注册在 /{history_id} 之前，否则 "by-url" 会被当作 int 路径参数解析失败。
+
+    为什么查 videos 而不是 parse_history（工单 #7 顺带修，原 MEDIUM-2）：
+    这里是前端**决定要不要重新解析**的地方，也是详情展示路径的入口。
+    查个人历史表的话，有过个人记录的用户会在这里命中，然后前端直接渲染
+    自己那份 summary_md——于是同一个链接在社区里明明有唯一一份总结，
+    这个人看到的却是另一份，且此后每次进来都绕过社区数据源。
+    与「无论谁先解析，看到的都是同一份」直接抵触。
+
+    现在它只回答「在不在」，**不返回任何内容**：
+    返回的是 community card 白名单投影，与未登录访客看到的完全同形。
+    总结 / 字幕由 /api/summarize 从社区视频表回放，那是唯一的内容出口。
+
+    parse_history 本身保持原样（ADR 0001）：它仍是「我解析过什么」的
+    个人访问记录，滚动保留 30 条。
     """
-    item = get_parse_history_by_url(user["id"], url)
-    return {"item": item}
+    return {"item": get_community_video_by_url(url)}
 
 
 @router.get("/{history_id}")

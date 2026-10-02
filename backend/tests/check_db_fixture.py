@@ -29,6 +29,10 @@ DB_FUNCS = {
     "quota_limit", "is_vip_active",
     # 社区视频表（工单 #6）：这四个函数会触库，测试直接调它们时必须取 db 夹具
     "reserve_video", "complete_video", "release_video", "get_video_by_url",
+    # 社区浏览与检索（工单 #7）：漏一个就等于这道门禁对那条路径失明
+    "list_community_videos", "get_community_video",
+    "get_community_video_by_url", "publish_video_card",
+    "search_community_videos",
     "append_chat_history",
     "upsert_parse_history", "get_parse_histories", "get_parse_history_detail",
     "get_parse_history_by_url", "delete_parse_history", "get_user_orders",
