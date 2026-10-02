@@ -50,6 +50,14 @@
                  hover:bg-amber-100 transition-colors">去登录</button>
       </div>
 
+      <!-- 短查询必然召回 0（trigram 滑窗至少 3 字符）。
+           把这个边界说出来，否则「搜不到」与「社区里没有」长得一模一样。 -->
+      <div v-if="tooShort" class="mb-4 rounded-xl px-4 py-2.5 bg-amber-50 border
+           border-amber-100 text-xs text-amber-700">
+        关键词「{{ tooShort.q }}」不足 {{ tooShort.min }} 个字符，全文检索
+        至少需要 {{ tooShort.min }} 个——补全一点再搜。
+      </div>
+
       <!-- 标签筛选 -->
       <div v-if="tagOptions.length" class="flex flex-wrap items-center gap-2 mb-5">
         <button @click="selectTag('')"
@@ -71,6 +79,16 @@
       <!-- 加载骨架 -->
       <div v-if="loading" class="space-y-3">
         <div v-for="n in 4" :key="n" class="skeleton h-28 rounded-2xl"></div>
+      </div>
+
+      <!-- 真故障与「没有内容」分开呈现。放在空状态**之前**：
+           否则一次 500 会被渲染成「社区还是空的」，用户会以为该换个
+           关键词再搜，而真正的原因（网络 / 服务端故障）被吞掉了。 -->
+      <div v-else-if="loadError" class="flex flex-col items-center justify-center py-24">
+        <p class="text-sm mb-1 text-red-500">社区列表加载失败</p>
+        <p class="text-xs text-gray-400">{{ loadError }}</p>
+        <button @click="load" class="mt-4 px-3 py-1.5 rounded-lg bg-panel border border-line
+                text-xs text-gray-500 hover:border-gray-300 transition-colors">重试</button>
       </div>
 
       <!-- 空状态 -->
@@ -143,6 +161,20 @@ const loading = ref(true)
 const searching = ref(false)
 const needLogin = ref(false)
 
+/**
+ * 加载失败的原因。与 items 为空**必须**是两回事：
+ * 把 500 渲染成「社区还是空的」，用户会以为社区没内容，
+ * 于是反复换关键词——而真正的原因（网络、500）被吞掉了。
+ */
+const loadError = ref('')
+
+/**
+ * 短查询提示。全文检索用 trigram 滑窗，不足 3 个字符**必然**召回 0，
+ * 所以后端会把这个边界一起返回（q_too_short / min_chars）。
+ * 不说的话，「搜机器」和「社区里没有机器」在界面上完全一样。
+ */
+const tooShort = ref(null)
+
 /** 生效中的检索条件：空串表示未按该维度筛选。 */
 const activeQuery = ref('')
 const activeTag = ref('')
@@ -172,6 +204,8 @@ function proxyThumbnail(url) {
 
 async function load() {
   loading.value = true
+  loadError.value = ''
+  tooShort.value = null
   try {
     const res = await searchCommunity({
       q: activeQuery.value, tag: activeTag.value, page: page.value, pageSize,
@@ -190,7 +224,11 @@ async function load() {
     }
     needLogin.value = false
     applyList(res)
-  } catch {
+    if (res.q_too_short) tooShort.value = { q: activeQuery.value, min: res.min_chars }
+  } catch (e) {
+    // 不再静默变成空列表：故障要说出来，否则用户分不清
+    // 「社区没内容」和「这次请求挂了」。
+    loadError.value = (e && e.message) || '加载失败'
     items.value = []
     total.value = 0
     totalPages.value = 0

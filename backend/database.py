@@ -441,18 +441,34 @@ def _project_video(row, fields: tuple) -> dict:
     return item
 
 
-def _clamp_page(page: int, page_size: int) -> tuple[int, int]:
-    """页码与页长收敛到安全范围。
+#: 页码的绝对上界。
+#:
+#: 它存在的原因不是「怕有人翻太多页」，而是**防整数溢出**：SQLite 的
+#: INTEGER 是 64 位有符号，Python 整数却是任意精度。page 没有上界时
+#: `?page=9223372036854775807` 会让 OFFSET 变成一个绑不进去的整数，
+#: sqlite3 抛 "Python int too large to convert to SQLite INTEGER"，
+#: 路由层没捕获 → 500。而社区列表是**公开入口，不需要登录**。
+#:
+#: 10^9 页 × 每页上限 100 = 10^11，离 2^63 还剩八个数量级的余量，
+#: 真实数据量永远到不了这个页数，所以钳到它只是让「翻过头」表现得
+#: 与「翻过头没东西」一致，而不是打成 500。
+_MAX_SAFE_PAGE = 1_000_000_000
 
-    page_size 必须收敛：它直接进 LIMIT，而一个巨大的 OFFSET 会让数据库
-    先扫过整张表再丢掉。页码 < 1 归一到 1，页长封顶在最大值。
+
+def _clamp_page(page: int, page_size: int) -> tuple[int, int]:
+    """页码与页长收敛到安全范围。**两个方向都要收。**
+
+    - page < 1 归一到 1；page 另有上界 _MAX_SAFE_PAGE（否则 OFFSET 溢出）。
+    - page_size < 1 归一到 1，上限封顶：它直接进 LIMIT，一个巨大的
+      page_size 会让数据库先扫过整张表再丢掉。
     """
     try:
         page = int(page)
         page_size = int(page_size)
     except (TypeError, ValueError):
         page, page_size = 1, COMMUNITY_PAGE_SIZE_DEFAULT
-    return max(1, page), max(1, min(page_size, COMMUNITY_PAGE_SIZE_MAX))
+    return (max(1, min(page, _MAX_SAFE_PAGE)),
+            max(1, min(page_size, COMMUNITY_PAGE_SIZE_MAX)))
 
 
 def _paginate(from_clause: str, where: str, params: tuple, page: int,
@@ -560,33 +576,55 @@ def publish_video_card(video_url: str, video_title: str = "", cover_url: str = "
        还会静默改动 FTS 索引——与「社区内容不会被别人改写」直接冲突。
        所以已填的字段谁都动不了，先到先得。
        代价：第一个填的人如果填错了，这个字段就错下去了；修它需要人工改库。
+
+    返回值是**诚实的**：SQLite 的 changes() 统计的是「被 UPDATE 语句触及的行」，
+    `SET col='same'` 也会算 1。所以 WHERE 里除了「至少一列为空」，还要求
+    「传进来的那个值确实非空」——否则第二个只想补封面的调用者会拿到
+    updated=1，而实际上一个字段都没写进去。
     """
     if not video_title and not cover_url:
         return 0
     with get_db() as conn:
         cursor = conn.execute(
             """UPDATE videos
-                  SET video_title = CASE WHEN video_title = '' THEN ? ELSE video_title END,
-                      cover_url    = CASE WHEN cover_url    = '' THEN ? ELSE cover_url    END,
+                  SET video_title = CASE WHEN COALESCE(video_title, '') = '' THEN ? ELSE video_title END,
+                      cover_url    = CASE WHEN COALESCE(cover_url, '')    = '' THEN ? ELSE cover_url    END,
                       updated_at   = ?
                 WHERE video_url = ? AND status = 'ready'
-                  AND (video_title = '' OR cover_url = '')""",
+                  AND ((COALESCE(video_title, '') = '' AND ? <> '')
+                    OR (COALESCE(cover_url, '') = '' AND ? <> ''))""",
             (video_title, cover_url,
-             datetime.now(timezone.utc).isoformat(), video_url),
+             datetime.now(timezone.utc).isoformat(), video_url,
+             video_title, cover_url),
         )
         return cursor.rowcount
+
+
+#: 搜索词里要剥掉的字符：全部 C0 控制字符（含 NUL）与 DEL。
+#:
+#: NUL 是**实测致命**的：它进 FTS5 字符串字面量会让 trigram 分词器判定
+#: 字符串未闭合，直接抛 `OperationalError: unterminated string` → 500。
+#: 而 `?q=%00` 浏览器与 curl 都发得出去，不是不可达路径。
+#:
+#: 其余 C0 控制字符实测（LF / TAB）返回 200，但 SQLite 各版本对它们的
+#: 处理并无文档化承诺，一并剥掉是防御性做法：搜索词里本来就不该有它们。
+_SEARCH_STRIP_CHARS = {c: None for c in range(0x20)}
 
 
 def _fts_phrase(q: str) -> str:
     """把用户输入包成 FTS5 字符串字面量。
 
-    这一步是**必需**的，不是洁癖：FTS5 查询串有自己的语法，直接把用户输入
-    当查询丢进去会抛 OperationalError——实测 '"unterminated'、'a OR'、
-    "foo'bar" 三种都抛。后果是「搜一下就把搜索接口打成 500」，
-    而且 500 看起来与输入有关，用户只会以为自己输错了。
-    FTS5 字符串字面量的转义是**双写单引号**，不是反斜杠。
+    两件事，缺一不可，顺序也不能换：
+
+    1. **剥控制字符**（NUL 在内）——见 _SEARCH_STRIP_CHARS。少了这步，
+       `?q=%00` 就是一个 500。
+    2. **双写单引号**包成字符串字面量。FTS5 查询串有自己的语法，直接把
+       用户输入当查询丢进去会抛 OperationalError——实测 '"unterminated'、
+       'a OR'、"foo'bar" 三种都抛。后果是「搜一下就把搜索接口打成 500」，
+       而且 500 看起来与输入有关，用户只会以为自己输错了。
+       FTS5 字符串字面量的转义是**双写单引号**，不是反斜杠。
     """
-    return '"' + q.replace('"', '""') + '"'
+    return '"' + q.translate(_SEARCH_STRIP_CHARS).replace('"', '""') + '"'
 
 
 def search_community_videos(q: str = "", page: int = 1,
@@ -631,6 +669,13 @@ def search_community_videos(q: str = "", page: int = 1,
 
     result["items"] = [_project_video(r, COMMUNITY_CARD_FIELDS) for r in result["items"]]
     result["mode"] = "url" if q.startswith(("http://", "https://")) else ("text" if q else "browse")
+    # 短查询的真相说给前端听：text 模式下不足 MIN_FTS_TERM_CHARS 个字符
+    # **必然**召回 0（trigram 不产生这种长度的滑窗），接口照常 200。
+    # 不把这个边界讲出来的话，用户搜「机器」看到的就是「没反应」——
+    # 与「社区里真没有」在界面上完全一样。URL 精确匹配与浏览模式不受
+    # 这个限制（前者走等值、后者不过滤），所以只在 text 模式置位。
+    result["min_chars"] = MIN_FTS_TERM_CHARS
+    result["q_too_short"] = result["mode"] == "text" and len(q) < MIN_FTS_TERM_CHARS
     return result
 
 
@@ -1029,18 +1074,6 @@ def get_parse_history_detail(user_id: int, history_id: int) -> dict | None:
         except (ValueError, TypeError):
             item["chat_history"] = []
         return item
-
-
-def get_parse_history_by_url(user_id: int, video_url: str) -> dict | None:
-    """按视频 URL 查历史记录（解析复用缓存的热点路径，走 idx_history_user_url 索引）"""
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT id FROM parse_history WHERE user_id = ? AND video_url = ?",
-            (user_id, video_url),
-        ).fetchone()
-        if not row:
-            return None
-    return get_parse_history_detail(user_id, row["id"])
 
 
 def delete_parse_history(user_id: int, history_id: int) -> bool:

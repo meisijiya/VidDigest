@@ -35,7 +35,7 @@ DB_FUNCS = {
     "search_community_videos",
     "append_chat_history",
     "upsert_parse_history", "get_parse_histories", "get_parse_history_detail",
-    "get_parse_history_by_url", "delete_parse_history", "get_user_orders",
+    "delete_parse_history", "get_user_orders",
     "update_order_stripe_session", "complete_order",
 }
 

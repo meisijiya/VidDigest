@@ -195,6 +195,81 @@ describe('CommunityPage 列表只渲染卡片字段', () => {
 
 
 /**
+ * 两条「别让用户看到假象」的行为。
+ *
+ * 上一组盯的是「不该显示什么」（列表不许出现内容字段）。这一组盯的是
+ * 「故障和空结果不许长得一样」：一次 500 被渲染成「社区还是空的」，
+ * 用户会以为社区没东西，于是反复换关键词——而真正的原因被吞掉了。
+ */
+describe('CommunityPage 把故障与空结果分开', () => {
+  const pageCode = stripComments(pageVue)
+
+  test('catch 记录故障原因，而不是把列表清空就完事', () => {
+    const catchBlock = pageCode.slice(
+      pageCode.indexOf('} catch'),
+      pageCode.indexOf('} finally'),
+    )
+    assert.notEqual(catchBlock.length, 0, '没找到 load 的 catch 分支')
+    assert.match(
+      catchBlock, /loadError/,
+      'catch 分支没有记录 loadError：一次 500 会被渲染成「社区还是空的」',
+    )
+  })
+
+  test('故障态排在空状态之前', () => {
+    const failIdx = pageCode.indexOf('v-else-if="loadError"')
+    const emptyIdx = pageCode.indexOf('v-else-if="!items.length"')
+    assert.notEqual(failIdx, -1, '模板里没有故障态分支')
+    assert.ok(
+      failIdx < emptyIdx,
+      '故障态必须排在空状态之前，否则 loadError 时 items 为空，'
+      + 'v-else-if 会先命中「社区还是空的」那一支',
+    )
+  })
+
+  test('空状态的文案没有被故障分支借用', () => {
+    const catchBlock = pageCode.slice(
+      pageCode.indexOf('} catch'),
+      pageCode.indexOf('} finally'),
+    )
+    assert.doesNotMatch(
+      catchBlock, /emptyText|emptyHint/,
+      'catch 里动了空状态文案：故障与「真的没有」会显示同一句话',
+    )
+  })
+})
+
+
+/**
+ * 短查询的真相由后端说。
+ *
+ * trigram 滑窗至少 3 字符，2 字查询**必然**召回 0。后端把这条边界
+ * 一起返回（q_too_short / min_chars）；前端照着显示即可。
+ *
+ * 前端自己判断长度是不允许的：那等于把分词器的实现细节复制一份到
+ * 客户端，后端哪天换分词器，两边就各说各话了。
+ */
+describe('短查询提示由后端说了算', () => {
+  const pageCode = stripComments(pageVue)
+
+  test('读的是后端返回的 q_too_short / min_chars', () => {
+    assert.match(pageCode, /res\.q_too_short/, '没有读后端返回的 q_too_short')
+    assert.match(pageCode, /res\.min_chars/, '没有读后端返回的 min_chars')
+    assert.match(pageVue, /v-if="tooShort"/, '模板里没有 tooShort 提示分支')
+  })
+
+  test('前端没有把 trigram 的下限写死', () => {
+    const hardcoded = pageCode.match(/length\s*<\s*3|min_chars\s*[:=]\s*3/g) || []
+    assert.deepEqual(
+      hardcoded, [],
+      `前端把分词器下限写死成了 3：${JSON.stringify(hardcoded)}。`
+      + '换分词器时前后端会各说各话',
+    )
+  })
+})
+
+
+/**
  * 最关键的一条：详情内容不得再从个人历史回填。
  *
  * 组件里仍然有 initialHistory 这个 prop，但它**只**能读 chat_history。

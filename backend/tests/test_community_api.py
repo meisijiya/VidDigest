@@ -303,6 +303,39 @@ class TestAnonymousPaginationAndTagFilter:
         assert r.status_code == 200
         assert r.json()["items"] == []
 
+    def test_page_beyond_int64_is_empty_not_500(self, client_app, seeded):
+        """页码溢出到 SQLite int64 之外必须是 200 + 空，不是 500。
+
+        `?page=9223372036854775807` 曾经是一个**匿名可触发**的 500：
+        Python 整数任意精度，页码没有上界时 (page-1)*page_size 绑不进
+        SQLite 的 64 位 INTEGER，sqlite3 抛 OverflowError，路由层没捕获。
+        社区列表是公开入口，所以打它不需要登录。
+
+        刻意与上面那条 page=9999 分开写：9999 落在正常 int 范围内，
+        压根走不到绑定失败那一步——把两者并进一条，改回「无上界」实现时
+        这条仍然是绿的，看起来像已经覆盖了。
+        """
+        app, _mk = client_app
+        with anon(app) as c:
+            r = c.get("/api/community/videos",
+                      params={"page": 2 ** 63 - 1, "page_size": 10})
+        assert r.status_code == 200, f"页码溢出被打成了 {r.status_code}"
+        assert r.json()["items"] == []
+
+    def test_search_page_beyond_int64_is_not_500(self, client_app, seeded, make_user):
+        """搜索端点的分页参数走同一条 _paginate，同样不能溢出。
+
+        列表那条绿了不代表搜索也绿：两个路由各自把 page 传进 _paginate，
+        少一个上界就只漏一个端点。
+        """
+        app, mk = client_app
+        client, headers = as_user(app, mk())
+        with client:
+            r = client.get("/api/community/search",
+                           params={"q": "Python", "page": 10 ** 20}, headers=headers)
+        assert r.status_code == 200, f"搜索的页码溢出被打成了 {r.status_code}"
+        assert r.json()["items"] == []
+
 
 # ── AC 4：已登录访问详情返回完整内容 ──────────────────────────
 
@@ -540,21 +573,74 @@ class TestSearchIsFullTextNotLike:
             "2 字中文命中了：全文检索被换成了 LIKE 之类的朴素匹配"
         )
 
+    def test_short_query_says_why_it_found_nothing(
+        self, client_app, seeded, make_user
+    ):
+        """短查询查不到是 trigram 的地板，但界面必须把这件事说出来。
+
+        上一条钉住的是「不该发生什么」（不会静默退化成 LIKE 匹配）。
+        这条钉住该发生什么：接口照常 200 + 0 命中，同时把边界一起返回
+        （q_too_short / min_chars）。不说的话，用户看到的就是「搜了没反应」，
+        与「社区里真没有」在界面上完全一样。
+
+        三个模式分开验：URL 精确定位走等值、浏览模式不过滤，
+        长度都不构成限制，只有走 FTS 的关键词模式受这个地板约束。
+        """
+        app, mk = client_app
+        client, headers = as_user(app, mk())
+        with client:
+            short = client.get("/api/community/search",
+                               params={"q": "编程"}, headers=headers).json()
+            long_enough = client.get("/api/community/search",
+                                     params={"q": "机器学习"}, headers=headers).json()
+            by_url = client.get("/api/community/search",
+                                params={"q": "https://youtu.be/dQw4w9WgXcQ"},
+                                headers=headers).json()
+        assert short["q_too_short"] is True, "2 字查询没有告诉前端它必然召不回"
+        assert short["min_chars"] == database.MIN_FTS_TERM_CHARS
+        assert long_enough["q_too_short"] is False
+        assert by_url["q_too_short"] is False, "URL 精确定位走等值匹配，不该被判成短查询"
+
     def test_fts_syntax_in_user_input_does_not_break_search(self, client_app, seeded, make_user):
-        """用户输入里的 FTS 语法符不能把搜索打成 500。
+        """用户输入里的 FTS 语法符与控制字符不能把搜索打成 500。
 
         实测裸传这些串会让 FTS5 抛 OperationalError（unterminated string /
         syntax error）。端点必须是 200 + 0 命中，而不是 500。
+
+        NUL 单列一组：它不是「语法错」而是「字符串未闭合」，机制与引号、
+        运算符都不同，混在一张列表里日后很容易被当成同一种东西删掉。
         """
         app, mk = client_app
         client, headers = as_user(app, mk())
         hostile = ['"unterminated', 'a OR', "foo'bar", 'x AND y', 'NEAR(a b)',
-                   'a*b', '*', '^', '{', '编程 OR', 'NOT x', '\\']
+                   'a*b', '*', '^', '{', '编程 OR', 'NOT x', '\\',
+                   '\x00', 'ab\x00cd', '\x00abc']
         with client:
             for q in hostile:
                 r = client.get("/api/community/search", params={"q": q}, headers=headers)
                 assert r.status_code == 200, f"q={q!r} 把搜索打成了 {r.status_code}"
                 assert r.json()["total"] == 0, f"q={q!r} 不该有任何命中"
+
+    def test_blank_query_degrades_to_browse_not_an_error(self, client_app, seeded, make_user):
+        """纯空白查询退化成浏览——这是对的，但它与 NUL 不是一回事。
+
+        `\\n` / `\\t` / `\\x1f` 在 Python 的 str.strip() 里都算空白，
+        查询词归一后为空，于是走浏览分支返回全部。它们不需要 _fts_phrase
+        剥（根本没进 FTS），NUL 则不是空白，必须剥掉否则 500。
+
+        刻意不把空白类塞进上面那张敌意表：那张表断言 total == 0，
+        套到空白上就等于要求「搜了个空的」返回空列表——那比返回全部更糟，
+        用户会以为整个社区空了。
+        """
+        app, mk = client_app
+        client, headers = as_user(app, mk())
+        with client:
+            for q in ("\n", "\t", "\x1f", "   "):
+                r = client.get("/api/community/search", params={"q": q}, headers=headers)
+                assert r.status_code == 200, f"q={q!r} 把搜索打成了 {r.status_code}"
+                assert r.json()["mode"] == "browse", (
+                    f"q={q!r} 归一后为空，应当退化成浏览而不是当成关键词"
+                )
 
     def test_index_is_fts5_with_trigram_tokenizer(self, client_app, seeded):
         """AC 原文点名了机制，这里就查机制本身。
@@ -573,6 +659,31 @@ class TestSearchIsFullTextNotLike:
         assert "using fts5" in lowered, f"搜索索引不是 FTS5 表：{sql}"
         assert "trigram" in lowered, f"搜索索引没用 trigram 分词器：{sql}"
 
+    def test_all_three_fts_triggers_exist(self, client_app, seeded):
+        """三个同步触发器必须都在——这条直接查 sqlite_master。
+
+        它补的是行为断言的盲区：只要测试期间有任何东西重建过索引
+        （最典型的是 TestClient 进 `with` 上下文后跑的 lifespan →
+        init_db()，它会重建缺失的触发器并全量 rebuild），
+        「删掉全部三个触发器」这个变异依然是绿的。
+
+        这条不依赖任何一次请求，因此不会跟着 lifespan 的行为漂移。
+        触发器少任何一个都会红：INSERT / UPDATE / DELETE 各管一头，
+        少一个就是某条写路径上的索引静默失效。
+        """
+        expected = {"videos_fts_ai", "videos_fts_au", "videos_fts_ad"}
+        with database.get_db() as c:
+            found = {
+                r["name"] for r in c.execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type = 'trigger' AND name LIKE 'videos_fts_%'"
+                )
+            }
+        assert found == expected, (
+            f"FTS 同步触发器不齐：缺 {expected - found}，多 {found - expected}。"
+            "缺任何一个，索引都会在对应的写路径上静默失效"
+        )
+
     def test_search_survives_a_fresh_init_db(self, client_app, seeded, make_user):
         """rebuild 与触发器是幂等的：重新建库后索引仍可用。"""
         app, mk = client_app
@@ -590,6 +701,12 @@ class TestSearchIsFullTextNotLike:
         刻意用**直连 SQL** 改标题，而不是走回填接口：回填只填空不覆盖
         （见 TestBackfillFillsGapsButNeverOverwrites），而索引触发器必须对
         任何 UPDATE 都生效，不只是对某条 API 路径生效。
+
+        **这里不能写 `with client:`。** TestClient 进上下文会跑 lifespan，
+        lifespan 调 init_db()，而 init_db() 会重建缺失的触发器并全量
+        rebuild——于是「删掉全部三个触发器」这个变异在本测试里仍然是绿的：
+        它测到的不是触发器在工作，而是「有东西会重建索引」。
+        实测确认：删光三个触发器后本测试照过，去掉上下文管理器后才会红。
         """
         app, mk = client_app
         with database.get_db() as c:
@@ -598,9 +715,8 @@ class TestSearchIsFullTextNotLike:
                 ("换过的全新标题", "https://www.bilibili.com/video/BV1aa411c7mD"),
             )
         client, headers = as_user(app, mk())
-        with client:
-            old = client.get("/api/community/search", params={"q": "Python"}, headers=headers)
-            new = client.get("/api/community/search", params={"q": "全新标题"}, headers=headers)
+        old = client.get("/api/community/search", params={"q": "Python"}, headers=headers)
+        new = client.get("/api/community/search", params={"q": "全新标题"}, headers=headers)
         assert old.json()["total"] == 0, "旧标题仍能搜到：索引没跟着更新"
         assert new.json()["total"] == 1
 
@@ -761,6 +877,29 @@ class TestBackfillFillsGapsButNeverOverwrites:
         row = database.get_community_video_by_url("https://example.com/known")
         assert row["video_title"] == "原始标题"
         assert row["cover_url"] == "https://img/a.jpg"
+
+    def test_updated_is_false_when_nothing_actually_changed(self, db):
+        """返回值必须诚实：一个字段都没写进去就不能说写了。
+
+        SQLite 的 changes() 统计的是「被 UPDATE 语句触及的行」，
+        `SET col='same'` 也算 1。所以 WHERE 里只写「至少一列为空」是不够的：
+        一个只想补封面、而封面早就填好的调用者会拿到 updated=1，
+        而实际上什么字段都没动。
+
+        当前前端不读这个字段（它 `.catch(() => {})` 一路吞掉），
+        但它是接口承诺的一部分：下一个按它做去重或统计的调用者会被带偏。
+
+        场景：先只填封面、标题留空；第二个调用者同样只传封面。
+        它既没填到标题（没传非空标题），也覆盖不了已填的封面。
+        """
+        self._ready()
+        url = "https://example.com/known"
+        assert database.publish_video_card(url, "", "https://img/first.jpg") == 1
+        assert database.publish_video_card(url, "", "https://img/second.jpg") == 0, (
+            "一个字段都没写进去，却报告 updated=1"
+        )
+        row = database.get_community_video_by_url(url)
+        assert row["cover_url"] == "https://img/first.jpg", "第二个调用者覆盖了先到者的封面"
 
     def test_second_backfill_cannot_rewrite(self, db):
         """关键：第二个人的回填必须被拒绝，已填的值一字不动。"""
