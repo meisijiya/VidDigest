@@ -16,6 +16,15 @@ from openai import OpenAI
 
 logger = logging.getLogger("summarizer")
 
+# ── extract() 的失败原因 ────────────────────────────────
+# 落穿到 ASR 曾经是静默的：一条明明带平台字幕的视频，只要字幕下载失败，
+# 就悄悄去烧一次语音识别，调用方还分不清「本来就没有字幕」和「本来有却没拿到」。
+# 下面这组取值让这两种结局在返回值里就分得开。
+FAIL_NO_TRACK = "no_subtitle_track"            # 平台没给任何字幕轨道
+FAIL_FETCH_FAILED = "subtitle_fetch_failed"    # 有字幕轨道，但下载/解析拿不到内容
+FAIL_ASR_NOT_CONFIGURED = "asr_not_configured"  # 落穿到 ASR，但没配 OPENAI_API_KEY
+FAIL_ASR_FAILED = "asr_failed"                # 落穿到 ASR，但下载音频或转写失败
+
 
 def _find_ffmpeg() -> str:
     """查找 ffmpeg 可执行文件路径。
@@ -70,7 +79,12 @@ class SubtitleExtractor:
     SUBTITLE_FORMAT = "json3"
 
     def extract(self, url: str) -> dict:
-        """提取视频字幕，优先下载平台字幕，失败则回退到语音转写"""
+        """提取视频字幕，优先下载平台字幕，失败则回退到语音转写。
+
+        落穿到 ASR 是显式决策：``fail_reason`` 记平台字幕为什么没拿到
+        （没有轨道 / 有轨道但拿不到），``asr_fail_reason`` 记兜底那一步为什么
+        没救回来（未配置 / 转写失败）。两个字段成功时都是空串。
+        """
         # 1. B 站专用 API
         if _is_bilibili_url(url):
             result = self._extract_bilibili(url)
@@ -78,6 +92,8 @@ class SubtitleExtractor:
                 return result
 
         # 2. 尝试 yt-dlp 下载字幕
+        #    track_seen 记的是「平台到底给没给字幕轨道」——它决定落穿时报哪种原因
+        track_seen = False
         try:
             info = self._get_video_info(url)
             manual_subs = info.get("subtitles") or {}
@@ -85,6 +101,7 @@ class SubtitleExtractor:
             manual_subs = {k: v for k, v in manual_subs.items() if k != "danmaku"}
 
             if manual_subs or auto_subs:
+                track_seen = True
                 lang, sub_url, sub_type = self._pick_best_subtitle(manual_subs, auto_subs)
                 if sub_url:
                     segments = self._download_subtitle_json(sub_url)
@@ -99,12 +116,26 @@ class SubtitleExtractor:
                         "subtitle_type": sub_type,
                         "segments": segments,
                         "full_text": full_text,
+                        "fail_reason": "",
+                        "asr_fail_reason": "",
                     }
+                # 轨道存在却拿不到内容：显式记账，不与「没有轨道」混成一谈
+                logger.warning(
+                    "字幕轨道存在（%s / %s）但下载或解析为空",
+                    sub_type or "未知类型", lang or "未知语言",
+                )
         except Exception as e:
             logger.warning("yt-dlp subtitle extraction failed: %s, trying ASR fallback", e)
 
         # 3. ASR 语音转写回退
-        return _transcribe_audio(url)
+        fallback_reason = FAIL_FETCH_FAILED if track_seen else FAIL_NO_TRACK
+        logger.info("平台字幕不可用（%s），转写语音作为兜底", fallback_reason)
+        result = _transcribe_audio(url)
+        # fail_reason 只在真的没拿到字幕时有值；ASR 兜底成功了就不该带失败原因
+        if not result["has_subtitle"]:
+            # 平台侧的原因优先：用户真正要问的是「这条视频为什么没有字幕」
+            result["fail_reason"] = fallback_reason
+        return result
 
     # ── B 站专用字幕提取 ────────────────────────────────
 
@@ -132,6 +163,7 @@ class SubtitleExtractor:
         empty = {
             "has_subtitle": False, "language": "",
             "subtitle_type": "none", "segments": [], "full_text": "",
+            "fail_reason": "", "asr_fail_reason": "",
         }
         try:
             bvid = self._parse_bvid(url)
@@ -219,6 +251,8 @@ class SubtitleExtractor:
                     "subtitle_type": sub_type,
                     "segments": segments,
                     "full_text": full_text,
+                    "fail_reason": "",
+                    "asr_fail_reason": "",
                 }
         except Exception:
             return empty
@@ -390,15 +424,20 @@ def _ffmpeg_path() -> str:
 
 
 def _transcribe_audio(url: str) -> dict:
-    """下载音频并使用 OpenAI Whisper API 转写为文字"""
+    """下载音频并使用 OpenAI Whisper API 转写为文字。
+
+    凭据只有 ``OPENAI_API_KEY`` 一个来源，且只属于运维配置：
+    语音识别不由用户的对话模型凭据承担（BYOK 接入后这条约束必须继续成立）。
+    失败原因写进 ``asr_fail_reason``，让调用方分得清「没配 key」和「转写失败」。
+    """
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         logger.info("OPENAI_API_KEY 未设置，跳过 ASR 回退")
-        return _empty_asr()
+        return _empty_asr(asr_fail_reason=FAIL_ASR_NOT_CONFIGURED)
 
     audio_path = _download_audio_for_asr(url)
     if not audio_path or not os.path.exists(audio_path):
-        return _empty_asr()
+        return _empty_asr(asr_fail_reason=FAIL_ASR_FAILED)
 
     try:
         client = OpenAI(api_key=api_key)
@@ -429,10 +468,12 @@ def _transcribe_audio(url: str) -> dict:
             "subtitle_type": "asr" if has else "none",
             "segments": segments if has else [],
             "full_text": full_text,
+            "fail_reason": "",
+            "asr_fail_reason": "" if has else FAIL_ASR_FAILED,
         }
     except Exception as e:
         logger.warning("Whisper ASR failed: %s", e)
-        return _empty_asr()
+        return _empty_asr(asr_fail_reason=FAIL_ASR_FAILED)
     finally:
         _cleanup_asr(audio_path)
 
@@ -505,13 +546,15 @@ def _cleanup_asr(*paths):
                 pass
 
 
-def _empty_asr(language: str = "zh") -> dict:
+def _empty_asr(language: str = "zh", asr_fail_reason: str = "") -> dict:
     return {
         "has_subtitle": False,
         "language": language,
         "subtitle_type": "none",
         "segments": [],
         "full_text": "",
+        "fail_reason": "",
+        "asr_fail_reason": asr_fail_reason,
     }
 
 
