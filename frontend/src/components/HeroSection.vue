@@ -85,16 +85,19 @@
     </div>
 
     <!-- 底部像素阶梯（仅完整模式）。
-         数据驱动而不是手写 12 个 rect：波浪的错峰延迟要按 x 位算出来，
-         手写就只能靠眼睛数，越加越长必然错位。 -->
+         数据驱动而不是手写 rect：波浪相位、循环拼接都靠算，手写只能靠眼睛数。
+         两条动画分属两层 <g>：
+           .wall-drift 整条带子向右平移（凸起「向右动」）
+           .wall-step  每段在漂移之上再上下浮（凸起「上下动」）
+         嵌套 transform 会相乘，所以两层分开写、各自只管一个方向。 -->
     <div v-if="!compact" class="absolute bottom-0 left-0 right-0 pointer-events-none" aria-hidden="true">
-      <svg class="w-full h-14 sm:h-20" viewBox="0 0 1440 80" preserveAspectRatio="none">
+      <svg class="w-full h-14 sm:h-20 overflow-hidden" viewBox="0 0 1440 80" preserveAspectRatio="none">
         <defs>
           <!-- 扫光带：userSpaceOnUse 各自锚在自己的顶线上，
                translateX 走完 120 就正好扫过整条线。 -->
           <linearGradient
-            v-for="s in wallSteps.filter(w => w.line)" :key="`grad-${s.x}`"
-            :id="`wall-shine-${s.x}`"
+            v-for="s in wallSteps.filter(w => w.line)" :key="`grad-${s.id}`"
+            :id="`wall-shine-${s.id}`"
             gradientUnits="userSpaceOnUse"
             :x1="s.x - 12" :x2="s.x + 18" y1="0" y2="0"
             class="wall-shine"
@@ -105,14 +108,18 @@
           </linearGradient>
         </defs>
 
-        <g v-for="s in wallSteps" :key="s.x"
-           class="wall-step"
-           :style="{ animationDelay: s.delay + 's' }">
-          <rect :x="s.x" :y="s.y" width="120" :height="80 - s.y" fill="#161F36"/>
-          <template v-if="s.line">
-            <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>
-            <rect :x="s.x" :y="s.y" width="120" height="3" :fill="`url(#wall-shine-${s.x})`"/>
-          </template>
+        <g class="wall-drift">
+          <g v-for="s in wallSteps" :key="s.id"
+             class="wall-step"
+             :style="{ animationDelay: s.delay + 's' }">
+            <!-- 向下多伸 20 个单位，落在 viewBox 之外被 svg 裁掉：
+                 底边因此始终是齐的，凸起浮起来时底下不会露出缝。 -->
+            <rect :x="s.x" :y="s.y" width="120" :height="100 - s.y" fill="#161F36"/>
+            <template v-if="s.line">
+              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>
+              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="`url(#wall-shine-${s.id})`"/>
+            </template>
+          </g>
         </g>
       </svg>
     </div>
@@ -134,26 +141,47 @@ const url = ref('')
 /**
  * 底部城墙：12 段阶梯，y 决定凸起高度（越高越靠上），line 是顶线颜色。
  *
- * delay 按 x 顺序递增 —— 波浪是**相邻段错开**才连成一条波线，
- * 不是各自乱浮。spread 0.16s × 12 段 = 1.92s，必须小于动画周期 2.4s，
- * 否则最后一段的相位会追过第一段，波会「回卷」而不是往前推。
+ * 两条动画的周期必须凑成整数倍，否则循环点会「跳」一下：
+ *   WALL_BOB_SEC  每段上下浮一轮 —— 12 段 × WALL_STEP_DELAY 正好等于它，
+ *                 于是第 12 段的相位接回第 1 段，波是**连续**推过去的，
+ *                 中间没有一段「所有块都停在原位」的空窗。
+ *   WALL_DRIFT_SEC 整条带子横向滑一轮 = 12s = 5 个上下浮周期。
+ *                 两层 <g> 各自独立循环，对齐后接缝才看不出来。
+ */
+const WALL_WIDTH = 1440
+const WALL_DRIFT_SEC = 12
+const WALL_BOB_SEC = 2.4
+const WALL_STEP_DELAY = 0.2
+
+const wallBase = [
+  { x: 0,    y: 40, line: null,       shineDelay: 0.0 },
+  { x: 120,  y: 48, line: null,       shineDelay: 0.0 },
+  { x: 240,  y: 32, line: '#7C3AED', shineDelay: 0.0 },
+  { x: 360,  y: 52, line: null,       shineDelay: 0.0 },
+  { x: 480,  y: 40, line: null,       shineDelay: 0.0 },
+  { x: 600,  y: 56, line: null,       shineDelay: 0.0 },
+  { x: 720,  y: 36, line: '#EC4899', shineDelay: 0.8 },
+  { x: 840,  y: 48, line: null,       shineDelay: 0.0 },
+  { x: 960,  y: 28, line: '#06B6D4', shineDelay: 1.6 },
+  { x: 1080, y: 52, line: null,       shineDelay: 0.0 },
+  { x: 1200, y: 40, line: null,       shineDelay: 0.0 },
+  { x: 1320, y: 48, line: null,       shineDelay: 0.0 },
+]
+
+/**
+ * 两份拼成一条无限循环的带子：第二份整体左移一整圈 WALL_WIDTH。
  *
- * shineDelay 单独给：顶线扫光要比波浪慢半拍，三条线依次亮才像信号
- * 顺着墙跑过去。
+ * 带子向右平移 WALL_WIDTH 的过程中，第一份滑出右边界、第二份正好补进左边界，
+ * 首尾是同一条墙，接缝看不出来。
+ *
+ * 两个副本**必须共用同一份 delay / shineDelay**——同一段墙在两处位置本就该
+ * 同相位，否则循环点上那段墙会突然换个动作。
  */
 const wallSteps = [
-  { x: 0, y: 40, delay: 0.00, line: null, shineDelay: 0.0 },
-  { x: 120, y: 48, delay: 0.16, line: null, shineDelay: 0.0 },
-  { x: 240, y: 32, delay: 0.32, line: '#7C3AED', shineDelay: 0.0 },
-  { x: 360, y: 52, delay: 0.48, line: null, shineDelay: 0.0 },
-  { x: 480, y: 40, delay: 0.64, line: null, shineDelay: 0.0 },
-  { x: 600, y: 56, delay: 0.80, line: null, shineDelay: 0.0 },
-  { x: 720, y: 36, delay: 0.96, line: '#EC4899', shineDelay: 0.8 },
-  { x: 840, y: 48, delay: 1.12, line: null, shineDelay: 0.0 },
-  { x: 960, y: 28, delay: 1.28, line: '#06B6D4', shineDelay: 1.6 },
-  { x: 1080, y: 52, delay: 1.44, line: null, shineDelay: 0.0 },
-  { x: 1200, y: 40, delay: 1.60, line: null, shineDelay: 0.0 },
-  { x: 1320, y: 48, delay: 1.76, line: null, shineDelay: 0.0 },
+  ...wallBase.map((s, i) => ({ ...s, id: `a${i}`, delay: i * WALL_STEP_DELAY })),
+  ...wallBase.map((s, i) => ({
+    ...s, id: `b${i}`, delay: i * WALL_STEP_DELAY, x: s.x - WALL_WIDTH,
+  })),
 ]
 
 function extractUrl(text) {
@@ -179,15 +207,26 @@ function handleParse() {
   transform: translateY(-16px);
 }
 
-/* ── 城墙：海浪 ──────────────────────────────────────────
-   块和它顶上的彩色线必须浮在**同一个** <g> 里：分开写线会脱节，
-   波浪一走位，顶线就留在原地，看着像贴错了。 */
-.wall-step {
-  animation: wall-wave 2.4s ease-in-out infinite;
+/* ── 城墙：整条带子向右滑（凸起「向右动」）────────────────
+   位移量必须正好等于 WALL_WIDTH：带子是两份拼的，滑一整圈第二份
+   刚好顶到第一份原来的位置，接缝不跳。 */
+.wall-drift {
+  animation: wall-drift 12s linear infinite;
 }
-@keyframes wall-wave {
+@keyframes wall-drift {
+  from { transform: translateX(0); }
+  to   { transform: translateX(1440px); }
+}
+
+/* ── 城墙：凸起上下浮（凸起「上下动」）──────────────────
+   和 wall-drift 是嵌套的两层 <g>，transform 相乘，所以这里只写 Y。
+   写 X 也不会立刻看出来错，但会让「向上下」变成「斜着晃」。 */
+.wall-step {
+  animation: wall-bob 2.4s ease-in-out infinite;
+}
+@keyframes wall-bob {
   0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-6px); }
+  50%      { transform: translateY(-5px); }
 }
 
 /* ── 城墙：顶线扫光 ──────────────────────────────────────
