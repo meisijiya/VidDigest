@@ -250,6 +250,37 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_history_user ON parse_history(user_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_history_user_url ON parse_history(user_id, video_url);
+
+            -- 社区视频表（ADR 0001）：全站共享，一个链接只有一行。
+            --
+            -- 与 parse_history 的分工：那张表是「谁解析过什么」的个人记录，
+            -- 每用户滚动保留 MAX_PARSE_HISTORY_PER_USER 条；这张表是社区内容本身，
+            -- 任何人都能读，且**刻意不做条数裁剪**——裁剪会直接摧毁社区的价值
+            -- （A 解析的视频被裁掉，B 就再也复用不到了）。
+            --
+            -- video_url 的唯一性靠下面那条全局唯一索引，而不是表内 UNIQUE 约束：
+            -- 它是「同一链接全站只解析一次」这条承诺的落地点，必须有自己的名字，
+            -- 迁移与排查时能直接指认（parse_history 那条 idx_history_user_url 含
+            -- user_id，无法复用）。
+            --
+            -- status = 'pending' 的行是**占位**：占位者才是首次解析者，由他去调模型。
+            -- 已 ready 的行谁都不能改写（complete_video 只更新自己占的那一行）。
+            --
+            -- parsed_by 不建外键：解析者注销后社区内容必须留下来。
+            CREATE TABLE IF NOT EXISTS videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                summary_md TEXT DEFAULT '',
+                mindmap_md TEXT DEFAULT '',
+                tags TEXT DEFAULT '[]',
+                subtitle_text TEXT DEFAULT '',
+                parsed_by INTEGER,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_url ON videos(video_url);
         """)
 
         _migrate_quota_columns(conn)
@@ -691,3 +722,133 @@ def delete_parse_history(user_id: int, history_id: int) -> bool:
             (user_id, history_id),
         )
         return cursor.rowcount > 0
+
+
+# ── 社区视频（工单 #6 / ADR 0001）────────────────────────
+#
+# 这一族函数就是「同一个链接全站只解析一次」的机制本体：
+#
+#   reserve_video    抢占解析权（唯一索引在这里真正起作用）
+#   complete_video   占位者把结果写回自己占的那一行
+#   release_video    占位者失败时把位置还回去
+#   get_video_by_url 读社区里已有的那一份结果
+#
+# 为什么必须是「先占位」而不是「先查有没有、没有就插入」：
+# 查与插之间有一个窗口，两个用户同时进来会双双查到「还没有」，
+# 于是双双去调模型、双双扣额度——而此时两人都还什么结果都没拿到。
+# 唯一索引只能把第二次**插入**挡下来，挡不住第二次**调模型**。
+# 所以本设计把「调模型」这个动作挂在 reserve 成功这个条件上：
+# 抢到占位的人去调模型，没抢到的人转去等待或复用。
+# 这三件事（一次模型调用、一次额度扣减、一行数据）因此同时成立。
+#
+# 唯一的例外是「占位者自己失败」：它不能永远占着那个位置，
+# 否则这个链接从此再也没人能解析——所以 finally 里必须 release_video。
+
+#: 占位行的状态。pending = 已有人占位、正在解析（结果还没产出）；
+#: ready = 社区里已有结果，谁来读都是同一份，谁都不能改。
+VIDEO_STATUS_PENDING = "pending"
+VIDEO_STATUS_READY = "ready"
+
+
+def reserve_video(video_url: str, user_id: int | None) -> tuple[str, dict | None]:
+    """抢占一个链接的解析权。返回 (outcome, row)。
+
+    outcome 只有三种，调用方必须分别处理——尤其是 "reserved"：
+    **只有拿到它的人才允许去调模型**，这是「只调一次模型」的唯一入口。
+
+    - "reserved"  占位成功，调用者是首次解析者
+    - "ready"     社区里已有结果，row 就是那份结果，直接复用
+    - "pending"   别人正在解析，调用方需要等它出结果
+
+    写与读刻意分在两个事务里：插入被唯一索引拒绝之后，必须在一个
+    **新的**事务里重读，否则读到的还是那个已被回滚的事务的快照。
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with get_db() as conn:
+            conn.execute(
+                """INSERT INTO videos
+                   (video_url, status, parsed_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (video_url, VIDEO_STATUS_PENDING, user_id, now, now),
+            )
+        return "reserved", None
+    except sqlite3.IntegrityError:
+        # 唯一索引挡住了重复行：这个链接已有人在解析或已解析完成。
+        row = get_video_by_url(video_url)
+        if row is None:
+            # 占位者刚失败并把位置还了回去。这里**不能**当成 reserved——
+            # 报 pending 让调用方重试一轮，下一轮就能抢到。
+            return "pending", None
+        if row["status"] == VIDEO_STATUS_READY:
+            return "ready", row
+        return "pending", row
+
+
+def complete_video(
+    video_url: str,
+    summary_md: str = "",
+    mindmap_md: str = "",
+    tags: list | None = None,
+    subtitle_text: str = "",
+) -> int:
+    """占位者把解析结果写回**自己占的那一行**，返回更新的行数。
+
+    ``WHERE status = 'pending'`` 不是多余的防御：它是「社区内容不会被
+    任何人改写」这条承诺的落地点——已 ready 的行谁都改不了，包括
+    后来的解析者。返回 0 说明这一行已经不是 pending（正常流程下不会
+    发生），由调用方报警而不是静默当作成功。
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(list(tags) if tags else [], ensure_ascii=False)
+    with get_db() as conn:
+        cursor = conn.execute(
+            """UPDATE videos
+               SET status = ?, summary_md = ?, mindmap_md = ?, tags = ?,
+                   subtitle_text = ?, updated_at = ?
+               WHERE video_url = ? AND status = ?""",
+            (
+                VIDEO_STATUS_READY, summary_md, mindmap_md, payload,
+                subtitle_text, now, video_url, VIDEO_STATUS_PENDING,
+            ),
+        )
+        return cursor.rowcount
+
+
+def release_video(video_url: str) -> int:
+    """占位者失败时把位置还回去，返回删掉的行数。
+
+    只删 pending 行：已经 ready 的社区内容与占位无关，绝不能被回滚删掉。
+
+    不还回去的代价是永久性的——那一行会永远停在 pending，
+    后来的每个用户都只能干等到超时，再也没人能解析这个链接。
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            "DELETE FROM videos WHERE video_url = ? AND status = ?",
+            (video_url, VIDEO_STATUS_PENDING),
+        )
+        return cursor.rowcount
+
+
+def get_video_by_url(video_url: str) -> dict | None:
+    """读社区里那一份结果（tags 已反序列化成列表）。没有则 None。
+
+    这是「视频是否已存在」「取某视频的字幕」唯一的查询入口——
+    不再查 parse_history（ADR 0001）：那张表是按 (user_id, video_url)
+    去重的个人记录，跨用户看不见别人的解析结果。
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM videos WHERE video_url = ?", (video_url,)
+        ).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    try:
+        parsed = json.loads(item.get("tags") or "[]")
+    except (ValueError, TypeError):
+        parsed = []
+    # 类型不对就当没有，不让脏数据变成下游的 TypeError
+    item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
+    return item

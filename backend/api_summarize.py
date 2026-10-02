@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterable
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,9 +13,12 @@ from pydantic import BaseModel
 from auth import get_optional_user
 from database import (
     check_quota_kind,
+    complete_video,
     consume_quota,
     quota_limit,
     refund_quota,
+    release_video,
+    reserve_video,
 )
 from tags import validate_tags
 
@@ -24,6 +28,11 @@ router = APIRouter(prefix="/api", tags=["AI 总结"])
 
 #: 额度种类 → 中文名，只用于「今日XX次数已用完」这类提示文案。
 _QUOTA_LABELS = {"parse": "解析", "chat": "追问"}
+
+#: 未登录时的提示。提出来是因为这条拒绝要发生两次：
+#: 一次在抢占位之前（未登录的人不该去占一个位置让别人干等），
+#: 一次在额度检查里。两处文案必须一致，所以只能有一份来源。
+_NOT_LOGGED_IN = "请先登录后使用 AI 功能"
 
 
 @router.get("/quota")
@@ -82,7 +91,7 @@ def _check_quota_permission(user: dict | None, kind: str):
     label = _QUOTA_LABELS[kind]
 
     if not user:
-        return False, 0, "请先登录后使用 AI 功能"
+        return False, 0, _NOT_LOGGED_IN
 
     allowed, remaining = check_quota_kind(user["id"], kind)
     if not allowed:
@@ -151,6 +160,87 @@ async def _run_in_thread(func, *args):
     return await loop.run_in_executor(None, func, *args)
 
 
+# ── 社区复用：抢解析权（工单 #6）───────────────────────────
+#
+# 只有一个链接该被解析一次。要做到这一点，光有「视频已存在就别调模型」
+# 是不够的：两个用户同时进来时，两边都可能查到「还没有」，于是两边都
+# 去调模型、都扣额度。唯一索引能挡住重复的**行**，挡不住重复的**调用**。
+#
+# 因此顺序被倒过来：先占位，只有占位成功的人才去调模型。占位失败的人
+# 不是报错，而是等占位者出结果后复用同一份——这正是票面承诺的
+# 「不管谁先解析，看到的总结都是同一份」。
+
+#: 后来者等待占位者出结果的上限（秒）。到点还没好就明确告诉他
+#: 「正在解析」，而不是占着一条连接无限期等下去。
+VIDEO_WAIT_TIMEOUT_SECONDS = 30.0
+#: 等待期间的轮询间隔。调大则复用方白等，调小则空转烧 CPU。
+VIDEO_POLL_INTERVAL_SECONDS = 0.05
+
+
+async def _claim_video(video_url: str, user_id: int):
+    """抢占解析权；抢不到就等它完成，等不到就退回去。
+
+    返回 ("owner", None) / ("reuse", row) / ("busy", None)。
+
+    **只有 "owner" 允许去调模型**——「只调一次模型」就落在这一个分支上。
+    等待者的循环每轮都重新抢：占位者中途失败并释放位置时，等待者会在
+    下一轮成为首次解析者，而不是卡在一个已经被还回去的位置上空等到超时。
+    """
+    deadline = time.monotonic() + VIDEO_WAIT_TIMEOUT_SECONDS
+    while True:
+        outcome, row = reserve_video(video_url, user_id)
+        if outcome == "reserved":
+            return "owner", None
+        if outcome == "ready":
+            return "reuse", row
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "busy", None
+        # await 而不是 time.sleep：这是 async 生成器，睡死了会卡住整个事件循环
+        await asyncio.sleep(min(VIDEO_POLL_INTERVAL_SECONDS, remaining))
+
+
+def _replay_events(user: dict, video: dict) -> list[ServerSentEvent]:
+    """把社区里已有的那一份结果原样回放给后来的用户。
+
+    事件名与首次解析完全一致，前端不必为「复用」再写一套分支。
+    两处刻意的差异，都必须说清理由而不是留给下一个人猜：
+
+    1. 总结整段一次下发，而不是逐 token 打字机。它不是正在生成的，
+       逐字挤出来只会让用户白等。
+    2. segments 为空。社区视频表存的是字幕全文（后续追问要拿它作上下文），
+       没有分段信息；full_text 是完整的。
+    额度事件报的是**这个用户自己**的余额：他没被扣，数字就不该动。
+    """
+    return [
+        ServerSentEvent(
+            raw_data=json.dumps({
+                "has_subtitle": True,
+                "full_text": video.get("subtitle_text") or "",
+                "segments": [],
+            }, ensure_ascii=False),
+            event="subtitle",
+        ),
+        ServerSentEvent(
+            raw_data=json.dumps(_quota_payload(user["id"], "parse"), ensure_ascii=False),
+            event="quota",
+        ),
+        ServerSentEvent(
+            raw_data=json.dumps(video.get("summary_md") or "", ensure_ascii=False),
+            event="summary",
+        ),
+        ServerSentEvent(
+            raw_data=json.dumps({"markdown": video.get("mindmap_md") or ""}, ensure_ascii=False),
+            event="mindmap",
+        ),
+        ServerSentEvent(
+            raw_data=json.dumps(video.get("tags") or [], ensure_ascii=False),
+            event="tags",
+        ),
+        ServerSentEvent(raw_data="[DONE]", event="done"),
+    ]
+
+
 # ── 流式总结端点 ────────────────────────────────────────
 
 @router.post("/summarize", response_class=EventSourceResponse)
@@ -164,14 +254,50 @@ async def summarize_video(
 
     一次解析产出三件事（总结 / 思维导图 / 标签），共用同一份字幕上下文，
     也只调一次模型、只扣一次额度。
+
+    同一个链接全站只解析一次（社区视频表，见 ADR 0001）：后来者直接拿到
+    首次解析者的那一份结果，不调模型也不扣额度。两个用户同时进来时，
+    只有抢到占位的那一个会调模型。
     """
+    # 未登录先拒：占位期间别人只能干等，而这次请求注定要被拒，
+    # 没有任何理由让它先去占一个位置。
+    if not user:
+        yield ServerSentEvent(
+            raw_data=json.dumps({
+                "message": _NOT_LOGGED_IN,
+                "need_login": True,
+                "need_vip": False,
+            }, ensure_ascii=False),
+            event="error",
+        )
+        return
+
+    # 社区里已有的结果：既不扣额度也不调模型，因此**不受额度限制**——
+    # 复用的成本是零，额度不该拦住「看别人已经解析好的东西」。
+    claim, existing = await _claim_video(req.url, user["id"])
+    if claim == "reuse":
+        for event in _replay_events(user, existing):
+            yield event
+        return
+    if claim == "busy":
+        yield ServerSentEvent(
+            raw_data=json.dumps({
+                "message": "这个视频正在解析中，请稍后再试",
+            }, ensure_ascii=False),
+            event="error",
+        )
+        return
+
+    # 到这里我们是占位者，可以调模型了。额度仍可能不够——
+    # 占位必须还回去，否则这个链接会被一个注定失败的请求永久卡住。
     allowed, remaining, message = _check_quota_permission(user, "parse")
     if not allowed:
+        release_video(req.url)
         yield ServerSentEvent(
             raw_data=json.dumps({
                 "message": message,
-                "need_login": user is None,
-                "need_vip": user is not None,
+                "need_login": False,
+                "need_vip": True,
             }, ensure_ascii=False),
             event="error",
         )
@@ -179,6 +305,9 @@ async def summarize_video(
 
     # 额度是否已扣。扣了之后没走完流程就要还回去。
     quota_spent = False
+    # 结果是否已经落进社区表。还没落成就失败/断流的话，finally 必须把
+    # 占位还回去——留下一行 pending 等于这个链接从此解析不了。
+    published = False
     try:
         extractor = _get_extractor()
         subtitle_data = await _run_in_thread(extractor.extract, req.url)
@@ -217,14 +346,20 @@ async def summarize_video(
 
         # 一次模型调用产出三件事：总结逐 token 下发（打字机效果），
         # 哨兵之后的 JSON 在流末尾一次性解析。模型只被调一次，额度也只扣这一次。
+        # 边下发给前端，边攒起来——流结束时要靠它们把结果写进社区视频表。
+        summary_parts: list[str] = []
+        mindmap_md = ""
+        tags_payload: list[str] = []
         summarizer = _get_summarizer()
         for kind, payload in summarizer.summarize_full_stream(full_text, req.language):
             if kind == "summary":
+                summary_parts.append(payload)
                 yield ServerSentEvent(
                     raw_data=json.dumps(payload, ensure_ascii=False),
                     event="summary",
                 )
             elif kind == "mindmap":
+                mindmap_md = payload
                 yield ServerSentEvent(
                     raw_data=json.dumps({"markdown": payload}, ensure_ascii=False),
                     event="mindmap",
@@ -235,12 +370,27 @@ async def summarize_video(
                 accepted, rejected = validate_tags(payload)
                 if rejected:
                     logger.info("丢弃词表外的标签：%s", rejected)
+                tags_payload = accepted
                 yield ServerSentEvent(
                     raw_data=json.dumps(accepted, ensure_ascii=False),
                     event="tags",
                 )
             else:
                 logger.warning("未知的产出类型 %r，本次解析忽略它", kind)
+
+        # 先落库，再结清扣费。顺序不能反：社区表里出现 ready 行与
+        # 「此后不再回滚额度」必须是同一刻的两件事，否则两者之间断流
+        # 会留下「有结果却退了款」的矛盾状态。
+        # 存的是**校验后**的标签——落库内容必须与用户当时看到的完全一致。
+        if complete_video(
+            req.url,
+            summary_md="".join(summary_parts),
+            mindmap_md=mindmap_md,
+            tags=tags_payload,
+            subtitle_text=full_text,
+        ) == 0:
+            logger.warning("社区视频 %r 的占位已不在 pending 状态，结果未落库", req.url)
+        published = True
 
         # 三项都已产出，扣费就此结清：此后即便客户端断流也不回滚。
         quota_spent = False
@@ -257,6 +407,10 @@ async def summarize_video(
             event="error",
         )
     finally:
+        # 结果没能落进社区表就把位置还回去。只删 pending 行，
+        # 已经 ready 的社区内容永远不会被这一步碰到。
+        if not published:
+            release_video(req.url)
         # 唯一回滚点：except 分支和「客户端中途断开」共用它，不会重复退款。
         # 断流时抛的是 GeneratorExit / CancelledError，两者都继承 BaseException
         # 而非 Exception，上面的 except 抓不到——实测额度就停在扣减后的值。

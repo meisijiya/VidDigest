@@ -96,8 +96,8 @@ def collect(gen):
     return asyncio.run(_run())
 
 
-def summarize_req():
-    return api_summarize.SummarizeRequest(url="https://example.com/v", language="zh")
+def summarize_req(url="https://example.com/v"):
+    return api_summarize.SummarizeRequest(url=url, language="zh")
 
 
 def chat_req(subtitle="s"):
@@ -232,12 +232,24 @@ class TestSummarizeQuotaTiming:
         assert kinds.index("quota") < kinds.index("summary")
 
     def test_fourth_use_refused_without_llm(self, db, make_user, stub):
-        """解析额度用满后拒绝，且**不调模型**——这条守的是「拒绝时零成本」。"""
+        """解析额度用满后拒绝，且**不调模型**——这条守的是「拒绝时零成本」。
+
+        每次必须用**不同**的链接：工单 #6 之后同一链接第二次起是免费复用，
+        拿同一个 URL 连打并不会耗额度，用例会失去它要测的前提。
+        """
         s = stub(has_subtitle=True)
         uid = make_user()
-        for _ in range(database.DAILY_PARSE_LIMIT):
-            collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
-        events = collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+        for i in range(database.DAILY_PARSE_LIMIT):
+            collect(
+                api_summarize.summarize_video(
+                    summarize_req(f"https://example.com/v/{i}"), user={"id": uid}
+                )
+            )
+        events = collect(
+            api_summarize.summarize_video(
+                summarize_req("https://example.com/v/overflow"), user={"id": uid}
+            )
+        )
         assert [e[0] for e in events] == ["error"]
         assert "解析次数已用完" in events[0][1]["message"], events[0][1]["message"]
         assert parse_count_of(uid) == database.DAILY_PARSE_LIMIT
@@ -527,6 +539,9 @@ class TestChatQuota:
         两个方向必须用两个用户：先把对话额度用满之后，
         同一个用户的对话额度本来就没了，再验证「解析用满不影响追问」
         只会得到一个必然的 error，测不出任何东西。
+
+        耗额度时每次必须用**不同**的链接：工单 #6 之后同一链接第二次起是
+        免费复用，拿同一个 URL 连打不会耗额度。
         """
         stub(has_subtitle=True)
 
@@ -534,15 +549,27 @@ class TestChatQuota:
         a = make_user("a@example.com")
         for _ in range(database.DAILY_CHAT_LIMIT):
             collect(api_summarize.chat_with_video(chat_req(), user={"id": a}))
-        events = collect(api_summarize.summarize_video(summarize_req(), user={"id": a}))
+        events = collect(
+            api_summarize.summarize_video(
+                summarize_req("https://example.com/chat-drained"), user={"id": a}
+            )
+        )
         assert "error" not in [e[0] for e in events], "对话额度用满不该挡住解析"
         assert parse_count_of(a) == 1
 
         # 方向二：解析用满，追问照常
         b = make_user("b@example.com")
-        for _ in range(database.DAILY_PARSE_LIMIT):
-            collect(api_summarize.summarize_video(summarize_req(), user={"id": b}))
-        blocked = collect(api_summarize.summarize_video(summarize_req(), user={"id": b}))
+        for i in range(database.DAILY_PARSE_LIMIT):
+            collect(
+                api_summarize.summarize_video(
+                    summarize_req(f"https://example.com/parse/{i}"), user={"id": b}
+                )
+            )
+        blocked = collect(
+            api_summarize.summarize_video(
+                summarize_req("https://example.com/parse/overflow"), user={"id": b}
+            )
+        )
         assert [e[0] for e in blocked] == ["error"], "前提：解析额度此时应已用满"
 
         events = collect(api_summarize.chat_with_video(chat_req(), user={"id": b}))

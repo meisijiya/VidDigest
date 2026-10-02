@@ -124,12 +124,25 @@ class TestSummaryConsumesParseQuota:
         )
 
     def test_parse_quota_exhausted_but_chat_still_works(self, db, make_user, wired):
+        """解析额度用满后，追问照常可用。
+
+        耗额度时每次必须用**不同**的链接：工单 #6 之后同一链接第二次起是
+        免费复用，拿同一个 URL 连打不会耗额度，「用满」这个前提就不成立。
+        """
         wired()
         uid = make_user()
-        for _ in range(database.DAILY_PARSE_LIMIT):
-            collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+        for i in range(database.DAILY_PARSE_LIMIT):
+            collect(
+                api_summarize.summarize_video(
+                    summarize_req(f"https://example.com/parse/{i}"), user={"id": uid}
+                )
+            )
 
-        blocked = collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+        blocked = collect(
+            api_summarize.summarize_video(
+                summarize_req("https://example.com/parse/overflow"), user={"id": uid}
+            )
+        )
         assert [e[0] for e in blocked] == ["error"]
 
         ok = collect(api_summarize.chat_with_video(chat_req(), user={"id": uid}))

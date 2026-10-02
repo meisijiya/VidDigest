@@ -27,6 +27,8 @@ DB_FUNCS = {
     # 漏一个就等于这道门禁对那条路径失明。
     "consume_quota", "check_quota_kind", "refund_quota", "check_quota",
     "quota_limit", "is_vip_active",
+    # 社区视频表（工单 #6）：这四个函数会触库，测试直接调它们时必须取 db 夹具
+    "reserve_video", "complete_video", "release_video", "get_video_by_url",
     "append_chat_history",
     "upsert_parse_history", "get_parse_histories", "get_parse_history_detail",
     "get_parse_history_by_url", "delete_parse_history", "get_user_orders",
