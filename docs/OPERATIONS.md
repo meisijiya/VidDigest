@@ -542,7 +542,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 | -------------------- | ---------------- | ------------------------------------- |
 | `database is locked` | SQLite 多写并发      | 加 `--workers 1`（默认即如此）                |
 | 用户列表错乱               | 升级数据库 schema 没迁移 | 看 `database.py` 是否有 `ALTER TABLE`，手动补 |
-| **AI 总结一直"正在分析"但无任何事件** | `vip_expire_at` 是 naive datetime，`fromisoformat` 后与 `datetime.now(timezone.utc)` 比较直接 TypeError；异常发生在 SSE `try` 块**之前**，前端拿不到 error 事件就一直转圈 | 已修复：`database.py:check_and_increment_summary` 和 `_fulfill_order` 都加了 `if expire.tzinfo is None: expire = expire.replace(tzinfo=timezone.utc)` 兜底。**根治方案**：所有 `vip_expire_at` 写入统一使用 `datetime.now(timezone.utc).isoformat()`（带 `+00:00`） |
+| **AI 总结一直"正在分析"但无任何事件** | `vip_expire_at` 是 naive datetime，`fromisoformat` 后与 `datetime.now(timezone.utc)` 比较直接 TypeError；异常发生在 SSE `try` 块**之前**，前端拿不到 error 事件就一直转圈 | 已修复：`database.py:is_vip_active` 与 `_fulfill_order` 都加了 `if expire.tzinfo is None: expire = expire.replace(tzinfo=timezone.utc)` 兜底。**根治方案**：所有 `vip_expire_at` 写入统一使用 `datetime.now(timezone.utc).isoformat()`（带 `+00:00`） |
 
 
 ---

@@ -43,7 +43,6 @@ _conn_generation = 0
 def get_connection_generation() -> int:
     return _conn_generation
 
-FREE_DAILY_SUMMARY_LIMIT = 3
 MAX_PARSE_HISTORY_PER_USER = 30
 
 # 两个额度上限都从环境变量读取，改配置不必发版。
@@ -483,7 +482,7 @@ def complete_order(session_id: str, payment_intent_id: str) -> dict | None:
         if user["vip_expire_at"]:
             try:
                 current_expire = datetime.fromisoformat(user["vip_expire_at"])
-                # 兜底 naive datetime（与 check_and_increment_summary 同源修复）
+                # 兜底 naive datetime（与 is_vip_active 同源修复）
                 if current_expire.tzinfo is None:
                     current_expire = current_expire.replace(tzinfo=timezone.utc)
             except ValueError:

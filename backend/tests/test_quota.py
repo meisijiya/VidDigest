@@ -138,15 +138,18 @@ class TestDailyReset:
 
 
 class TestVipExpiryParsing:
-    """`is_vip_active` 的日期解析健壮性——守的是两个真实修过的 bug，
-    不是「会员制」这个产品语义。
+    """`is_vip_active` 的**不崩性**——不是会员权益。
 
-    项目已决定不做会员制（前端入口已关），所以这里**不**断言 VIP 享受
-    无限额度；只断言「无论 vip_expire_at 里存的是什么，都不会把请求打挂」。
-    这两条回归曾各自对应一次线上事故：
+    父工单 #1 明文写着「本次不动会员代码，但新增测试不应继续锁定会员相关行为」。
+    这就是本类的边界：只断言「无论 vip_expire_at 里存的是什么，这个函数都不会
+    把请求打挂」，**不断言哪个输入该返回 True**——那是权益语义，会挡住日后拆会员制。
 
+    曾经真的炸过两次：
     - naive datetime 触发 naive/aware 比较抛 TypeError，SSE 一直转圈
     - 脏数据（存的不是日期）直接往上抛，没有兜底
+
+    代价要说清楚：保住这两条回归，就保住了 `is_vip_active` 不被静默改坏；
+    但「返回值对不对」不在守。哪天它恒返回 False，这些测试照样绿。
     """
 
     def _is_active(self, db, uid):
@@ -156,32 +159,29 @@ class TestVipExpiryParsing:
             ).fetchone()
         return db.is_vip_active(row)
 
-    def test_naive_datetime_is_recognised(self, db, make_user):
+    def test_naive_datetime_does_not_crash(self, db, make_user):
         """回归：naive datetime 曾抛 TypeError，SSE 一直转圈。"""
         uid = make_user(is_vip=True, vip_expire_at="2099-01-01T00:00:00")
-        assert self._is_active(db, uid) is True
+        assert isinstance(self._is_active(db, uid), bool)
 
-    def test_garbage_expiry_does_not_raise(self, db, make_user):
+    def test_garbage_expiry_does_not_crash(self, db, make_user):
         """回归：脏数据曾无 try/except 直接抛。"""
         uid = make_user(is_vip=True, vip_expire_at="not-a-date")
-        assert self._is_active(db, uid) is False
+        assert isinstance(self._is_active(db, uid), bool)
 
-    def test_expired_is_not_active(self, db, make_user):
-        uid = make_user(is_vip=True, vip_expire_at="2000-01-01T00:00:00+00:00")
-        assert self._is_active(db, uid) is False
+    def test_expiry_comparison_actually_runs(self, db, make_user):
+        """未来与过期两个日期必须给出**不同**结果——证明比较真的执行了，
+        而不是恒返回某个常量。
 
-    def test_flag_without_expiry_is_not_active(self, db, make_user):
-        """只有 is_vip 位、没有到期时间时，不该当成有效会员。"""
-        uid = make_user(is_vip=True)
-        assert self._is_active(db, uid) is False
-
-    def test_non_vip_row_is_not_active(self, db, make_user):
-        uid = make_user()
-        assert self._is_active(db, uid) is False
-
-    def test_malformed_expiry_never_reaches_the_quota_path(self, db, make_user):
-        """脏数据落到额度判定上也必须是「有限额」，而不是把请求打挂。"""
-        uid = make_user(is_vip=True, vip_expire_at="not-a-date")
-        assert db.check_quota_kind(uid, "parse") == (
-            True, database.DAILY_PARSE_LIMIT
-        ), "脏 vip_expire_at 让额度判定抛异常了"
+        这是关系断言，不是权益断言：它不关心哪个是 True，只要求两者有别。
+        少了这条，上面两条「不崩」就会被「直接 return False」的改法骗过去。
+        """
+        future = make_user(
+            is_vip=True, vip_expire_at="2099-01-01T00:00:00+00:00", email="future@x.test"
+        )
+        past = make_user(
+            is_vip=True, vip_expire_at="2000-01-01T00:00:00+00:00", email="past@x.test"
+        )
+        assert self._is_active(db, future) != self._is_active(db, past), (
+            "两个相反的到期日给出同一结果，说明到期比较没跑"
+        )

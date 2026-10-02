@@ -322,27 +322,159 @@ class TestAsrCredentialsAreOpsOnly:
         assert result["has_subtitle"] is True
         assert used["api_key"] == "sk-ops-key", f"ASR 用错了凭据来源：{used['api_key']!r}"
 
-    def test_asr_path_names_no_other_credential(self):
-        """源码级钉死：ASR 这条路上只许出现 OPENAI_API_KEY 一个凭据名。
+    def test_asr_api_key_traces_back_to_the_ops_env_only(self):
+        """源码级钉死：ASR 真正交给 OpenAI 客户端的那把 key，只能来自 OPENAI_API_KEY。
 
-        不去管它用什么方式读（getenv / environ.get / 下标），只看源码里出现的
-        凭据名——这样「后来有人把用户 key 接进 ASR」无论写成哪种形态都会红。
+        上一版只扫三个硬编码函数的源码里有没有别的 `*_API_KEY` 字面量，
+        漏了一种写法：把取 key 塞进模块级 helper，`_transcribe_audio` 只调它。
+        那样三个函数的源码里一个凭据名都没有，测试照绿，而用户的 key
+        真的会流进 ASR。复审用这种写法实证过——用户 key 进了 OpenAI 客户端，
+        两条测试全绿。
+
+        所以这里不再看「出现了哪些名字」，而是**追数据来源**：
+        锁定 `_transcribe_audio` 的子树（含它调用到的 helper），
+        找出里面的 `OpenAI(api_key=...)`，把实参回溯到终点，
+        要求终点是 `os.getenv("OPENAI_API_KEY")`。
+
+        另有一条模块级断言，但那不是「不许出现第二个 key」——平台自己的
+        LLM 后端本来就要读 `ALIYUN_BAILIAN_API_KEY` / `DEEPSEEK_API_KEY`。
+        它守的是**工单 #9 的威胁模型**：全模块不得出现任何名字里带
+        BYOK / USER / CLIENT 的凭据环境变量。
         """
-        sources = [
-            inspect.getsource(fn)
-            for fn in (
-                summarizer._transcribe_audio,
-                summarizer._download_audio_for_asr,
-                summarizer._extract_audio_for_asr,
+        tree = ast.parse(inspect.getsource(summarizer))
+
+        user_creds = {
+            name for name in self._module_env_reads(tree)
+            if any(tag in name.upper() for tag in ("BYOK", "USER", "CLIENT"))
+        }
+        assert not user_creds, (
+            f"模块里读了疑似用户自带凭据的环境变量：{sorted(user_creds)}；"
+            "工单 #9 引入 BYOK 时，这些也不该被 ASR 路径碰到"
+        )
+
+        asr_fn = next(
+            (fn for fn in ast.walk(tree)
+             if isinstance(fn, ast.FunctionDef) and fn.name == "_transcribe_audio"),
+            None,
+        )
+        assert asr_fn is not None, "找不到 _transcribe_audio，这条测试等于没查"
+
+        origins = []
+        for call, expr in self._openai_api_key_args(asr_fn):
+            origin = self._resolve(tree, expr)
+            origins.append(origin)
+            assert origin == ASR_KEY_ENV, (
+                f"ASR 的 OpenAI(api_key=...) 实参回溯到 {origin!r} 而不是 "
+                f"{ASR_KEY_ENV!r}；ASR 不许用任何别的凭据来源"
             )
-        ]
+        assert origins, "_transcribe_audio 里找不到 OpenAI(api_key=...) 调用"
 
-        keys = set()
-        for src in sources:
-            for node in ast.walk(ast.parse(src)):
-                if isinstance(node, ast.Constant) and isinstance(node.value, str) \
-                        and node.value.endswith("_API_KEY"):
-                    keys.add(node.value)
+    @staticmethod
+    def _module_env_reads(tree):
+        """模块里所有被读取的环境变量名（getenv / environ.get）。"""
+        names = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            first = node.args[0]
+            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                continue
+            func = node.func
+            attr = getattr(func, "attr", "")
+            is_environ_get = (
+                attr == "get"
+                and isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr == "environ"
+            )
+            if attr == "getenv" or is_environ_get:
+                names.add(first.value)
+        return names
 
-        assert keys == {ASR_KEY_ENV}, f"ASR 路径里出现了别的凭据名：{sorted(keys)}"
+    @staticmethod
+    def _openai_api_key_args(fn):
+        """产出 (call 节点, api_key 实参表达式) —— 函数内每个 OpenAI(...) 调用一处。"""
+        found = []
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else getattr(
+                node.func, "attr", ""
+            )
+            if name != "OpenAI":
+                continue
+            for kw in node.keywords:
+                if kw.arg == "api_key":
+                    found.append((node, kw.value))
+        return found
+
+    @classmethod
+    def _resolve(cls, tree, expr, seen=None):
+        """把 api_key 实参回溯到它最终读取的环境变量名。
+
+        只跟三种形态：直接读环境变量、局部变量赋值、helper 的 return。
+        刻意不做完整数据流分析——目标不是形式化验证，是让「把用户 key
+        接进 ASR」这种改法必须留下一个可查的 getenv 或一个可查的调用点；
+        跟不上的形态会落到 None，由断言拦下。
+
+        `seen` 挡住 `x = x` 这类自引用导致的无限递归。
+        """
+        seen = seen or set()
+
+        # 形态一：直接读环境变量
+        if isinstance(expr, ast.Call):
+            name = cls._single_env_name(expr)
+            if name:
+                return name
+            # 形态三：追进 helper，找它 return 的那个值
+            return cls._resolve_helper_return(tree, expr, seen)
+
+        # 形态二：局部变量，沿同模块内的赋值回溯
+        if isinstance(expr, ast.Name):
+            if expr.id in seen:
+                return None
+            seen.add(expr.id)
+            for value in cls._assignments(tree, expr.id):
+                origin = cls._resolve(tree, value, seen)
+                if origin is not None:
+                    return origin
+            return None
+
+        return None
+
+    @staticmethod
+    def _assignments(tree, var_name):
+        """模块内所有 `var_name = ...` 的右值。"""
+        out = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == var_name:
+                        out.append(node.value)
+        return out
+
+    @staticmethod
+    def _single_env_name(expr):
+        func = expr.func
+        attr = getattr(func, "attr", "")
+        if attr in ("getenv", "get") and expr.args:
+            first = expr.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                return first.value
+        return None
+
+    @classmethod
+    def _resolve_helper_return(cls, tree, call, seen):
+        target = getattr(call.func, "id", None)
+        if target is None:
+            return None
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef) or fn.name != target:
+                continue
+            for sub in ast.walk(fn):
+                if isinstance(sub, ast.Return) and sub.value is not None:
+                    origin = cls._resolve(tree, sub.value, seen)
+                    if origin is not None:
+                        return origin
+        return None
         assert "database" not in "\n".join(sources), "ASR 不该去读用户表里的凭据"
