@@ -92,6 +92,98 @@ def chat_req(subtitle="s"):
     return api_summarize.ChatRequest(url="u", question="q", subtitle_text=subtitle)
 
 
+class ReasonStubExtractor:
+    """按给定字典原样返回的提取器——用来喂各种 fail_reason 组合。"""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def extract(self, url):
+        return dict(self.payload)
+
+
+class TestSubtitleFailureReason:
+    """字幕拿不到时，错误事件要说清「为什么」，而不是笼统一句「没有字幕」。
+
+    这里守的是两件事：
+    1. 两种结局（「平台没给字幕轨道」与「给了但取不下来」）在用户看得见的
+       文案里必须不同——它们对应完全不同的排查方向。
+    2. 新键是**可选**的。StubExtractor 至今仍返回旧形状，任何一条没跟上
+       新返回结构的路径都不该在这里变成 KeyError。
+    """
+
+    def _run(self, monkeypatch, db, make_user, payload, email="u@example.com"):
+        monkeypatch.setattr(
+            api_summarize, "_get_extractor", lambda: ReasonStubExtractor(payload)
+        )
+        monkeypatch.setattr(api_summarize, "_get_summarizer", lambda: StubSummarizer())
+        uid = make_user(email)
+        events = collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+        return events, uid
+
+    def test_no_track_and_fetch_failure_read_differently(
+        self, db, make_user, monkeypatch
+    ):
+        from summarizer import FAIL_FETCH_FAILED, FAIL_NO_TRACK
+
+        no_track, _ = self._run(monkeypatch, db, make_user, {
+            "has_subtitle": False, "full_text": "", "segments": [],
+            "fail_reason": FAIL_NO_TRACK,
+            "asr_fail_reason": "asr_not_configured",
+        }, email="no-track@example.com")
+        fetch_failed, _ = self._run(monkeypatch, db, make_user, {
+            "has_subtitle": False, "full_text": "", "segments": [],
+            "fail_reason": FAIL_FETCH_FAILED,
+            "asr_fail_reason": "asr_failed",
+        }, email="fetch-failed@example.com")
+
+        no_msg = no_track[1][1]["message"]
+        fetch_msg = fetch_failed[1][1]["message"]
+        assert no_msg != fetch_msg, "两种落穿不该给出同一句提示"
+        assert "没有字幕" in no_msg, no_msg
+        assert "没能取下来" in fetch_msg, fetch_msg
+        # 运维视角也要能看到「服务端没配语音识别」这条
+        assert "未配置语音识别" in no_msg, no_msg
+        assert "也没成功" in fetch_msg, fetch_msg
+
+        # 机器可读的原因一并下发，前端将来要分开提示时不必再猜
+        assert no_track[1][1]["reason"] == FAIL_NO_TRACK
+        assert fetch_failed[1][1]["reason"] == FAIL_FETCH_FAILED
+        assert no_track[1][1]["asr_reason"] == "asr_not_configured"
+
+    def test_old_shaped_payload_does_not_raise_key_error(
+        self, db, make_user, monkeypatch
+    ):
+        """提取器仍返回旧形状（无新键）时退回笼统文案，而不是 KeyError。"""
+        events, uid = self._run(monkeypatch, db, make_user, {
+            "has_subtitle": False, "full_text": "", "segments": [],
+        })
+        assert [e[0] for e in events] == ["subtitle", "error"], events
+        payload = events[1][1]
+        assert payload["reason"] == "" and payload["asr_reason"] == ""
+        assert "没有可用的字幕" in payload["message"], payload
+        assert parse_count_of(uid) == 0, "无字幕却扣了额度"
+
+    def test_chat_stream_reports_reason_too(
+        self, db, make_user, monkeypatch
+    ):
+        from summarizer import FAIL_FETCH_FAILED
+
+        monkeypatch.setattr(api_summarize, "_get_extractor", lambda: ReasonStubExtractor({
+            "has_subtitle": False, "full_text": "", "segments": [],
+            "fail_reason": FAIL_FETCH_FAILED, "asr_fail_reason": "asr_failed",
+        }))
+        monkeypatch.setattr(api_summarize, "_get_summarizer", lambda: StubSummarizer())
+        uid = make_user()
+        events = collect(
+            api_summarize.chat_with_video(chat_req(subtitle=""), user={"id": uid})
+        )
+        payload = next(e[1] for e in events if e[0] == "error")
+        assert payload["reason"] == FAIL_FETCH_FAILED, payload
+        assert "无法回答问题" in payload["message"], payload
+        assert chat_count_of(uid) == 0, "无字幕却扣了对话额度"
+
+
 class TestSummarizeQuotaTiming:
     def test_no_subtitle_does_not_consume(self, db, make_user, stub):
         s = stub(has_subtitle=False)

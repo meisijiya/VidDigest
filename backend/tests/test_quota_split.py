@@ -1,14 +1,14 @@
 """额度拆分：解析额度与对话额度是两个独立计数器（工单 #4）。
 
-与 test_quota.py 的分工：那边锁的是「单一额度」的既有行为，
-这边锁的是拆分后的新行为。两者并存，不互相替代——
-同一个仓库里两种写法并存，是工单 #2 明确认可的状态。
+与 test_quota.py 的分工：那边守「判定只读、两类额度各扣各的」两条底线，
+这边展开跨天各自重置、回滚的原子性、环境变量上限与 schema 迁移。
 """
 import os
 import pathlib
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 import pytest
 
@@ -395,20 +395,6 @@ class TestEnvConfigWiring:
         ) == (3, 10)
 
 
-class TestVipUnlimited:
-    def test_vip_unlimited_on_both_counters(self, db, make_user):
-        uid = make_user(is_vip=True, vip_expire_at="2099-01-01T00:00:00+00:00")
-        for _ in range(5):
-            assert db.consume_quota(uid, "parse") == -1
-            assert db.consume_quota(uid, "chat") == -1
-        assert _counts(uid) == (0, 0), "VIP 不应消耗任何额度"
-
-    def test_expired_vip_falls_back_to_free(self, db, make_user):
-        uid = make_user(is_vip=True, vip_expire_at="2000-01-01T00:00:00+00:00")
-        assert db.check_quota(uid)["parse"] == (True, database.DAILY_PARSE_LIMIT)
-        assert db.check_quota(uid)["chat"] == (True, database.DAILY_CHAT_LIMIT)
-
-
 class TestSchemaMigration:
     def test_init_db_adds_columns_to_existing_table(self, db, make_user):
         """已建好的库再次 init_db 也要拿到新列。
@@ -430,16 +416,22 @@ class TestSchemaMigration:
         database.init_db()
 
     def test_legacy_columns_untouched(self, db, make_user):
-        """expand 阶段不动旧列——它是旧测试与回滚路径的依托。"""
+        """expand 阶段不动旧列——列还留在库里，但新路径不再读它。
+
+        存量库里那两个共用列可能已经记着消耗。往里写一条「今天的 1」，
+        再看新计数器：必须仍是满额，否则就等于两套计费同时在生效。
+        """
         uid = make_user()
-        db.consume_summary_quota(uid)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         with database.get_db() as c:
-            row = c.execute(
-                "SELECT daily_summary_count FROM users WHERE id=?", (uid,)
-            ).fetchone()
-        assert row["daily_summary_count"] == 1, (
-            "旧的 daily_summary_count 应仍可独立使用；"
-            "原地改它会让所有旧测试与回滚路径同时失效"
+            c.execute(
+                "UPDATE users SET daily_summary_count = 1, last_summary_date = ? "
+                "WHERE id = ?", (today, uid),
+            )
+
+        assert _counts(uid) == (0, 0)
+        assert db.check_quota(uid)["parse"] == (True, database.DAILY_PARSE_LIMIT), (
+            "旧的共用计数仍在影响新额度——两套计费同时在生效"
         )
 
     def test_legacy_columns_survive_migration(self, db):

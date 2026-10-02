@@ -350,7 +350,7 @@ print('✓ 测试账号已清空')
 PY
 ```
 
-**自动化测试**：CI 环境可直接用 `test@example.org` 跑权限校验类用例；用 `vip@example.org` 跑配额无限制场景。注意免费用户每天只有 3 次，连续跑测试前先调 `FREE_DAILY_SUMMARY_LIMIT` 或删除 `daily_summary_count` 字段。
+**自动化测试**：CI 环境可直接用 `test@example.org` 跑权限校验类用例；用 `vip@example.org` 跑配额无限制场景。注意免费用户每天解析 3 次、追问 10 次（见 §10.3），连续跑测试前先把 `VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT` 调大，或清掉 `daily_parse_count` / `daily_chat_count` 字段。
 
 ## 6. 进程管理（hub）
 
@@ -568,7 +568,16 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 
 ### 10.3 免费用户配额
 
-由 `database.py` 中 `FREE_DAILY_SUMMARY_LIMIT`（默认 3）控制，改后重启生效。
+由**环境变量**控制，改后重启后端生效（发版前在 `backend/.env` 里设）：
+
+| 环境变量 | 默认 | 管什么 |
+|:--|--:|:--|
+| `VIDDIGEST_DAILY_PARSE_LIMIT` | 3 | 每日可发起的解析次数（产出总结 + 思维导图 + 标签） |
+| `VIDDIGEST_DAILY_CHAT_LIMIT` | 10 | 每日可发起的追问次数 |
+
+两个计数器彼此独立、各自按 UTC 日期重置。共享内容（读社区视频的总结、思维导图、标签、字幕）不消耗任何额度。
+
+调参入口是环境变量，不是 `database.py` 里的常量——改常量会在下一次改代码时被覆盖。
 
 ---
 

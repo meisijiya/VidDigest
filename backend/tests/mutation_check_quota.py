@@ -72,17 +72,16 @@ MUTATIONS = [
      DATA),
 
     # ── 失败回滚 ──
+    # 回滚点已从 except 分支收进 finally（单一回滚点，断流不白扣）。
+    # 因此这两条变异指向 finally 里的那个 if，而不是旧的 except 内联块——
+    # 模式串照着旧结构写，命中数会是 0，脚本还会报「未命中」而不是「存活」。
     ("Q8 模型失败不回滚（白扣）", ROUTES_FILE,
-     "        if quota_spent:\n            refund_quota(user[\"id\"], \"parse\")\n        yield ServerSentEvent(\n"
-     "            raw_data=json.dumps({\"message\": f\"总结失败: {str(e)}\"}, ensure_ascii=False),",
-     "        yield ServerSentEvent(\n"
-     "            raw_data=json.dumps({\"message\": f\"总结失败: {str(e)}\"}, ensure_ascii=False),",
+     '        if quota_spent:\n            refund_quota(user["id"], "parse")',
+     '        if False:\n            refund_quota(user["id"], "parse")',
      ROUTES),
     ("Q9 追问失败不回滚（白扣）", ROUTES_FILE,
-     "        if quota_spent:\n            refund_quota(user[\"id\"], \"chat\")\n        yield ServerSentEvent(\n"
-     "            raw_data=json.dumps({\"message\": f\"回答失败: {str(e)}\"}, ensure_ascii=False),",
-     "        yield ServerSentEvent(\n"
-     "            raw_data=json.dumps({\"message\": f\"回答失败: {str(e)}\"}, ensure_ascii=False),",
+     '        if quota_spent:\n            refund_quota(user["id"], "chat")',
+     '        if False:\n            refund_quota(user["id"], "chat")',
      ROUTES),
     ("Q10 回滚扣错计数器", ROUTES_FILE,
      "        if quota_spent:\n            refund_quota(user[\"id\"], \"parse\")",
@@ -149,12 +148,13 @@ MUTATIONS = [
      "        )\n"
      "        return limit - max(0, (user[count_col] or 0) - 1)",
      DATA),
+    # 错误文案改成了按 fail_reason 分派（工单 #3），锚点跟着挪到新形状上。
     ("Q22 无字幕也扣额度（旧断言读废弃列时恒真）", ROUTES_FILE,
      '        if not subtitle_data["has_subtitle"]:\n'
-     "            yield ServerSentEvent(\n",
+     '            head, reason, asr_reason = _subtitle_failure(subtitle_data)\n',
      '        if not subtitle_data["has_subtitle"]:\n'
      '            consume_quota(user["id"], "parse")\n'
-     "            yield ServerSentEvent(\n",
+     '            head, reason, asr_reason = _subtitle_failure(subtitle_data)\n',
      ROUTES),
 ]
 

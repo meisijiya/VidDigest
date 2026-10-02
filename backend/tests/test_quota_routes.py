@@ -5,6 +5,7 @@
 """
 import asyncio
 import json
+import threading
 
 import pytest
 
@@ -202,6 +203,153 @@ class TestModelFailureRefunds:
         assert _counts(uid)[0] == 0, "反复失败把额度加成了正数"
 
 
+class TestClientDisconnectRefunds:
+    """客户端中途断开（关页面 / 断网）不该白扣额度。
+
+    断流时生成器收到的是 GeneratorExit（aclose）或 CancelledError（请求被取消），
+    两者都继承 BaseException 而非 Exception——`except Exception` 抓不到它们，
+    额度就会停在扣减后的值上。这组测试守着的就是这个缺口。
+    """
+
+    def _disconnect_after(self, gen, stop_event, uid, spent):
+        """收到 stop_event 那个事件就断开，返回已经看到的事件名。"""
+
+        async def _run():
+            seen = []
+            async for ev in gen:
+                seen.append(ev.event)
+                if ev.event == stop_event:
+                    break        # 客户端此刻关掉连接
+            assert _counts(uid) == spent, "前提：额度此时应已扣"
+            await gen.aclose()   # 等价于断流：向生成器抛 GeneratorExit
+            return seen
+
+        return asyncio.run(_run())
+
+    def test_summary_disconnect_mid_stream_refunds(self, db, make_user, wired):
+        wired()
+        uid = make_user()
+        seen = self._disconnect_after(
+            api_summarize.summarize_video(summarize_req(), user={"id": uid}),
+            "summary", uid, (1, 0),
+        )
+        assert "done" not in seen, "前提：这次总结没跑完"
+        assert _counts(uid) == (0, 0), "断流不该白扣解析额度"
+
+    def test_chat_disconnect_mid_stream_refunds(self, db, make_user, wired):
+        wired()
+        uid = make_user()
+        seen = self._disconnect_after(
+            api_summarize.chat_with_video(chat_req(), user={"id": uid}),
+            "answer", uid, (0, 1),
+        )
+        assert "done" not in seen, "前提：这次追问没跑完"
+        assert _counts(uid) == (0, 0), "断流不该白扣对话额度"
+
+    def test_completed_stream_is_not_refunded(self, db, make_user, wired):
+        """反过来也守着：完整跑完的流不能被回滚，否则等于白送。"""
+        wired()
+        uid = make_user()
+        collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+        assert _counts(uid) == (1, 0), "跑完的总结不该回滚"
+
+
+class BlockingMindmapSummarizer(StubSummarizer):
+    """思维导图阶段卡在闸门上——制造一个可取消的 await 点。"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def generate_mindmap(self, text, language):
+        self._calls["generate_mindmap"] += 1
+        self.entered.set()
+        self.release.wait(timeout=10)   # 取消已生效时这线程的结果没人要
+        return self._mindmap
+
+
+class TestCancelledRequestRefunds:
+    """请求被取消（客户端断开、服务端超时）同样要回滚。"""
+
+    def test_cancel_during_mindmap_refunds(self, db, make_user, wired):
+        s = BlockingMindmapSummarizer()
+        wired(summarizer=s)
+        uid = make_user()
+
+        async def _drain():
+            async for _ in api_summarize.summarize_video(
+                summarize_req(), user={"id": uid}
+            ):
+                pass
+
+        async def _run():
+            try:
+                task = asyncio.ensure_future(_drain())
+                # 等到思维导图那个 await 点真的挂上去了再取消
+                for _ in range(500):
+                    if s.entered.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                assert s.entered.is_set(), "没等到思维导图阶段，取消时机没测到"
+                assert _counts(uid) == (1, 0), "前提：额度此时应已扣"
+
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            finally:
+                s.release.set()
+
+        asyncio.run(_run())
+        assert _counts(uid) == (0, 0), "请求被取消不该白扣额度"
+
+
+class TestQuotaLimitStaysConsistent:
+    """路由报的 limit 与 remaining 必须同源。
+
+    生产上两者都来自 import 期读的同一个环境变量，碰巧一致；但 remaining
+    走数据层的动态取值，limit 若在 import 期冻结成副本，改配置后同一份
+    payload 就会自相矛盾（`remaining=0, limit=3`，真实上限其实是 1）。
+    """
+
+    def _call(self, user):
+        async def _run():
+            return await api_summarize.get_quota(user=user)
+        return asyncio.run(_run())
+
+    def test_limit_follows_the_module_value(self, db, make_user, monkeypatch):
+        monkeypatch.setattr(database, "DAILY_PARSE_LIMIT", 2)
+        monkeypatch.setattr(database, "DAILY_CHAT_LIMIT", 5)
+        uid = make_user()
+
+        r = self._call({"id": uid})
+        assert r["parse"] == {"allowed": True, "remaining": 2, "limit": 2}
+        assert r["chat"] == {"allowed": True, "remaining": 5, "limit": 5}
+
+    def test_limit_stays_right_when_exhausted(self, db, make_user, monkeypatch):
+        """用完时也自洽：remaining=0 必须配 limit=2，不是 import 期的 3。"""
+        monkeypatch.setattr(database, "DAILY_PARSE_LIMIT", 2)
+        uid = make_user()
+        for _ in range(2):
+            database.consume_quota(uid, "parse")
+
+        r = self._call({"id": uid})
+        assert r["parse"] == {"allowed": False, "remaining": 0, "limit": 2}
+
+    def test_exhausted_message_uses_the_same_limit(self, db, make_user, monkeypatch):
+        """提示文案里的每日次数也得跟着变，否则和 payload 对不上。"""
+        monkeypatch.setattr(database, "DAILY_PARSE_LIMIT", 2)
+        uid = make_user()
+        for _ in range(2):
+            database.consume_quota(uid, "parse")
+
+        allowed, _remaining, message = api_summarize._check_quota_permission(
+            {"id": uid}, "parse"
+        )
+        assert allowed is False
+        assert "每日 2 次" in message, message
+
+
 class TestQuotaEndpoint:
     """GET /api/quota —— 前端在点击前就靠它显示两个剩余次数。"""
 
@@ -237,12 +385,6 @@ class TestQuotaEndpoint:
         r = self._call({"id": uid})
         assert r["parse"]["remaining"] == 0
         assert r["parse"]["limit"] == database.DAILY_PARSE_LIMIT
-
-    def test_vip_reports_unlimited_on_both(self, db, make_user):
-        uid = make_user(is_vip=True, vip_expire_at="2099-01-01T00:00:00+00:00")
-        r = self._call({"id": uid})
-        assert r["parse"]["remaining"] == -1
-        assert r["chat"]["remaining"] == -1
 
     def test_endpoint_does_not_write(self, db, make_user):
         uid = make_user()

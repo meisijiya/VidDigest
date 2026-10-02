@@ -22,7 +22,12 @@ DB_FUNCS = {
     "get_db", "init_db", "open_connections", "open_connection_threads",
     "forget_all_connections", "get_connection_generation",
     "create_user", "get_user_by_id", "get_user_by_email", "create_order",
-    "consume_summary_quota", "check_summary_quota", "append_chat_history",
+    # 额度：拆分后只剩这一族。工单 #4 之前的 check_summary_quota /
+    # consume_summary_quota 已删除——名字留着不起作用，缺了现存的才致命：
+    # 漏一个就等于这道门禁对那条路径失明。
+    "consume_quota", "check_quota_kind", "refund_quota", "check_quota",
+    "quota_limit", "is_vip_active",
+    "append_chat_history",
     "upsert_parse_history", "get_parse_histories", "get_parse_history_detail",
     "get_parse_history_by_url", "delete_parse_history", "get_user_orders",
     "update_order_stripe_session", "complete_order",

@@ -10,10 +10,9 @@ from pydantic import BaseModel
 
 from auth import get_optional_user
 from database import (
-    DAILY_CHAT_LIMIT,
-    DAILY_PARSE_LIMIT,
     check_quota_kind,
     consume_quota,
+    quota_limit,
     refund_quota,
 )
 
@@ -31,7 +30,7 @@ async def get_quota(user: dict | None = Depends(get_optional_user)):
     """
     if not user:
         return {"logged_in": False, "unlimited": False, "remaining": None,
-                "limit": DAILY_PARSE_LIMIT, "parse": None, "chat": None}
+                "limit": quota_limit("parse"), "parse": None, "chat": None}
     return {"logged_in": True, **_quota_payload(user["id"])}
 
 
@@ -41,14 +40,17 @@ def _quota_payload(user_id: int, primary: str = "parse") -> dict:
     顶层 remaining/limit/unlimited 是留给旧前端的兼容别名，必须跟随
     `primary`——即「这次事件刚动的是哪类额度」。若追问事件里还报 parse
     的数字，前端的降级分支会把刚扣掉的对话额度显示成解析的余量。
+
+    limit 走 `quota_limit` 而不是模块常量：remaining 由数据层按调用时的
+    模块值算，limit 若在 import 期冻结成另一份，同一份 payload 就会自相矛盾。
     """
     payload = {}
-    for kind, limit in (("parse", DAILY_PARSE_LIMIT), ("chat", DAILY_CHAT_LIMIT)):
+    for kind in ("parse", "chat"):
         allowed, remaining = check_quota_kind(user_id, kind)
         payload[kind] = {
             "allowed": allowed,
             "remaining": (0 if not allowed else remaining),
-            "limit": limit,
+            "limit": quota_limit(kind),
         }
     head = payload[primary]
     return {
@@ -72,7 +74,7 @@ class ChatRequest(BaseModel):
 
 def _check_quota_permission(user: dict | None, kind: str):
     """检查某类额度权限（只判定，不扣）。"""
-    limit = DAILY_PARSE_LIMIT if kind == "parse" else DAILY_CHAT_LIMIT
+    limit = quota_limit(kind)
     label = _QUOTA_LABELS[kind]
 
     if not user:
@@ -104,6 +106,42 @@ def _get_extractor():
     return _get_extractor._instance
 
 
+def _subtitle_failure(subtitle_data: dict) -> tuple[str, str, str]:
+    """把「为什么拿不到字幕」翻成一句用户看得懂的话。
+
+    返回 (前半句, fail_reason, asr_fail_reason)。后半句留给调用方拼——同一个
+    原因对「无法生成总结」和「无法回答问题」要接不同的尾巴。
+
+    延迟导入 summarizer 与本文件其它地方一致（openai / yt_dlp 都很重），
+    不为了几个常量在模块顶部把它拖进来。
+    """
+    from summarizer import (
+        FAIL_ASR_FAILED,
+        FAIL_ASR_NOT_CONFIGURED,
+        FAIL_FETCH_FAILED,
+        FAIL_NO_TRACK,
+    )
+
+    # .get() 不是防御性过度：这两个键是新加的，任何一条仍返回旧形状的
+    # 路径（测试里的 StubExtractor、第三方补丁）都不该把这里变成 KeyError。
+    reason = subtitle_data.get("fail_reason", "")
+    asr_reason = subtitle_data.get("asr_fail_reason", "")
+
+    if reason == FAIL_FETCH_FAILED:
+        head = "平台提供了字幕但没能取下来"
+    elif reason == FAIL_NO_TRACK:
+        head = "该视频没有字幕"
+    else:
+        head = "该视频没有可用的字幕"
+
+    if asr_reason == FAIL_ASR_NOT_CONFIGURED:
+        head += "，且服务端未配置语音识别"
+    elif asr_reason == FAIL_ASR_FAILED:
+        head += "，服务端用语音识别补字幕也没成功"
+
+    return head, reason, asr_reason
+
+
 async def _run_in_thread(func, *args):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, func, *args)
@@ -132,7 +170,7 @@ async def summarize_video(
         )
         return
 
-    # 额度是否已扣。扣了之后模型调用失败要还回去。
+    # 额度是否已扣。扣了之后没走完流程就要还回去。
     quota_spent = False
     try:
         extractor = _get_extractor()
@@ -144,8 +182,14 @@ async def summarize_video(
         )
 
         if not subtitle_data["has_subtitle"]:
+            head, reason, asr_reason = _subtitle_failure(subtitle_data)
             yield ServerSentEvent(
-                raw_data=json.dumps({"message": "该视频没有可用的字幕，无法生成总结"}, ensure_ascii=False),
+                raw_data=json.dumps({
+                    "message": f"{head}，无法生成总结",
+                    # 机器可读的原因：前端将来要分开提示时不必再猜
+                    "reason": reason,
+                    "asr_reason": asr_reason,
+                }, ensure_ascii=False),
                 event="error",
             )
             return
@@ -179,21 +223,27 @@ async def summarize_video(
             event="mindmap",
         )
 
+        # 内容已完整产出，扣费就此结清：此后即便客户端断流也不回滚。
+        quota_spent = False
         yield ServerSentEvent(raw_data="[DONE]", event="done")
 
     except HTTPException:
-        if quota_spent:
-            refund_quota(user["id"], "parse")
+        # 交给下面的 finally 回滚，然后原样抛出——不能降级成 SSE 错误事件。
         raise
     except Exception as e:
         # 模型调用失败不该白扣额度。扣减与调用之间没有事务，
         # 这里是把已扣的那一次还回去——回滚本身不会把计数压到负数。
-        if quota_spent:
-            refund_quota(user["id"], "parse")
         yield ServerSentEvent(
             raw_data=json.dumps({"message": f"总结失败: {str(e)}"}, ensure_ascii=False),
             event="error",
         )
+    finally:
+        # 唯一回滚点：except 分支和「客户端中途断开」共用它，不会重复退款。
+        # 断流时抛的是 GeneratorExit / CancelledError，两者都继承 BaseException
+        # 而非 Exception，上面的 except 抓不到——实测额度就停在扣减后的值。
+        # 无论如何都原样抛出，KeyboardInterrupt / SystemExit 不会被吞掉。
+        if quota_spent:
+            refund_quota(user["id"], "parse")
 
 
 # ── AI 问答端点 ──────────────────────────────────────────
@@ -222,8 +272,13 @@ async def chat_with_video(
             extractor = _get_extractor()
             subtitle_data = await _run_in_thread(extractor.extract, req.url)
             if not subtitle_data["has_subtitle"]:
+                head, reason, asr_reason = _subtitle_failure(subtitle_data)
                 yield ServerSentEvent(
-                    raw_data=json.dumps({"message": "该视频没有可用的字幕，无法回答问题"}, ensure_ascii=False),
+                    raw_data=json.dumps({
+                        "message": f"{head}，无法回答问题",
+                        "reason": reason,
+                        "asr_reason": asr_reason,
+                    }, ensure_ascii=False),
                     event="error",
                 )
                 return
@@ -250,16 +305,20 @@ async def chat_with_video(
                 event="answer",
             )
 
+        # 回答已完整产出，扣费就此结清：此后即便客户端断流也不回滚。
+        quota_spent = False
         yield ServerSentEvent(raw_data="[DONE]", event="done")
 
     except HTTPException:
-        if quota_spent:
-            refund_quota(user["id"], "chat")
+        # 交给下面的 finally 回滚，然后原样抛出——不能降级成 SSE 错误事件。
         raise
     except Exception as e:
-        if quota_spent:
-            refund_quota(user["id"], "chat")
         yield ServerSentEvent(
             raw_data=json.dumps({"message": f"回答失败: {str(e)}"}, ensure_ascii=False),
             event="error",
         )
+    finally:
+        # 同 summarize_video：唯一回滚点，断流抛的 GeneratorExit /
+        # CancelledError 不在 Exception 族里，但扣了的额度必须还回去。
+        if quota_spent:
+            refund_quota(user["id"], "chat")

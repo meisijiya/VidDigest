@@ -319,61 +319,11 @@ def is_vip_active(user) -> bool:
     return expire > datetime.now(timezone.utc)
 
 
-def check_summary_quota(user_id: int) -> tuple[bool, int]:
-    """只判定、不扣减。返回 (allowed, remaining)，remaining = -1 表示 VIP 无限。
-
-    与 consume_summary_quota 拆成两步的原因：字幕提取失败时不应该扣掉用户额度。
-    """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    with get_db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user:
-            return False, 0
-
-        if is_vip_active(user):
-            return True, -1
-
-        if user["last_summary_date"] != today:
-            # 今天还没用过，额度是满的（此函数不写库）
-            return True, FREE_DAILY_SUMMARY_LIMIT
-
-        current = user["daily_summary_count"]
-        if current >= FREE_DAILY_SUMMARY_LIMIT:
-            return False, 0
-        return True, FREE_DAILY_SUMMARY_LIMIT - current
-
-
-def consume_summary_quota(user_id: int) -> int:
-    """扣减一次 AI 额度，返回扣减后的 remaining。调用前须已通过 check_summary_quota。"""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    with get_db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user:
-            return 0
-
-        if is_vip_active(user):
-            return -1
-
-        if user["last_summary_date"] != today:
-            conn.execute(
-                "UPDATE users SET daily_summary_count = 1, last_summary_date = ? WHERE id = ?",
-                (today, user_id),
-            )
-            return FREE_DAILY_SUMMARY_LIMIT - 1
-
-        current = user["daily_summary_count"]
-        conn.execute(
-            "UPDATE users SET daily_summary_count = daily_summary_count + 1 WHERE id = ?",
-            (user_id,),
-        )
-        return FREE_DAILY_SUMMARY_LIMIT - current - 1
-
-
 # ── 额度拆分：解析额度 / 对话额度（工单 #4）────────────────
 #
-# 旧实现（check_summary_quota / consume_summary_quota）保留不动：
-# 它锁的是「单一额度」语义，现有测试仍依赖它。这里是并行的新实现，
-# 路由层切过去之后再另行清理旧路径（contract 阶段，不在本工单）。
+# 拆分前那套「单一共用额度」的实现（check_summary_quota /
+# consume_summary_quota）已随路由层切换一并删除：全仓库再无调用者，
+# 留着只会让人以为还有第二条计费路径。这里是唯一的计费实现。
 
 
 def _quota_spec(kind: str) -> tuple[str, str, str]:
@@ -390,11 +340,14 @@ def _quota_spec(kind: str) -> tuple[str, str, str]:
     return spec
 
 
-def _quota_limit(kind: str) -> int:
+def quota_limit(kind: str) -> int:
     """按模块当前值取上限——而不是导入时冻结的常量。
 
     刻意不写成 `from DAILY_PARSE_LIMIT`：测试会 monkeypatch 模块属性，
     导入时冻结会让「改配置后行为随之改变」这条 AC 无法验证。
+
+    公开是因为路由层要报同样的数字。import 时冻结的副本会和这里的
+    remaining 打架，同一份 payload 报出 `remaining=0, limit=3`（真实上限 1）。
     """
     return globals()[_quota_spec(kind)[2]]
 
@@ -402,7 +355,7 @@ def _quota_limit(kind: str) -> int:
 def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
     """判定单类额度。只读，不写库。返回 (allowed, remaining)，-1 表示无限。"""
     count_col, date_col, _ = _quota_spec(kind)
-    limit = _quota_limit(kind)
+    limit = quota_limit(kind)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:
@@ -429,7 +382,7 @@ def check_quota(user_id: int) -> dict:
 def consume_quota(user_id: int, kind: str) -> int:
     """扣减一次额度，返回扣减后的 remaining。调用前须已通过 check_quota_kind。"""
     count_col, date_col, _ = _quota_spec(kind)
-    limit = _quota_limit(kind)
+    limit = quota_limit(kind)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:
@@ -463,7 +416,7 @@ def refund_quota(user_id: int, kind: str) -> int:
     更不会把并发的另一次扣减覆盖掉。
     """
     count_col, date_col, _ = _quota_spec(kind)
-    limit = _quota_limit(kind)
+    limit = quota_limit(kind)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:

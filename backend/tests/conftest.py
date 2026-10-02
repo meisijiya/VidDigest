@@ -111,8 +111,3 @@ def make_user(db):
         return user["id"]
     return _make
 
-
-def count_of(uid):
-    with database.get_db() as c:
-        row = c.execute("SELECT daily_summary_count FROM users WHERE id=?", (uid,)).fetchone()
-    return row["daily_summary_count"]

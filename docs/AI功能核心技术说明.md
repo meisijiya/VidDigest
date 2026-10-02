@@ -242,14 +242,23 @@ const reader = res.body.getReader()
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#f59e0b" stroke-width="2" style="vertical-align:middle"><lock/></svg> 权限控制
 
 ```python
-def _check_summary_permission(user):
+# 两步走：先只判定，不扣
+def _check_quota_permission(user: dict | None, kind: str):
+    limit = quota_limit(kind)          # 走模块当前值，不在 import 期冻结
+    label = _QUOTA_LABELS[kind]        # "解析" / "追问"
     if not user:
-        return False, 0, "请先登录后使用 AI 总结功能"
-    allowed, remaining = check_and_increment_summary(user["id"])
+        return False, 0, "请先登录后使用 AI 功能"
+    allowed, remaining = check_quota_kind(user["id"], kind)
     if not allowed:
-        return False, 0, f"今日免费次数已用完（每日 {FREE_DAILY_SUMMARY_LIMIT} 次）"
+        return False, 0, f"今日{label}次数已用完（每日 {limit} 次）"
     return True, remaining, None
+
+# 真正要调模型的那一刻才扣 —— 字幕提取失败不扣额度
+consume_quota(user["id"], kind)
 ```
+
+`kind` 只能是 `"parse"`（解析，产出总结 + 思维导图 + 标签）或 `"chat"`（追问）。
+两个计数器在同一张 `users` 表上但各占自己的列与日期字段，彼此独立、各自按 UTC 日期重置。
 
 | 用户状态 | 响应行为 |
 |:---------|:---------|
