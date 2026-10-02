@@ -84,27 +84,35 @@
       </div>
     </div>
 
-    <!-- 底部像素阶梯装饰（仅完整模式） -->
+    <!-- 底部像素阶梯（仅完整模式）。
+         数据驱动而不是手写 12 个 rect：波浪的错峰延迟要按 x 位算出来，
+         手写就只能靠眼睛数，越加越长必然错位。 -->
     <div v-if="!compact" class="absolute bottom-0 left-0 right-0 pointer-events-none" aria-hidden="true">
       <svg class="w-full h-14 sm:h-20" viewBox="0 0 1440 80" preserveAspectRatio="none">
-        <g fill="#161F36">
-          <rect x="0" y="40" width="120" height="40"/>
-          <rect x="120" y="48" width="120" height="32"/>
-          <rect x="240" y="32" width="120" height="48"/>
-          <rect x="360" y="52" width="120" height="28"/>
-          <rect x="480" y="40" width="120" height="40"/>
-          <rect x="600" y="56" width="120" height="24"/>
-          <rect x="720" y="36" width="120" height="44"/>
-          <rect x="840" y="48" width="120" height="32"/>
-          <rect x="960" y="28" width="120" height="52"/>
-          <rect x="1080" y="52" width="120" height="28"/>
-          <rect x="1200" y="40" width="120" height="40"/>
-          <rect x="1320" y="48" width="120" height="32"/>
-        </g>
-        <g>
-          <rect x="240" y="32" width="120" height="3" fill="#7C3AED" opacity="0.55"/>
-          <rect x="720" y="36" width="120" height="3" fill="#EC4899" opacity="0.55"/>
-          <rect x="960" y="28" width="120" height="3" fill="#06B6D4" opacity="0.55"/>
+        <defs>
+          <!-- 扫光带：userSpaceOnUse 各自锚在自己的顶线上，
+               translateX 走完 120 就正好扫过整条线。 -->
+          <linearGradient
+            v-for="s in wallSteps.filter(w => w.line)" :key="`grad-${s.x}`"
+            :id="`wall-shine-${s.x}`"
+            gradientUnits="userSpaceOnUse"
+            :x1="s.x - 12" :x2="s.x + 18" y1="0" y2="0"
+            class="wall-shine"
+            :style="{ animationDelay: s.shineDelay + 's' }">
+            <stop offset="0%" stop-color="#fff" stop-opacity="0"/>
+            <stop offset="50%" stop-color="#fff" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#fff" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+
+        <g v-for="s in wallSteps" :key="s.x"
+           class="wall-step"
+           :style="{ animationDelay: s.delay + 's' }">
+          <rect :x="s.x" :y="s.y" width="120" :height="80 - s.y" fill="#161F36"/>
+          <template v-if="s.line">
+            <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>
+            <rect :x="s.x" :y="s.y" width="120" height="3" :fill="`url(#wall-shine-${s.x})`"/>
+          </template>
         </g>
       </svg>
     </div>
@@ -122,6 +130,31 @@ const props = defineProps({
 const emit = defineEmits(['parse'])
 
 const url = ref('')
+
+/**
+ * 底部城墙：12 段阶梯，y 决定凸起高度（越高越靠上），line 是顶线颜色。
+ *
+ * delay 按 x 顺序递增 —— 波浪是**相邻段错开**才连成一条波线，
+ * 不是各自乱浮。spread 0.16s × 12 段 = 1.92s，必须小于动画周期 2.4s，
+ * 否则最后一段的相位会追过第一段，波会「回卷」而不是往前推。
+ *
+ * shineDelay 单独给：顶线扫光要比波浪慢半拍，三条线依次亮才像信号
+ * 顺着墙跑过去。
+ */
+const wallSteps = [
+  { x: 0, y: 40, delay: 0.00, line: null, shineDelay: 0.0 },
+  { x: 120, y: 48, delay: 0.16, line: null, shineDelay: 0.0 },
+  { x: 240, y: 32, delay: 0.32, line: '#7C3AED', shineDelay: 0.0 },
+  { x: 360, y: 52, delay: 0.48, line: null, shineDelay: 0.0 },
+  { x: 480, y: 40, delay: 0.64, line: null, shineDelay: 0.0 },
+  { x: 600, y: 56, delay: 0.80, line: null, shineDelay: 0.0 },
+  { x: 720, y: 36, delay: 0.96, line: '#EC4899', shineDelay: 0.8 },
+  { x: 840, y: 48, delay: 1.12, line: null, shineDelay: 0.0 },
+  { x: 960, y: 28, delay: 1.28, line: '#06B6D4', shineDelay: 1.6 },
+  { x: 1080, y: 52, delay: 1.44, line: null, shineDelay: 0.0 },
+  { x: 1200, y: 40, delay: 1.60, line: null, shineDelay: 0.0 },
+  { x: 1320, y: 48, delay: 1.76, line: null, shineDelay: 0.0 },
+]
 
 function extractUrl(text) {
   const match = text.match(/https?:\/\/[^\s）\)"\'＞，。、；：！？》>\]]+/)
@@ -144,5 +177,27 @@ function handleParse() {
 .slogan-enter-from, .slogan-leave-to {
   opacity: 0;
   transform: translateY(-16px);
+}
+
+/* ── 城墙：海浪 ──────────────────────────────────────────
+   块和它顶上的彩色线必须浮在**同一个** <g> 里：分开写线会脱节，
+   波浪一走位，顶线就留在原地，看着像贴错了。 */
+.wall-step {
+  animation: wall-wave 2.4s ease-in-out infinite;
+}
+@keyframes wall-wave {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+/* ── 城墙：顶线扫光 ──────────────────────────────────────
+   CSS 的 transform 落在 <linearGradient> 上等价于 gradientTransform，
+   移动的是渐变带本身，那条 3px 的线不用动。走满 120 就扫完一整条。 */
+.wall-shine {
+  animation: wall-shine 2.4s linear infinite;
+}
+@keyframes wall-shine {
+  from { transform: translateX(0); }
+  to   { transform: translateX(120px); }
 }
 </style>

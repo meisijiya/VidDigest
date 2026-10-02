@@ -38,6 +38,19 @@
           </svg>
           <span class="hidden md:inline text-sm">历史</span>
         </button>
+        <!-- 社区：常驻第三项。原先只在首页营销区放一个「浏览社区 →」按钮，
+             解析出视频之后那个按钮就没了，社区成了只在特定状态下可达的角落。 -->
+        <button @click="$emit('open-community')" :title="'社区'"
+          :class="[
+            'p-2 sm:px-4 sm:py-1.5 rounded-lg transition-colors flex items-center gap-1.5',
+            page === 'community' ? 'text-blue-400 bg-blue-50 font-medium' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+          ]">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+          <span class="hidden md:inline text-sm">社区</span>
+        </button>
       </nav>
 
       <!-- Desktop Actions -->
@@ -116,7 +129,7 @@ const props = defineProps({
   quota: { type: Object, default: null },
   quotaLoading: { type: Boolean, default: false },
 })
-const emit = defineEmits(['login', 'register', 'logout', 'open-vip', 'go-home', 'open-history', 'request-quota'])
+const emit = defineEmits(['login', 'register', 'logout', 'open-vip', 'go-home', 'open-history', 'open-community', 'request-quota'])
 
 const scrolled = ref(false)
 const headerRef = ref(null)

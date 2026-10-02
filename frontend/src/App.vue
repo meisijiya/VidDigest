@@ -12,6 +12,7 @@
       :show-vip-entry="membershipEnabled"
       @go-home="goHome"
       @open-history="openHistory"
+      @open-community="openCommunity"
     />
     <main class="flex-1 pt-16">
       <template v-if="currentPage === 'home'">
@@ -70,10 +71,6 @@
 
       <!-- 营销区域（仅在无视频数据时展示） -->
       <template v-if="!videoData || demoMode">
-        <button @click="currentPage = 'community'"
-          class="block mx-auto mt-6 px-5 py-2.5 rounded-xl bg-panel border border-line
-                 text-sm text-gray-600 hover:border-blue-200 hover:text-blue-500
-                 transition-colors">浏览社区 →</button>
         <FeatureSection />
         <HowToSection />
         <ComparisonSection />
@@ -208,6 +205,16 @@ function goHome() {
 /** 去历史页时同样清掉解析态：否则历史列表上方会压着上一个视频的结果 */
 function openHistory() {
   currentPage.value = 'history'
+  window.scrollTo({ top: 0 })
+}
+
+/**
+ * 去社区页。**不清** videoData：社区和首页的输入框是并列入口，
+ * 从社区点进某个视频详情时结果区还得在（openCommunityVideo 自己会处理）。
+ * 与 openHistory 的差别是有意的。
+ */
+function openCommunity() {
+  currentPage.value = 'community'
   window.scrollTo({ top: 0 })
 }
 
