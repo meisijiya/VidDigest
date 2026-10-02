@@ -10,6 +10,39 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
 # 线程本地连接缓存（uvicorn 线程池复用线程，连接随之复用）
 _thread_local = threading.local()
 
+# 全部已建立连接（含线程池工作线程那份），供测试夹具彻底清理。
+# threading.local() 的属性只有持有它的线程能删，主测试线程拿不到工作线程那份，
+# 因此必须在这里留一份清单。
+#
+# 强引用是必须的（Connection 不支持弱引用，实测 weakref.WeakSet 直接抛
+# TypeError: cannot create weak reference to 'sqlite3.Connection' object），
+# 代价是「线程死了但清单还留着它的连接」会造成 fd 滞留。因此每次登记前
+# 先剔除已死线程的条目——threading.enumerate() 只列活线程。
+_open_conns = []
+#: 每份连接由哪个线程创建（与 _open_conns 同序）。
+#: 测试要证明「工作线程那份确实被登记了」，光数数量不够——
+#: 同一份连接被登记两次也能让计数达标。
+_open_conns_threads = []
+_open_conns_lock = threading.Lock()
+
+# 连接代际号。清理连接时递增，所有线程下次取连接时发现代际变了就重建。
+#
+# 为什么不能靠「试一次 execute 看连接是否已关闭」：sqlite3 禁止跨线程使用
+# 连接，主线程对一份**仍打开**的连接执行 execute 会抛
+#   ProgrammingError: SQLite objects created in a thread can only be used in
+#   that same thread
+# 而对一份**已关闭**的连接抛的是
+#   ProgrammingError: Cannot operate on a closed database
+# 两者异常类型相同，只有消息文本能区分——也就是说，在主线程用
+# `pytest.raises(sqlite3.ProgrammingError)` 断言「连接已关闭」恒真，
+# 测不出任何东西（这正是本工单早期版本里一条假通过的断言）。
+# 代际号不依赖连接对象的内部状态，跨线程可靠。
+_conn_generation = 0
+
+
+def get_connection_generation() -> int:
+    return _conn_generation
+
 FREE_DAILY_SUMMARY_LIMIT = 3
 MAX_PARSE_HISTORY_PER_USER = 30
 
@@ -19,17 +52,117 @@ def get_db_path():
     return DB_PATH
 
 
+def _prune_dead_threads_locked() -> None:
+    """剔除已死线程的连接条目（调用方须已持锁）。
+
+    线程死掉后，它的 threading.local 一并销毁，连接本可被 GC 回收；
+    但 _open_conns 强引用着它，不剔除就会一直占着 OS 文件句柄。
+    实测：200 个短命线程，不剔除时注册表滞留 201 条、句柄净增 401。
+
+    sqlite3.Connection 不支持弱引用（weakref.WeakSet 抛 TypeError），
+    只能靠「线程是否还活着」判断，threading.enumerate() 正好只列活线程。
+
+    快路径比的是**身份**不是数量：曾用 `len(alive) == len(登记数)` 直接跳过，
+    但死线程数与新活线程数相等时那两条判据会同时成立，死条目被漏掉
+    （实测残留 2 条，每条 WAL 连接占 2~3 个句柄）。
+    """
+    alive = {t.ident for t in threading.enumerate()}
+    if _open_conns_threads and alive.issuperset(_open_conns_threads):
+        return  # 每条登记都属于活线程，无需逐一比对
+
+    keep = [i for i, owner in enumerate(_open_conns_threads) if owner in alive]
+    if len(keep) == len(_open_conns_threads):
+        return
+
+    _open_conns[:] = [_open_conns[i] for i in keep]
+    _open_conns_threads[:] = [_open_conns_threads[i] for i in keep]
+
+
+def open_connections():
+    """当前进程内所有未关闭的数据库连接（跨线程）。
+
+    仅供测试夹具使用：它需要清掉线程池工作线程持有的连接，
+    而那些连接存在各自的 threading.local() 里，外部无法直接触达。
+    """
+    with _open_conns_lock:
+        _prune_dead_threads_locked()
+        return list(_open_conns)
+
+
+def open_connection_threads():
+    """与 open_connections() 同序的「创建线程 ident」列表。
+
+    单独给出是因为「工作线程那份被登记了」这件事，光数数量证明不了：
+    同一份连接被登记两次也能让计数达标。
+
+    这里也调剔除——否则「与 open_connections() 同序」不总成立：
+    先读 threads 再读 conns 时，中间若有线程死亡，两者长度就会不等。
+    """
+    with _open_conns_lock:
+        _prune_dead_threads_locked()
+        return list(_open_conns_threads)
+
+
+def forget_all_connections():
+    """关闭并清空全部已建立连接，同时递增代际号。
+
+    sqlite3 的连接归创建它的线程所有，**主线程 close 不了工作线程那份**：
+    会抛 ProgrammingError: objects created in a thread can only be used in
+    that same thread。threading 又没有「按线程 ident 投递任务」的 API，
+    因此工作线程的连接只能等它自己在下次 get_db() 时因代际号变化而丢弃，
+    届时引用计数归零、连接被 GC 回收（sqlite3.Connection.__del__ 会 close）。
+
+    所以这里对工作线程的连接不做 close，只清登记；对主线程自己的那份
+    直接 close——那条是真能关掉的。跨线程 close 抛错被静默吞掉，
+    等于一个都没关，假装关了才是更糟的错误。
+
+    递增代际号解决的是「别再用旧连接」，与「立刻关掉旧连接」是两件事：
+    前者是正确性保证（由测试守住），后者只是资源回收的尽力而为。
+    """
+    global _conn_generation
+    current = threading.get_ident()
+    with _open_conns_lock:
+        _conn_generation += 1
+        _prune_dead_threads_locked()
+        owned_by_current = [
+            conn for conn, owner in zip(_open_conns, _open_conns_threads)
+            if owner == current
+        ]
+        _open_conns.clear()
+        _open_conns_threads.clear()
+
+    for conn in owned_by_current:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+
 @contextmanager
 def get_db():
     """线程本地连接复用：WAL/外键等 PRAGMA 仅在新连接时设置一次，
     避免每次操作重建连接的开销（实测单次查询 155ms → 亚毫秒级）。"""
+    with _open_conns_lock:
+        generation = _conn_generation
+
     conn = getattr(_thread_local, "conn", None)
+    if conn is not None and getattr(_thread_local, "generation", None) != generation:
+        # 连接属于上一代（已被清理或换过库），本线程还拿着它。
+        # 必须重建，否则工作线程会写进上一个测试的库。
+        conn = None
+        _thread_local.conn = None
+
     if conn is None:
         conn = sqlite3.connect(get_db_path())
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         _thread_local.conn = conn
+        _thread_local.generation = generation
+        with _open_conns_lock:
+            _prune_dead_threads_locked()
+            _open_conns.append(conn)
+            _open_conns_threads.append(threading.get_ident())
     try:
         yield conn
         conn.commit()
