@@ -134,9 +134,17 @@ export function summarizeVideo(url, language, callbacks) {
 /**
  * 追问。不再传字幕全文——服务端从社区视频表取（工单 #8）。
  * 字幕全文在网络上白跑两趟没有意义，还让前端有机会篡改它。
+ *
+ * `options.userApiKey` 是用户自带凭据（工单 #9）。它**只**在这里、且**只**拼进
+ * /api/chat 这一个请求体——凭据不进任何别的请求，也不进 URL、请求头、localStorage 以外的任何地方。
+ * 留成可选的第 4 个参数而不是塞进 callbacks：签名改动会波及既有调用方，
+ * 而凭据是「有没有都行」的东西，不该强迫不带它的调用方改写法。
  */
-export function chatWithVideo(url, question, callbacks) {
-  return streamSse('/api/chat', { url, question }, {
+export function chatWithVideo(url, question, callbacks, options = {}) {
+  const payload = { url, question }
+  const userApiKey = options?.userApiKey
+  if (userApiKey) payload.user_api_key = userApiKey
+  return streamSse('/api/chat', payload, {
     route: (event, data) => callbacks[CHAT_ROUTES[event]]?.(data),
     onError: callbacks.onError,
     onCancel: callbacks.onCancel,

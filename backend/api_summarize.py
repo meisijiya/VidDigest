@@ -11,6 +11,7 @@ from fastapi.sse import ServerSentEvent, EventSourceResponse
 from pydantic import BaseModel
 
 from auth import get_optional_user
+from credentials import UserCredential
 from database import (
     append_chat_turn,
     check_quota_kind,
@@ -36,6 +37,12 @@ _QUOTA_LABELS = {"parse": "解析", "chat": "追问"}
 #: 一次在抢占位之前（未登录的人不该去占一个位置让别人干等），
 #: 一次在额度检查里。两处文案必须一致，所以只能有一份来源。
 _NOT_LOGGED_IN = "请先登录后使用 AI 功能"
+
+#: 自带凭据的请求失败时回给用户的**固定**文案。
+#: 绝不拼 str(e)：第三方 SDK 的鉴权异常可能带请求体片段（部分服务端会
+#: 回显 key 的前若干位），拼进去就是把用户自己的凭据回显给他自己，
+#: 同时也进了浏览器历史与代理日志。
+_BYOK_FAILURE_MESSAGE = "凭据无效或调用失败，请检查后重试"
 
 #: 送给模型的上下文里保留几轮对话，**含本轮**。
 #:
@@ -93,6 +100,9 @@ class ChatRequest(BaseModel):
     url: str
     question: str
     subtitle_text: str = ""
+    # 用户自带凭据（BYOK）。只在这一条字段上短暂存在：进路由立刻被包成
+    # UserCredential，之后全程以封装对象流转。不建表、不落盘。
+    user_api_key: str = ""
 
 
 def _check_quota_permission(user: dict | None, kind: str):
@@ -119,6 +129,18 @@ def _get_summarizer():
         except ValueError as e:
             raise HTTPException(status_code=500, detail=str(e))
     return _get_summarizer._instance
+
+
+def _build_user_summarizer(credential: UserCredential):
+    """为**本次请求**造一个用用户凭据的 summarizer。
+
+    刻意不走 _get_summarizer 那个模块级单例：单例活到进程结束，
+    用户的凭据会跟着活到进程结束；更糟的是下一个不带凭据的请求会
+    复用上一个人的 client，把这一次调用记到他自己账上（或者串号）。
+    构造 OpenAI client 不发网络请求，逐请求构造的开销可以忽略。
+    """
+    from summarizer import VideoSummarizer
+    return VideoSummarizer(credential=credential)
 
 
 def _get_extractor():
@@ -436,18 +458,45 @@ async def chat_with_video(
     req: ChatRequest,
     user: dict | None = Depends(get_optional_user),
 ) -> AsyncIterable[ServerSentEvent]:
-    """AI 视频问答（SSE 流式）。消耗对话额度，与解析额度互不影响。"""
-    allowed, _remaining, message = _check_quota_permission(user, "chat")
-    if not allowed:
-        yield ServerSentEvent(
-            raw_data=json.dumps({
-                "message": message,
-                "need_login": user is None,
-                "need_vip": user is not None,
-            }, ensure_ascii=False),
-            event="error",
-        )
-        return
+    """AI 视频问答（SSE 流式）。消耗对话额度，与解析额度互不影响。
+
+    带用户自带凭据的请求走**同一条**流式路径，但**不消耗额度**：
+    用户自付费，不该白扣平台额度。此时额度三件套（check / consume /
+    refund）一行都不碰，额度耗尽也照常放行。
+    """
+    # 进路由第一件事就是包成封装对象。裸字符串一旦进了局部变量，
+    # f-string、repr、异常回溯里被顺手打印的局部变量都可能把它带出去。
+    credential = (
+        UserCredential(req.user_api_key)
+        if (req.user_api_key or "").strip()
+        else None
+    )
+
+    if credential is not None:
+        # 仍要登录：追问会话按用户隔离，没登录就没有「他的会话」可言，
+        # 也不能让未登录的人白用额度豁免。
+        if not user:
+            yield ServerSentEvent(
+                raw_data=json.dumps({
+                    "message": _NOT_LOGGED_IN,
+                    "need_login": True,
+                    "need_vip": False,
+                }, ensure_ascii=False),
+                event="error",
+            )
+            return
+    else:
+        allowed, _remaining, message = _check_quota_permission(user, "chat")
+        if not allowed:
+            yield ServerSentEvent(
+                raw_data=json.dumps({
+                    "message": message,
+                    "need_login": user is None,
+                    "need_vip": user is not None,
+                }, ensure_ascii=False),
+                event="error",
+            )
+            return
 
     quota_spent = False
     try:
@@ -477,16 +526,29 @@ async def chat_with_video(
             subtitle_text = subtitle_data["full_text"]
 
         # 即将调用 AI，此刻才扣额度（无字幕 / 未登录 / 超额都不扣）
-        consume_quota(user["id"], "chat")
-        quota_spent = True
+        if credential is None:
+            consume_quota(user["id"], "chat")
+            quota_spent = True
 
         # 问答也显式回报额度，和总结走同一套展示。顶层数字跟 chat 走——
         # 旧前端只认顶层字段时，看到的必须是刚被扣掉的那个计数器，
         # 否则追问一次却显示解析余量没动。
-        yield ServerSentEvent(
-            raw_data=json.dumps(_quota_payload(user["id"], "chat"), ensure_ascii=False),
-            event="quota",
-        )
+        # 自带凭据时**没有额度可报**：上面刻意没查过库，凭空编一个数字
+        # 报出去就是撒谎。只报「本次没消耗」，余额由前端原样留着。
+        if credential is None:
+            yield ServerSentEvent(
+                raw_data=json.dumps(
+                    _quota_payload(user["id"], "chat"), ensure_ascii=False
+                ),
+                event="quota",
+            )
+        else:
+            yield ServerSentEvent(
+                raw_data=json.dumps(
+                    {"byok": True, "consumed": False}, ensure_ascii=False
+                ),
+                event="quota",
+            )
 
         # 上下文取的是**这次追问之前**的会话，不含本轮 question——
         # 本轮问题由 chat_stream 单独追加在最后。取在前、拼在后，
@@ -498,7 +560,11 @@ async def chat_with_video(
             )
         ]
 
-        summarizer = _get_summarizer()
+        summarizer = (
+            _get_summarizer()
+            if credential is None
+            else _build_user_summarizer(credential)
+        )
         answer_parts: list[str] = []
         for token in summarizer.chat_stream(subtitle_text, req.question, history):
             answer_parts.append(token)
@@ -521,10 +587,26 @@ async def chat_with_video(
         # 交给下面的 finally 回滚，然后原样抛出——不能降级成 SSE 错误事件。
         raise
     except Exception as e:
-        yield ServerSentEvent(
-            raw_data=json.dumps({"message": f"回答失败: {str(e)}"}, ensure_ascii=False),
-            event="error",
-        )
+        if credential is not None:
+            # 固定文案，不拼 str(e)，也不写日志——票面要求这条路径的
+            # 日志记录列表、标准错误、标准输出里都搜不到凭据，而异常文本
+            # 是唯一可能带着它回来的东西。诊断信息由用户重试一次拿到。
+            yield ServerSentEvent(
+                raw_data=json.dumps(
+                    {"message": _BYOK_FAILURE_MESSAGE, "byok": True},
+                    ensure_ascii=False,
+                ),
+                event="error",
+            )
+        else:
+            # 不带凭据时维持原样：这里没有用户凭据要护，异常文本对用户
+            # 排查问题有用。
+            yield ServerSentEvent(
+                raw_data=json.dumps(
+                    {"message": f"回答失败: {str(e)}"}, ensure_ascii=False
+                ),
+                event="error",
+            )
     finally:
         # 同 summarize_video：唯一回滚点，断流抛的 GeneratorExit /
         # CancelledError 不在 Exception 族里，但扣了的额度必须还回去。

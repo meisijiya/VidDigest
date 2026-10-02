@@ -198,6 +198,45 @@
           </button>
         </div>
 
+        <!-- 自带凭据（BYOK，工单 #9）-->
+        <p v-if="byokNotice" class="text-[11px] text-emerald-600">
+          本次追问用了你自己的凭据，没有消耗平台额度。
+        </p>
+        <div class="rounded-2xl border border-line bg-panel-2/40">
+          <button type="button" @click="byokPanelOpen = !byokPanelOpen"
+            class="w-full flex items-center justify-between px-4 py-2.5 text-xs text-gray-500 font-medium">
+            <span class="flex items-center gap-2">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3"/></svg>
+              使用我自己的 API Key
+              <span v-if="savedUserApiKey" class="px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600">已保存</span>
+            </span>
+            <span>{{ byokPanelOpen ? '收起' : '展开' }}</span>
+          </button>
+          <div v-if="byokPanelOpen" class="px-4 pb-4 space-y-3">
+            <p class="text-xs text-gray-500 leading-relaxed">
+              填入后本次追问用你自己的凭据调用模型，<span class="text-gray-700 font-medium">不消耗平台额度</span>；额度用完后仍可继续追问。
+              请填写平台所用服务商的 API Key（默认阿里云百炼 OpenAI 兼容模式，模型 qwen-turbo）。
+            </p>
+            <input v-model="apiKeyInput" type="password" autocomplete="off" spellcheck="false"
+              :placeholder="savedUserApiKey ? '留空则使用已保存的凭据' : 'sk-...'"
+              class="w-full px-3 py-2 rounded-xl border border-line bg-ink/60 text-sm text-gray-800
+                     focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                     outline-none transition-all duration-200" />
+            <div class="flex flex-wrap items-center gap-4 text-xs text-gray-500">
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input v-model="rememberApiKey" type="checkbox" class="accent-blue-500" />
+                记住凭据（只存在这台设备的浏览器里）
+              </label>
+              <button type="button" v-if="savedUserApiKey || apiKeyInput" @click="clearUserApiKey"
+                class="text-gray-400 hover:text-gray-600 transition-colors">清除已保存的凭据</button>
+            </div>
+            <p class="text-[11px] text-gray-400 leading-relaxed">
+              隐私承诺：凭据只存在你的浏览器和这一次请求的内存里。服务端不保存、不建表、不写日志，
+              请求结束即丢弃；清除浏览器数据后无法恢复。输入框在提交后会被清空，页面与报错信息里都不会回显它。
+            </p>
+          </div>
+        </div>
+
         <!-- 问答历史抽屉 -->
         <Transition name="drawer">
           <div v-if="showChatHistory && chatHistoryList.length"
@@ -292,6 +331,50 @@ const renderedChatAnswer = computed(() => chatAnswer.value ? marked(chatAnswer.v
 const chatHistoryList = ref([])
 const showChatHistory = ref(false)
 
+// ── 自带凭据（BYOK，工单 #9）─────────────────────────
+//
+// 三条纪律，缺一条就破了「凭据不落盘、不回显」的承诺：
+// 1. 真值只活在 savedUserApiKey 这一个 ref 与 localStorage 里。绝不绑进
+//    任何会渲染出来的节点，也绝不进任何错误信息——那两处都会被截图转发。
+// 2. 输入框在提交后立刻清空。留在 DOM 里的话，它会进浏览器自动填充、
+//    留在「检查元素」里，比只待在内存里危险得多。
+// 3. 只交给 chatWithVideo 一次，由它拼进 /api/chat 的请求体。
+const USER_API_KEY_STORE = 'viddigest_user_api_key'
+
+const byokPanelOpen = ref(false)
+const apiKeyInput = ref('')
+const rememberApiKey = ref(true)
+const savedUserApiKey = ref('')
+const byokNotice = ref(false)
+
+/** 从 localStorage 取回已保存的凭据；取不到就当没有，不报错。 */
+function loadUserApiKey() {
+  try {
+    savedUserApiKey.value = localStorage.getItem(USER_API_KEY_STORE) || ''
+  } catch {
+    savedUserApiKey.value = ''
+  }
+}
+
+/** 记住或忘掉凭据。存不进去（隐私模式）就退化成「只本次有效」。 */
+function persistUserApiKey(key) {
+  rememberApiKey.value = !!key
+  savedUserApiKey.value = key
+  try {
+    if (key) localStorage.setItem(USER_API_KEY_STORE, key)
+    else localStorage.removeItem(USER_API_KEY_STORE)
+  } catch {
+    // 静默：存储被禁用不是用户能处理的错误，也不该弹提示打断追问
+  }
+}
+
+function clearUserApiKey() {
+  apiKeyInput.value = ''
+  byokNotice.value = false
+  persistUserApiKey('')
+  rememberApiKey.value = true
+}
+
 // 额度显式：只读展示，不消耗。解析与追问是两个独立计数器，各显示各的。
 const quotaInfo = ref(null)
 const quotaLabel = computed(() => describeQuota(quotaInfo.value))
@@ -306,6 +389,13 @@ async function refreshQuota() {
 }
 
 function applyQuotaEvent(d) {
+  // 自带凭据的那次追问服务端**没有**额度可报（它刻意没查额度），
+  // 只有 byok 标记。整体替换会把用户看到的余额抹成 undefined，
+  // 所以这条分支只记一条提示，余额原样留着。
+  if (d?.byok) {
+    byokNotice.value = true
+    return
+  }
   // SSE 的 quota 事件带完整的两个额度，整体替换而不是只取顶层字段——
   // 只留 remaining/limit 会把 parse/chat 丢掉，界面退回单数字。
   quotaInfo.value = {
@@ -535,6 +625,12 @@ async function handleChat() {
   chatLoading.value = true
   chatAnswer.value = ''
   const question = chatQuestion.value.trim()
+  byokNotice.value = false
+  // 取走就清空输入框：真值只随这一次请求走，不留在 DOM 里。
+  const typedKey = apiKeyInput.value.trim()
+  const userApiKey = typedKey || savedUserApiKey.value
+  apiKeyInput.value = ''
+  if (typedKey) persistUserApiKey(rememberApiKey.value ? typedKey : '')
   let failed = false
   let stopped = false
   const stream = chatWithVideo(props.videoUrl, question, {
@@ -564,7 +660,7 @@ async function handleChat() {
       // 以服务端为准再拉一次：刷新后回来读的就是它，不依赖这次 push。
       hydrateChatHistory()
     },
-  })
+  }, { userApiKey })
   chatStream = stream
   await stream.done
 }
@@ -621,6 +717,7 @@ function exportSubtitle(format) {
 
 // ── 生命周期 ──────────────────────────────────────────────
 onMounted(() => {
+  loadUserApiKey()
   refreshQuota()
 })
 

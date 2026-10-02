@@ -14,6 +14,7 @@ import httpx
 import yt_dlp
 from openai import OpenAI
 
+from credentials import UserCredential
 from tags import vocabulary_prompt_text
 
 logger = logging.getLogger("summarizer")
@@ -707,7 +708,7 @@ class VideoSummarizer:
     DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
     DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 
-    def __init__(self):
+    def __init__(self, credential: UserCredential | None = None):
         """
         LC :: 初始化 LLM 客户端
         ──────────────────────────────
@@ -717,7 +718,31 @@ class VideoSummarizer:
 
         任意一组未配置都会抛出 ValueError，阻止后续调用。
         视频下载功能不受此影响。
+
+        传入 ``credential`` 时改用**用户自带凭据**（BYOK）：只有认证头换成
+        用户的，base_url 与 model 仍走平台配置。自定义 base_url 会让服务端
+        向用户指定的任意地址发请求，那是 SSRF 口子，票面也没要求换服务商。
         """
+        if credential is not None:
+            # 平台配没配自己的 key 都不影响这条分支的取值：恒定走百炼兼容端点，
+            # 运维要用别的 OpenAI 兼容服务就改 ALIYUN_BAILIAN_BASE_URL / MODEL。
+            # 读平台的 key 反而会让「带没带凭据」的行为随部署配置漂移。
+            self.provider = "user_credential"
+            self.client = OpenAI(
+                # 全仓唯一一处 reveal()。多一个调用点，就要重新解释一遍
+                # 「这一行的真值会不会被谁打印」。
+                api_key=credential.reveal(),
+                base_url=os.getenv(
+                    "ALIYUN_BAILIAN_BASE_URL",
+                    self.DEFAULT_BAILIAN_BASE_URL,
+                ).strip() or self.DEFAULT_BAILIAN_BASE_URL,
+            )
+            self.model = os.getenv(
+                "ALIYUN_BAILIAN_MODEL",
+                self.DEFAULT_BAILIAN_MODEL,
+            ).strip() or self.DEFAULT_BAILIAN_MODEL
+            return
+
         bailian_key = os.getenv("ALIYUN_BAILIAN_API_KEY", "").strip()
         deepseek_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
