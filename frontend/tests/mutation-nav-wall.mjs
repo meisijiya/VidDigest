@@ -111,9 +111,10 @@ const MUTANTS = [
   {
     name: 'W6 凸起高度全改成一样（城墙是平的，没有起伏）',
     file: HERO,
-    pairs: [['y: 48', 'y: 40'], ['y: 52', 'y: 40'], ['y: 56', 'y: 40'],
-      ['y: 36', 'y: 40'], ['y: 32', 'y: 40'], ['y: 28', 'y: 40']],
-    expect: /城墙是平的/,
+    pairs: [['y: 54', 'y: 40'], ['y: 56', 'y: 40'], ['y: 52', 'y: 40'],
+      ['y: 34', 'y: 40'], ['y: 32', 'y: 40'], ['y: 26', 'y: 40'],
+      ['y: 30', 'y: 40'], ['y: 28', 'y: 40']],
+    expect: /城墙是平的|并不比最深的凹/,
   },
   {
     name: 'W7 某一段的 x 错开一格（段距不等宽，底部露参差的口子）',
@@ -134,9 +135,28 @@ const MUTANTS = [
       '          </g>',
       '          <template v-if="s.line">',
       '            <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>',
+      '            <rect :x="s.x" :y="s.y" width="120" height="3" :fill="`url(#wall-shine-${s.id})`"/>',
       '          </template>',
     )]],
-    expect: /彩色顶线不在块的 <g> 内/,
+    expect: /只有 1 个 rect|没有挂在「只有凸起才画」/,
+  },
+  {
+    name: 'W8b 顶线不再限定只有凸起（凹也被画上一道线）',
+    file: HERO,
+    pairs: [['<template v-if="s.line">', '<template v-if="true">']],
+    expect: /没有挂在「只有凸起才画」/,
+  },
+  {
+    name: 'W8c 某个凸起没有颜色（垛口变秃，而且和前一段连成两个凹）',
+    file: HERO,
+    pairs: [["{ x: 240,  y: 32, line: '#a78bfa' },", "{ x: 240,  y: 32 },"]],
+    expect: /是两个凹挨着|凸起有 \d+ 段|凹有 \d+ 段|没有合法颜色/,
+  },
+  {
+    name: 'W8d 某个凹比凸还高（高低交错，城墙退化成随机锯齿）',
+    file: HERO,
+    pairs: [['{ x: 840,  y: 56 },', '{ x: 840,  y: 20 },']],
+    expect: /并不比最深的凹|随机锯齿/,
   },
 
   // ── 城墙：向右漂移 ────────────────────────────────────
@@ -261,17 +281,41 @@ const MUTANTS = [
     expect: /没有 <defs>|不在 <defs> 内/,
   },
   {
-    name: 'W25 两条顶线扫光延迟相同（同时亮，看不出往右走）',
+    name: 'W25 相邻两个凸起同色（两座垛口看成一根长条）',
     file: HERO,
-    pairs: [["line: '#EC4899', shineDelay: 0.8", "line: '#EC4899', shineDelay: 0.0"]],
-    expect: /看不出往右走|左右位置对不上/,
+    pairs: [["line: '#a78bfa' },", "line: '#7c3aed' },"]],
+    expect: /并排同色/,
   },
   {
-    name: 'W26 扫光延迟与它在城墙上的左右位置对不上（亮起顺序颠倒）',
+    name: 'W26 循环接缝那对凸起同色（末尾与开头撞色）',
     file: HERO,
-    pairs: [["line: '#EC4899', shineDelay: 0.8", "line: '#EC4899', shineDelay: 1.6"],
-      ["line: '#06B6D4', shineDelay: 1.6", "line: '#06B6D4', shineDelay: 0.8"]],
-    expect: /左右位置对不上/,
+    pairs: [["line: '#06b6d4' },", "line: '#7c3aed' },"]],
+    expect: /循环接缝/,
+  },
+  {
+    name: 'W26b 某个颜色不是 @theme 里的（露出不属于本站色系的杂色）',
+    file: HERO,
+    pairs: [["line: '#ec4899' },", "line: '#00ff00' },"]],
+    expect: /@theme 里不存在/,
+  },
+  {
+    name: 'W26c 某个品牌色族被换掉（四族少一族，色谱断了）',
+    file: HERO,
+    pairs: [["line: '#a855f7' },", "line: '#c4b5fd' },"]],
+    expect: /没有 violet|没有 purple|没有 pink|没有 cyan|色谱断了/,
+  },
+  {
+    name: 'W26d 扫光渐变不再按凸起过滤（给凹也生成一条没人用的扫光带）',
+    file: HERO,
+    pairs: [['v-for="s in wallSteps.filter(w => w.line)"', 'v-for="s in wallSteps"']],
+    expect: /没有按凸起遍历|没有按 line 过滤/,
+  },
+  {
+    name: 'W26e 扫光又有了独立延迟（高光和起伏对不上拍）',
+    file: HERO,
+    pairs: [['delay: i * WALL_STEP_DELAY })),',
+      'delay: i * WALL_STEP_DELAY, shineDelay: i * WALL_STEP_DELAY })),']],
+    expect: /又有 shineDelay/,
   },
   {
     name: 'W27 浮动与扫光不同周期（两个动画周期性错拍，像卡带）',
@@ -280,10 +324,10 @@ const MUTANTS = [
     expect: /看着像卡带/,
   },
   {
-    name: 'W28 两条带顶线的段 x 相同（渐变 id 撞车）',
+    name: 'W28 两段 x 相同（段距不等宽，底部露参差的口子）',
     file: HERO,
-    pairs: [["{ x: 720,  y: 36, line: '#EC4899'", "{ x: 240,  y: 36, line: '#EC4899'"]],
-    expect: /渐变 id 会撞车|没有递增/,
+    pairs: [["{ x: 720,  y: 34, line: '#ec4899'", "{ x: 240,  y: 34, line: '#ec4899'"]],
+    expect: /没有递增|段距不等宽/,
   },
 ]
 

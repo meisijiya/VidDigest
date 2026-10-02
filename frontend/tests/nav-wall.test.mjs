@@ -55,7 +55,7 @@ const WALL = {
   stepDelay: constOf('WALL_STEP_DELAY'),
 }
 
-/** wallBase：12 段基础阶梯，y 决定凸起高度，line 是顶线颜色 */
+/** wallBase：12 段基础阶梯，y 决定凸起高度，line 是顶线颜色（每段都有） */
 function wallBase() {
   const start = heroVue.indexOf('const wallBase = [')
   assert.ok(start >= 0, 'HeroSection 里没有 wallBase —— 城墙退回手写 rect 了？')
@@ -68,9 +68,25 @@ function wallBase() {
     .map((l) => ({
       x: Number(l.match(/x:\s*(\d+)/)[1]),
       y: Number(l.match(/y:\s*(\d+)/)[1]),
-      line: (l.match(/line:\s*'(#[0-9A-Fa-f]{6})'/) || [null, null])[1],
-      shineDelay: Number((l.match(/shineDelay:\s*([\d.]+)/) || [null, '0'])[1]),
+      line: parseColor(l),
     }))
+}
+
+/** 从一行字面量里取 line 的值。返回 null 或 6 位 hex（不带引号）——
+ *  带着引号返回的话，下游和 @theme 对账会全线失配，而失配长得像「配色不合规」。 */
+function parseColor(lineSrc) {
+  const m = lineSrc.match(/line:\s*(null|'#[0-9A-Fa-f]{6}')/)
+  if (!m) return null
+  return m[1] === 'null' ? null : m[1].slice(1, -1).toLowerCase()
+}
+
+/** style.css 的 @theme 里声明过的全部 hex。
+ *  「颜色风格跟 UI 统一」这句话写进注释不算数 —— 只有把每个城墙颜色
+ *  拿去和这里对账，才是真的锁住了：随手填个 #00ff00 会当场转红。 */
+function themeHexes() {
+  const css = read('../src/style.css')
+  const theme = css.slice(css.indexOf('@theme {'), css.indexOf('\n}', css.indexOf('@theme {')))
+  return new Set((theme.match(/#[0-9a-fA-F]{6}/g) || []).map((h) => h.toLowerCase()))
 }
 
 function wallStepsSrc() {
@@ -273,12 +289,18 @@ describe('城墙 · 底边固定，凸起上下浮', () => {
       'wall-step 的 <g> 上没有 animationDelay 绑定 —— 每段 delay 都白算了')
   })
 
-  test('块和它顶上的彩色线在同一个 <g> 里（分开写线会脱节）', () => {
+  test('块和它顶上的彩色线在同一个 <g> 里（分开写线，一浮动线就脱节）', () => {
+    // 切片止于第一个 </g>，所以「顶线还在不在这个 <g> 里」直接数 rect 就够：
+    // 三个（块 / 彩色线 / 扫光层）。写成 <g v-if> 包一层就变成 1 个。
     const g = heroVue.match(/<g v-for="s in wallSteps"[\s\S]*?<\/g>/)
     assert.ok(g, '找不到城墙的 <g>')
-    assert.match(g[0], /v-if="s\.line"/,
-      '彩色顶线不在块的 <g> 内 —— 一浮动顶线就留在原地')
-    assert.match(g[0], /:fill="s\.line"/, '块上找不到彩色顶线')
+    const rects = g[0].match(/<rect/g) || []
+    assert.equal(rects.length, 3,
+      `块的 <g> 里只有 ${rects.length} 个 rect —— 顶线或扫光层跑到 <g> 外面去了，一浮动就脱节`)
+    assert.match(g[0], /<template v-if="s\.line">/,
+      '顶线没有挂在「只有凸起才画」的条件上 —— 凹也会被画上一道线')
+    assert.match(g[0], /:fill="s\.line"/, '块的 <g> 里找不到彩色顶线')
+    assert.match(g[0], /url\(#/, '顶线的扫光层不在块的 <g> 里')
   })
 })
 
@@ -415,26 +437,86 @@ describe('城墙 · 底边固定，浮起来不露缝', () => {
 // 城墙：顶线从左到右扫光
 // ─────────────────────────────────────────────────────────
 describe('城墙 · 顶线从左到右扫光', () => {
-  test('三条顶线，各自有颜色', () => {
-    const lines = wallBase().filter((s) => s.line).map((s) => s.line.toLowerCase())
-    assert.equal(lines.length, 3, `带顶线的段数是 ${lines.length}，不是 3`)
-    assert.equal(new Set(lines).size, 3, `三条顶线颜色有重复：${lines.join(' ')}`)
-  })
-
-  test('三条线错开扫（同时亮 = 一起闪，不是「从左到右」）', () => {
-    const shines = wallBase().filter((s) => s.line).map((s) => s.shineDelay)
-    assert.equal(shines.length, 3, '不是每条顶线都有 shineDelay')
-    assert.equal(new Set(shines).size, 3,
-      `三条线扫光延迟相同：${shines.join(',')} —— 会同时亮，看不出往右走`)
-  })
-
-  test('扫光延迟递增（延迟不按 x 排 = 亮起的顺序和位置对不上）', () => {
-    const withLine = wallBase().filter((s) => s.line)
-    for (let i = 1; i < withLine.length; i++) {
-      assert.ok(withLine[i].shineDelay > withLine[i - 1].shineDelay,
-        `第 ${i} 条顶线的扫光延迟 ${withLine[i].shineDelay} 不比前一条大 —— `
-        + '扫光的先后和它在城墙上的左右位置对不上')
+  test('凸 / 凹 严格交替（两个凸挨着就没有「垛口」可言了）', () => {
+    const base = wallBase()
+    for (let i = 1; i < base.length; i++) {
+      assert.notEqual(!!base[i].line, !!base[i - 1].line,
+        `x=${base[i - 1].x} 与 x=${base[i].x} 是${base[i].line && base[i - 1].line ? '两个凸' : '两个凹'}挨着 —— `
+        + '城墙要求一凸一凹交替，两凸相连看不出垛口，两凹相连中间少了一座')
     }
+  })
+
+  test('凹一律比凸矮（分不出高低就没有凸起的形状）', () => {
+    const base = wallBase()
+    const towerY = base.filter((s) => s.line).map((s) => s.y)
+    const notchY = base.filter((s) => !s.line).map((s) => s.y)
+    assert.ok(towerY.length && notchY.length,
+      `凸 ${towerY.length} 段、凹 ${notchY.length} 段，两种都得有`)
+    assert.ok(Math.max(...towerY) < Math.min(...notchY),
+      `最矮的凸 y=${Math.max(...towerY)} 并不比最深的凹 y=${Math.min(...notchY)} 高 —— `
+      + '两者交错，城墙就是一片随机锯齿而不是「一排凸起」')
+  })
+
+  test('凸起都带颜色、凹都不带（6 : 6）', () => {
+    const towers = wallBase().filter((s) => s.line)
+    const notches = wallBase().filter((s) => !s.line)
+    assert.equal(towers.length, 6, `凸起有 ${towers.length} 段`)
+    assert.equal(notches.length, 6, `凹有 ${notches.length} 段`)
+    for (const t of towers) {
+      assert.match(String(t.line), /^#[0-9a-f]{6}$/,
+        `x=${t.x} 这个凸起没有合法颜色（是 ${t.line}）`)
+    }
+  })
+
+  test('相邻凸起颜色不同（含循环接缝那一对）', () => {
+    const lines = wallBase().filter((s) => s.line).map((s) => s.line)
+    for (let i = 1; i < lines.length; i++) {
+      assert.notEqual(lines[i], lines[i - 1],
+        `第 ${i - 1} 与第 ${i} 个凸起都是 ${lines[i]} —— 并排同色，中间那道分界就没了，`
+        + '两座垛口会看成一根长条')
+    }
+    // 带子由两份 wallBase 拼成：末尾的凸起紧挨着下一份的开头，同样不能撞色。
+    assert.notEqual(lines[lines.length - 1], lines[0],
+      `末尾凸起 ${lines[lines.length - 1]} 和开头凸起 ${lines[0]} 同色 —— `
+      + '带子滑到循环接缝时这两座会紧挨着同色')
+  })
+
+  test('每个凸起的颜色都取自 @theme（跟 UI 统一，不是随手挑的）', () => {
+    const theme = themeHexes()
+    assert.ok(theme.size > 20, `@theme 里只解析出 ${theme.size} 个色值，正则多半没对上`)
+    const stray = wallBase().filter((s) => s.line).map((s) => s.line).filter((c) => !theme.has(c))
+    assert.equal(stray.length, 0,
+      `这些颜色在 style.css 的 @theme 里不存在：${stray.join(' ')} —— `
+      + '城墙会露出不属于本站色系的杂色')
+  })
+
+  test('凸起覆盖 violet / purple / pink / cyan 四个品牌色族', () => {
+    // 只查「四个族各自的代表色都在」：6 个凸起全用 violet 的深浅也能通过
+    // 上面的「互不相同」，但那就不是色谱、只是同色系的 6 根条。
+    const lines = new Set(wallBase().filter((s) => s.line).map((s) => s.line))
+    for (const [token, hex] of Object.entries({
+      violet: '#7c3aed', purple: '#a855f7', pink: '#ec4899', cyan: '#06b6d4',
+    })) {
+      assert.ok(lines.has(hex),
+        `城墙里没有 ${token}（${hex}）—— 四个品牌色族少了一族，色谱断了`)
+    }
+  })
+
+  test('扫光只给凸起生成（凹没有顶线可扫）', () => {
+    const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)
+    assert.ok(defs, '没有 <defs>')
+    assert.match(defs[0], /v-for="s in wallSteps\.filter\(w => w\.line\)"/,
+      '渐变的 v-for 没有按 line 过滤 —— 会给凹也生成一条扫光带，'
+      + '而凹上没有线可扫，这条渐变引用不到任何可见图形')
+  })
+
+  test('扫光与浮动共用同一份相位（高光跟着浪一起走）', () => {
+    const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)
+    assert.match(defs[0], /:style="\{ animationDelay: s\.delay \+ 's' \}"/,
+      '扫光渐变没有绑 s.delay —— 高光和起伏各走各的，看起来是两件不相干的事')
+    assert.doesNotMatch(heroVueRaw, /shineDelay/,
+      '数据里又有 shineDelay 了 —— 扫光一旦有独立延迟，'
+      + '第 i 段被扫到的时刻就和它自己浮到最高的时刻对不上了')
   })
 
   test('wall-shine 动画是横向位移（扫光是从左到右，不是上下）', () => {
@@ -469,10 +551,10 @@ describe('城墙 · 顶线从左到右扫光', () => {
     assert.match(defs[0], /<linearGradient/, '扫光渐变不在 <defs> 内 —— 它会作为可见图形画出来')
   })
 
-  test('带顶线的段 x 互不相同（x 相同 = 两条线共用一个渐变 id）', () => {
-    const withLine = wallBase().filter((s) => s.line).map((s) => s.x)
-    assert.equal(new Set(withLine).size, withLine.length,
-      `带顶线的段 x 有重复：${withLine.join(',')} —— 渐变 id 会撞车`)
+  test('扫光渐变按凸起生成，没有漏段', () => {
+    const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)
+    assert.match(defs[0], /v-for="s in wallSteps\.filter\(w => w\.line\)"/,
+      '渐变没有按凸起遍历 —— 只画了几条的话，城墙只有几段在扫光')
   })
 
   test('浮动与扫光同周期（不同步 = 看着很乱）', () => {

@@ -94,14 +94,16 @@
       <svg class="w-full h-14 sm:h-20 overflow-hidden" viewBox="0 0 1440 80" preserveAspectRatio="none">
         <defs>
           <!-- 扫光带：userSpaceOnUse 各自锚在自己的顶线上，
-               translateX 走完 120 就正好扫过整条线。 -->
+               translateX 走完 120 就正好扫过整条线。
+               只给凸起生成（凹没有顶线可扫），与浮动共用 s.delay：
+               第 i 段被扫到的时刻正好是它自己浮到最高的那一下。 -->
           <linearGradient
             v-for="s in wallSteps.filter(w => w.line)" :key="`grad-${s.id}`"
             :id="`wall-shine-${s.id}`"
             gradientUnits="userSpaceOnUse"
             :x1="s.x - 12" :x2="s.x + 18" y1="0" y2="0"
             class="wall-shine"
-            :style="{ animationDelay: s.shineDelay + 's' }">
+            :style="{ animationDelay: s.delay + 's' }">
             <stop offset="0%" stop-color="#fff" stop-opacity="0"/>
             <stop offset="50%" stop-color="#fff" stop-opacity="0.9"/>
             <stop offset="100%" stop-color="#fff" stop-opacity="0"/>
@@ -115,6 +117,8 @@
             <!-- 向下多伸 20 个单位，落在 viewBox 之外被 svg 裁掉：
                  底边因此始终是齐的，凸起浮起来时底下不会露出缝。 -->
             <rect :x="s.x" :y="s.y" width="120" :height="100 - s.y" fill="#161F36"/>
+            <!-- 顶线与它的扫光层只在凸起上：凹（两垛之间的缺口）不画线。
+                 必须和块同处一个 <g>，分开写线一浮动就脱节。 -->
             <template v-if="s.line">
               <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>
               <rect :x="s.x" :y="s.y" width="120" height="3" :fill="`url(#wall-shine-${s.id})`"/>
@@ -139,7 +143,20 @@ const emit = defineEmits(['parse'])
 const url = ref('')
 
 /**
- * 底部城墙：12 段阶梯，y 决定凸起高度（越高越靠上），line 是顶线颜色。
+ * 底部城墙：12 段严格交替 —— 凸（垛口）/ 凹（两垛之间的缺口）。
+ *
+ * y 决定高度（越小越突出）。**凹一律比凸矮**，中间留出一段落差，
+ * 轮廓才读得出「一个一个垛口」，而不是随机起伏的锯齿。
+ * 只有凸起带 line（顶线 + 扫光），凹不画线。
+ *
+ * 相邻两个凸起不能同色：并排同色时中间那道分界就消失了，两垛会看成一根长条。
+ * 带子是两份拼的，所以**循环接缝那一对也要查** —— 最后一段的凸起紧挨着
+ * 下一份的第一段，同样不能撞色。
+ *
+ * 颜色全部取自 style.css 的 @theme：violet / purple / pink / cyan 四族，
+ * 6 个值互不相同，按同族深浅推进再换族；末尾 cyan 接回开头 violet 时
+ * 色相跨度足够大，循环点上不会看出「一圈结束了」。
+ * tests/nav-wall.test.mjs 会把每个值拿去和 @theme 对账，配色跑偏当场转红。
  *
  * 两条动画的周期必须凑成整数倍，否则循环点会「跳」一下：
  *   WALL_BOB_SEC  每段上下浮一轮 —— 12 段 × WALL_STEP_DELAY 正好等于它，
@@ -153,19 +170,20 @@ const WALL_DRIFT_SEC = 12
 const WALL_BOB_SEC = 2.4
 const WALL_STEP_DELAY = 0.2
 
+// 凸起（垛口）画顶线，凹不画。凹的 y 一律大于凸，最高凸 34 < 最浅凹 52。
 const wallBase = [
-  { x: 0,    y: 40, line: null,       shineDelay: 0.0 },
-  { x: 120,  y: 48, line: null,       shineDelay: 0.0 },
-  { x: 240,  y: 32, line: '#7C3AED', shineDelay: 0.0 },
-  { x: 360,  y: 52, line: null,       shineDelay: 0.0 },
-  { x: 480,  y: 40, line: null,       shineDelay: 0.0 },
-  { x: 600,  y: 56, line: null,       shineDelay: 0.0 },
-  { x: 720,  y: 36, line: '#EC4899', shineDelay: 0.8 },
-  { x: 840,  y: 48, line: null,       shineDelay: 0.0 },
-  { x: 960,  y: 28, line: '#06B6D4', shineDelay: 1.6 },
-  { x: 1080, y: 52, line: null,       shineDelay: 0.0 },
-  { x: 1200, y: 40, line: null,       shineDelay: 0.0 },
-  { x: 1320, y: 48, line: null,       shineDelay: 0.0 },
+  { x: 0,    y: 28, line: '#7c3aed' },   // 凸
+  { x: 120,  y: 54 },                    // 凹
+  { x: 240,  y: 32, line: '#a78bfa' },   // 凸
+  { x: 360,  y: 56 },                    // 凹
+  { x: 480,  y: 26, line: '#a855f7' },   // 凸
+  { x: 600,  y: 52 },                    // 凹
+  { x: 720,  y: 34, line: '#ec4899' },   // 凸
+  { x: 840,  y: 56 },                    // 凹
+  { x: 960,  y: 30, line: '#22d3ee' },   // 凸
+  { x: 1080, y: 54 },                    // 凹
+  { x: 1200, y: 28, line: '#06b6d4' },   // 凸
+  { x: 1320, y: 56 },                    // 凹
 ]
 
 /**
@@ -174,8 +192,10 @@ const wallBase = [
  * 带子向右平移 WALL_WIDTH 的过程中，第一份滑出右边界、第二份正好补进左边界，
  * 首尾是同一条墙，接缝看不出来。
  *
- * 两个副本**必须共用同一份 delay / shineDelay**——同一段墙在两处位置本就该
- * 同相位，否则循环点上那段墙会突然换个动作。
+ * 两个副本**必须共用同一份 delay**——同一段墙在两处位置本就该
+ * 同相位，否则循环点上那段墙会突然换个动作。扫光没有单独的字段：
+ * 渐变的 animationDelay 也绑 delay，于是「这段被扫到」和「这段浮到最高」
+ * 是同一刻，两条动画合成一个动作。
  */
 const wallSteps = [
   ...wallBase.map((s, i) => ({ ...s, id: `a${i}`, delay: i * WALL_STEP_DELAY })),
