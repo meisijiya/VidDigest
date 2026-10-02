@@ -303,6 +303,13 @@ const props = defineProps({
   // 原因写在 setup 里那段注释处：那些内容只走 /api/summarize（社区视频表）。
   initialHistory: Object,
   user: Object,
+  /**
+   * 社区里已经有这一份结果。为真时组件挂载即自动拉取（服务端原样回放，
+   * 不调模型、不扣额度）；为假时保持手动触发。
+   * 这个开关决定「用户会不会白扣额度」，所以它必须由**服务端事实**
+   * （by-url 查社区视频表）驱动，不能由「点过了解析」这种本地状态推断。
+   */
+  hasCommunityResult: { type: Boolean, default: false },
 })
 
 const activeTab = ref('summary')
@@ -510,8 +517,18 @@ watch(activeTab, (tab) => {
   }
 })
 
-// 视频链接变化：仅重置状态，不自动发起 AI 请求（由用户点击"开始 AI 解析"手动触发）
-watch(() => props.videoUrl, (newUrl) => {
+/**
+ * 视频链接变化：重置状态。
+ *
+ * hasCommunityResult 为真时**自动**发起请求：社区里已经有这一份，
+ * 服务端会原样回放，不调模型、不扣额度（claim=="reuse" 在
+ * consume_quota 之前就 return 了）。所以「自动」在这里是零成本的，
+ * 用户从历史/社区点进来能直接看到内容。
+ *
+ * 为假时**不**自动发起：那时是真要调模型、要扣每日额度，
+ * 保持用户手动点「开始 AI 解析」。少看一次内容好过额度被白扣。
+ */
+watch(() => props.videoUrl, async (newUrl) => {
   // 换视频时先中止上一个视频的流
   summaryStream?.cancel()
   chatStream?.cancel()
@@ -526,7 +543,11 @@ watch(() => props.videoUrl, (newUrl) => {
   chatAnswer.value = ''
   chatHistoryList.value = []
   showChatHistory.value = false
-})
+
+  if (newUrl && props.hasCommunityResult) {
+    startSummarize()
+  }
+}, { immediate: true })
 
 function startSummarize() {
   if (!props.videoUrl || started.value) return

@@ -490,6 +490,105 @@ class TestDualOutputProtocol:
         assert "字幕正文" in prompt, "字幕正文没进 prompt"
 
 
+class TestSummaryPromptContentDemand:
+    """总结正文为什么短：提示词只教了格式，没教内容。
+
+    实测（改写前）：5323 字字幕 → 370 字总结，压缩比 14:1，且每条要点都
+    退化成「这一节讲什么」的目录标签，一条具体数字都没有。根因有三条，
+    每条都对应本类里的一条用例：
+      1. 占位示例「（总结正文……）」本身是三行骨架，few-shot 的形状权重
+         远高于散文式规则；
+      2. 第一部分一条内容要求都没有，也没有篇幅下限；
+      3. 导图的「节点 ≤15 字 / 节点总数 ≤30」没有作用域隔离，被模型泛化
+         成全文基调。
+
+    每条都按「把这条要求整个删掉，它还会绿吗」自查过。
+    """
+
+    @staticmethod
+    def prompt():
+        return summarizer.VideoSummarizer._build_full_prompt("字幕正文", "zh")
+
+    def test_example_is_no_longer_a_placeholder_skeleton(self):
+        """根因 #1：占位示例在教模型写短。"""
+        p = self.prompt()
+
+        assert "（总结正文……）" not in p, (
+            "完整示例退回了「（总结正文……）」占位骨架 —— 模型对齐的是示例的"
+            "形状，两行标题加省略号就是在说「写到这儿就够了」"
+        )
+
+    def test_example_demonstrates_density_not_just_headings(self):
+        """示例除了不是占位，还得真的展示出「多要点」的形状。"""
+        p = self.prompt()
+        example = p.split("完整示例（")[-1].split("视频字幕内容：")[0]
+        lines = example.splitlines()
+
+        h2 = sum(1 for l in lines if l.startswith("## "))
+        bullets = sum(1 for l in lines if l.startswith("- "))
+
+        assert h2 >= 3, f"示例只有 {h2} 个二级章节，演示不出「覆盖完整」的形状"
+        assert bullets >= 10, f"示例只有 {bullets} 条要点，模型会照着这个密度写"
+
+    def test_summary_section_demands_content_not_just_format(self):
+        """根因 #2：内容要求存在，且落在第一部分里面。"""
+        p = self.prompt()
+        i_mindmap = p.find("【第二部分：思维导图】")
+
+        assert "不是目录" in p, "没有禁止把总结写成目录"
+        assert "反例" in p and "正例" in p, (
+            "没有给正反例对照 —— 只说「要有内容」不够，模型需要看到"
+            "「什么样算有内容」的样本"
+        )
+        assert "覆盖优先" in p, "没有覆盖优先的要求，模型会挑着讲"
+        assert "不要编造" in p, "没有禁止编造，补充篇幅时最容易编"
+
+        for marker in ("不是目录", "覆盖优先", "不要编造"):
+            i = p.find(marker)
+            assert 0 <= i < i_mindmap, (
+                f"「{marker}」跑到了第一部分外面（{i} >= {i_mindmap}），"
+                "模型读起来会以为那是导图或标签的要求"
+            )
+
+    def test_summary_section_states_a_length_floor(self):
+        """篇幅下限必须写死。只说「详细一点」= 没有任何约束。"""
+        p = self.prompt()
+        i_mindmap = p.find("【第二部分：思维导图】")
+
+        i = p.find("不少于 1500 字")
+        assert i >= 0, "提示词里没有篇幅下限 —— 这就是模型自己决定写多短的全部原因"
+        assert i < i_mindmap, "篇幅下限写到了第二部分之后，作用域错了"
+
+    def test_mindmap_limits_are_scoped_so_they_do_not_leak(self):
+        """根因 #3：导图的字数限制必须被明确圈在自己的段落里。
+
+        断言的是「那句作用域说明落在第二部分**内部**」——挪到提示词开头
+        也能让模型看见，但那时它是在跟总结正文平级竞争，约束力大幅削弱。
+        """
+        p = self.prompt()
+        seg = p.split("【第二部分：思维导图】")[-1].split("【第三部分：标签】")[0]
+
+        assert "只适用于思维导图" in seg, (
+            "导图的字数限制没有作用域隔离，模型会把「节点 ≤15 字」"
+            "泛化成全文基调，于是总结也跟着变短"
+        )
+        assert "不要套用到第一部分的总结正文" in seg, "没有说清导图限制不作用于总结"
+
+    def test_tag_limit_is_scoped_too(self):
+        p = self.prompt()
+        seg = p.split("【第三部分：标签】")[-1].split("【输出格式")[0]
+
+        assert "只约束标签本身" in seg, "标签数量限制的作用域没隔离"
+
+    def test_scope_notes_did_not_cost_the_original_three(self):
+        """加内容要求不能挤掉协议本身：哨兵、词表、字幕正文。"""
+        p = self.prompt()
+
+        assert summarizer.MINDMAP_TAGS_SENTINEL in p, "哨兵行没了 —— 导图和标签会整个消失"
+        assert tags.vocabulary_prompt_text() in p, "词表没了 —— 模型只能自创标签"
+        assert "字幕正文" in p, "字幕正文没进 prompt"
+
+
 class TestChatQuota:
     def test_chat_was_open_to_everyone(self, db, stub):
         """回归：修复前 /api/chat 没有任何配额检查。"""

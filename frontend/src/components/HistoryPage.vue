@@ -27,19 +27,9 @@
         <div v-for="n in 5" :key="n" class="skeleton h-20 rounded-2xl"></div>
       </div>
 
-      <!-- 空状态：像素时钟母题 -->
+      <!-- 空状态：像素母题已移到左上角 Logo（PixelLogo 组件自带错峰闪动），
+           这里不再重复摆一个会跳的网格。 -->
       <div v-else-if="!items.length" class="flex flex-col items-center justify-center py-24 text-gray-400">
-        <div class="grid grid-cols-3 gap-1 mb-5" aria-hidden="true">
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-violet/40 animate-pixel-blink"></span>
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-purple/40 animate-pixel-blink delay-1"></span>
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-pink/40 animate-pixel-blink delay-2"></span>
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span>
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-purple/40 animate-pixel-blink delay-3"></span>
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/40 animate-pixel-blink delay-4"></span>
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span>
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span>
-          <span class="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/40 animate-pixel-blink delay-5"></span>
-        </div>
         <p class="text-sm mb-1">暂无解析历史</p>
         <p class="text-xs text-gray-400">完成一次视频解析后，记录会出现在这里</p>
       </div>
@@ -51,9 +41,15 @@
                       transition-all duration-200 cursor-pointer overflow-hidden"
             @click="openRecord(item)">
             <div class="flex items-start gap-4 p-4">
-              <!-- 图标 -->
-              <div class="w-10 h-10 rounded-xl bg-blue-50 border border-line flex-shrink-0 flex items-center justify-center">
-                <svg class="w-5 h-5 text-blue-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <!-- 封面：走本站代理，视频站普遍有防盗链，直连会返回一片灰。
+                   取不到时回落到占位图标，而不是留一个破图。 -->
+              <img v-if="item.cover_url" :src="proxyThumbnail(item.cover_url)"
+                :alt="item.video_title || '视频封面'" loading="lazy"
+                class="w-24 h-16 rounded-xl object-cover bg-panel border border-line flex-shrink-0" />
+              <div v-else
+                class="w-24 h-16 rounded-xl bg-blue-50 border border-line flex-shrink-0
+                       flex items-center justify-center">
+                <svg class="w-6 h-6 text-blue-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
                 </svg>
               </div>
@@ -91,7 +87,7 @@
 import { ref, onMounted } from 'vue'
 import { fetchHistories, fetchHistoryDetail, deleteHistory } from '../api/history.js'
 
-const emit = defineEmits(['back', 'open-record'])
+const emit = defineEmits(['back', 'open-record', 'error'])
 
 const items = ref([])
 const loading = ref(true)
@@ -109,12 +105,26 @@ async function load() {
   }
 }
 
+/**
+ * 缩略图走本站代理：视频站普遍有防盗链，直连会返回一片灰。
+ * 与 CommunityPage 同一套口径——两个列表都显示封面，不该一个能看一个不能。
+ */
+function proxyThumbnail(url) {
+  if (!url) return ''
+  if (url.startsWith('/')) return url
+  return `/api/proxy/thumbnail?url=${encodeURIComponent(url)}`
+}
+
 async function openRecord(item) {
   try {
     const detail = await fetchHistoryDetail(item.id)
     emit('open-record', detail)
   } catch {
-    alert('加载记录详情失败，请重试')
+    emit('error', {
+      title: '打不开这条记录',
+      message: '加载记录详情失败，请重试。',
+      hint: '可能是网络抖动。点「重试」或直接刷新页面再试一次。',
+    })
   }
 }
 
@@ -125,7 +135,11 @@ async function removeItem(item) {
     await deleteHistory(item.id)
     items.value = items.value.filter(i => i.id !== item.id)
   } catch {
-    alert('删除失败，请重试')
+    emit('error', {
+      title: '删除失败',
+      message: '这条记录没能删掉，请重试。',
+      hint: '通常是网络问题。刷新页面确认记录是否还在。',
+    })
   } finally {
     deletingId.value = null
   }
@@ -138,7 +152,11 @@ async function confirmClearAll() {
     await Promise.all(items.value.map(i => deleteHistory(i.id)))
     items.value = []
   } catch {
-    alert('清空失败，请重试')
+    emit('error', {
+      title: '清空失败',
+      message: '没能清空全部记录，部分可能已经删掉了。',
+      hint: '列表已重新加载，可以看看还剩哪些。',
+    })
     await load()
   } finally {
     clearing.value = false

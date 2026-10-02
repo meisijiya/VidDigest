@@ -10,13 +10,16 @@
 
     <div class="relative max-w-7xl mx-auto px-4 sm:px-6 pt-16 pb-10">
       <div class="flex flex-col items-center text-center">
-        <!-- Logo -->
-        <div class="flex items-center gap-2.5 mb-4 group">
+        <!-- Logo：点击回首页。整块都是热区，不只是字和图标。 -->
+        <button type="button" @click="$emit('go-home')"
+          class="flex items-center gap-2.5 mb-4 group rounded-xl px-2 py-1 -mx-2
+                 hover:bg-white/5 transition-colors"
+          title="回到首页">
           <PixelLogo :size="36" />
           <div class="flex items-baseline gap-1.5">
             <span class="text-xl font-bold text-gray-900">VidDigest</span>
           </div>
-        </div>
+        </button>
 
         <p class="text-sm text-gray-500 max-w-md leading-relaxed">
           AI 视频理解与下载平台 — 基于 Vue 3 + FastAPI + yt-dlp + LLM 构建
@@ -40,6 +43,9 @@
 
 <script setup>
 import PixelLogo from './PixelLogo.vue'
+
+/** 页脚 Logo 与顶部 Logo 一样是「回到起始页」的入口。 */
+defineEmits(['go-home'])
 
 /* 像素阶梯：品牌四色平涂，高低错落形成下坠动势 */
 const pixelSteps = [

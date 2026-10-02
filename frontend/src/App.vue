@@ -3,12 +3,15 @@
     <AppHeader
       :user="currentUser"
       :page="currentPage"
+      :quota="quotaInfo"
+      :quota-loading="quotaLoading"
+      @request-quota="refreshQuota"
       @login="showAuthModal('login')"
       @register="showAuthModal('register')"
       @logout="handleLogout"
       :show-vip-entry="membershipEnabled"
-      @go-home="currentPage = 'home'"
-      @open-history="currentPage = 'history'"
+      @go-home="goHome"
+      @open-history="openHistory"
     />
     <main class="flex-1 pt-16">
       <template v-if="currentPage === 'home'">
@@ -57,6 +60,7 @@
                   :initialHistory="historyDetail"
                   :key="summaryKey"
                   :user="currentUser"
+                  :hasCommunityResult="fromCache"
                 />
               </div>
             </div>
@@ -90,15 +94,22 @@
       />
 
       <!-- 解析历史页 -->
-      <HistoryPage v-else @back="currentPage = 'home'" @open-record="handleOpenRecord" />
+      <HistoryPage v-else @back="goHome" @open-record="handleOpenRecord" @error="showErrorFromPage" />
     </main>
 
-    <AppFooter />
+    <AppFooter @go-home="goHome" />
     <AuthModal
       :visible="authModalVisible"
       :initialMode="authModalMode"
       @close="authModalVisible = false"
       @success="handleAuthSuccess"
+    />
+    <ErrorModal
+      :visible="errorModal.visible"
+      :title="errorModal.title"
+      :message="errorModal.message"
+      :hint="errorModal.hint"
+      @close="errorModal.visible = false"
     />
   </div>
 </template>
@@ -107,6 +118,7 @@
 import { ref, onMounted } from 'vue'
 import { parseVideo, downloadViaServer } from './api/video.js'
 import { getSavedUser, fetchMe, logout as logoutApi, isLoggedIn } from './api/auth.js'
+import { fetchQuota } from './api/summarize.js'
 import { createCheckoutSession } from './api/payment.js'
 import { fetchHistoryByUrl, saveHistory } from './api/history.js'
 import { publishCommunityCard } from './api/community.js'
@@ -125,6 +137,8 @@ import HistoryPage from './components/HistoryPage.vue'
 import CommunityPage from './components/CommunityPage.vue'
 import AuthModal from './components/AuthModal.vue'
 import AppFooter from './components/AppFooter.vue'
+import ErrorModal from './components/ErrorModal.vue'
+import { classifyError } from './lib/errors.js'
 
 const currentUser = ref(getSavedUser())
 const authModalVisible = ref(false)
@@ -140,6 +154,62 @@ const demoMode = ref(true)
 const historyDetail = ref(null)
 const fromCache = ref(false)
 const reparseLoading = ref(false)
+const errorModal = ref({ visible: false, title: '', message: '', hint: '' })
+
+/** 顶栏额度面板的数据源。悬停时才拉，避免每次渲染都打一次接口。 */
+const quotaInfo = ref(null)
+const quotaLoading = ref(false)
+
+async function refreshQuota() {
+  if (quotaLoading.value) return
+  quotaLoading.value = true
+  try {
+    quotaInfo.value = await fetchQuota()
+  } catch {
+    quotaInfo.value = null
+  } finally {
+    quotaLoading.value = false
+  }
+}
+
+/** 统一错误出口：所有失败都走这里，不再散落 alert() */
+function showError(err, action = 'parse') {
+  const { title, message, hint } = classifyError(err, action)
+  errorModal.value = { visible: true, title, message, hint }
+}
+
+/** 子组件已经组织好文案的错误，直接进同一个弹窗 */
+function showErrorFromPage(payload) {
+  errorModal.value = {
+    visible: true,
+    title: payload?.title || '出错了',
+    message: payload?.message || '',
+    hint: payload?.hint || '',
+  }
+}
+
+/**
+ * 回到起始页。
+ *
+ * 之前只改 currentPage，而 videoData 仍然留着——于是点了 Logo 之后
+ * 页面确实切回了 home，但解析结果区还挂在下面，看起来像「没反应」。
+ * 「回起始页」的含义是回到输入框，所以这里把解析态一并清掉。
+ */
+function goHome() {
+  currentPage.value = 'home'
+  videoData.value = null
+  currentUrl.value = ''
+  historyDetail.value = null
+  fromCache.value = false
+  summaryKey.value++
+  window.scrollTo({ top: 0 })
+}
+
+/** 去历史页时同样清掉解析态：否则历史列表上方会压着上一个视频的结果 */
+function openHistory() {
+  currentPage.value = 'history'
+  window.scrollTo({ top: 0 })
+}
 
 /** URL 规范化：剥离跟踪参数，提取平台视频 ID 作为历史/缓存的 key，提升命中率 */
 function canonicalUrl(raw) {
@@ -180,13 +250,44 @@ function persistParseRecord(url, data) {
   })
 }
 
+/**
+ * 请求发出之前的本地校验。
+ *
+ * 为什么要在前端拦一道：拼错链接、只贴了半句、粘了一整段分享文案
+ * 这三种最常见，交给后端也要跑一趟网络才知道结果，用户白等几秒
+ * 还只看到一句「解析失败」。本地判掉能立刻给出可执行的提示。
+ *
+ * 刻意**不**做过度校验（比如要求必须是已知平台）：本仓定位是
+ * 支持 1800+ 平台的白名单判不准，在这里拦掉合法链接比不拦更糟。
+ */
+function validateUrlInput(raw) {
+  const text = (raw || '').trim()
+  if (!text) {
+    return { ok: false, title: '还没填链接', message: '请先粘贴一个视频链接。',
+      hint: 'B 站请用 bilibili.com/video/BV... 这样的完整地址。' }
+  }
+  // 从分享文本里抽第一个 http(s) 链接——和后端 clean_url 同一套思路。
+  const m = text.match(/https?:\/\/[^\s）\)"'＞，。、；：！？》>\]]+/)
+  if (!m) {
+    return { ok: false, title: '这不是一个链接', message: text.slice(0, 80),
+      hint: '没有找到 http:// 或 https:// 开头的地址。'
+          + '如果你是整段复制了分享文案，请把其中的链接复制出来再试。' }
+  }
+  return { ok: true, url: m[0] }
+}
+
 async function handleParse(url) {
+  const check = validateUrlInput(url)
+  if (!check.ok) {
+    errorModal.value = { visible: true, ...check }
+    return
+  }
   loading.value = true
   videoData.value = null
   historyDetail.value = null
   fromCache.value = false
   summaryKey.value++
-  const key = canonicalUrl(url)
+  const key = canonicalUrl(check.url)
   currentUrl.value = key
   try {
     // 问一句「社区里有没有这一份」，只用于提示，不用于取内容。
@@ -205,7 +306,7 @@ async function handleParse(url) {
     }
     // 视频源信息（标题/封面/时长/格式）仍走 /api/parse：它不消耗额度，
     // 而且下载与时长这些字段只有解析结果里有，社区卡片不存。
-    const res = await parseVideo(url)
+    const res = await parseVideo(check.url)
     if (res.success) {
       videoData.value = res.data
       demoMode.value = false
@@ -214,11 +315,10 @@ async function handleParse(url) {
       // 拿不到（字幕流里没有平台标题与缩略图地址）。失败不影响主流程。
       publishCard(key, res.data)
     } else {
-      alert('解析失败：' + (res.error || '未知错误'))
+      showError({ message: res.error || '未知错误' })
     }
   } catch (err) {
-    const msg = err.response?.data?.detail?.error || err.response?.data?.detail || err.message
-    alert('解析失败：' + msg)
+    showError(err)
   } finally {
     loading.value = false
   }
@@ -247,6 +347,9 @@ function openCommunityVideo(item) {
     showAuthModal('login')
     return
   }
+  // 必须切回首页，否则社区页仍然盖在上面：请求发出去了、解析也成功了，
+  // 用户看到的却还是社区列表——症状就是「点了卡片没反应」。
+  currentPage.value = 'home'
   handleParse(item.video_url)
 }
 
@@ -266,18 +369,17 @@ async function reparse() {
       persistParseRecord(currentUrl.value, res.data)
       publishCard(currentUrl.value, res.data)
     } else {
-      alert('解析失败：' + (res.error || '未知错误'))
+      showError({ message: res.error || '未知错误' })
     }
   } catch (err) {
-    const msg = err.response?.data?.detail?.error || err.response?.data?.detail || err.message
-    alert('解析失败：' + msg)
+    showError(err)
   } finally {
     reparseLoading.value = false
   }
 }
 
 /** 从历史页点击记录：回填视频源，并带上个人问答历史 */
-function handleOpenRecord(detail) {
+async function handleOpenRecord(detail) {
   currentPage.value = 'home'
   currentUrl.value = detail.video_url || ''
   videoData.value = detail.video_data || null
@@ -288,9 +390,23 @@ function handleOpenRecord(detail) {
   summaryKey.value++
   if (!detail.video_data) {
     // 历史记录缺少视频源信息时，重新解析补全（不消耗 AI 次数）
-    handleParse(detail.video_url)
+    await handleParse(detail.video_url)
     historyDetail.value = detail
+    window.scrollTo({ top: 0 })
+    return
   }
+  // 问一句社区里有没有这一份，决定要不要让 VideoSummary 自动展示。
+  // 必须在 summaryKey++ **之后**查：组件是靠 key 重建的，先查再改 key
+  // 才能保证它拿到的是本次的结果而不是上一个视频的。
+  // 查失败一律当作「没有」，退回手动触发——宁可多点一次，
+  // 也不能在结果其实不存在时自动发起并扣掉额度。
+  fromCache.value = false
+  try {
+    fromCache.value = !!(await fetchHistoryByUrl(detail.video_url))
+  } catch {
+    fromCache.value = false
+  }
+  summaryKey.value++
   window.scrollTo({ top: 0 })
 }
 
@@ -312,7 +428,7 @@ async function handleDownload(formatId) {
     a.click()
     window.URL.revokeObjectURL(url)
   } catch (err) {
-    alert('下载失败：' + (err.message || '请稍后重试'))
+    showError(err, 'download')
   } finally {
     downloading.value = false
   }
@@ -341,7 +457,7 @@ async function handleOpenVip() {
     const { checkout_url } = await createCheckoutSession('monthly')
     window.location.href = checkout_url
   } catch (err) {
-    alert(err.response?.data?.detail || '创建支付失败')
+    showError(err, 'payment')
   }
 }
 

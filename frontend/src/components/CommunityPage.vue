@@ -1,6 +1,6 @@
 <template>
   <div class="min-h-[calc(100vh-4rem)]">
-    <div class="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 py-8">
       <!-- 页头 -->
       <div class="flex items-center gap-3 mb-6">
         <button @click="$emit('back')"
@@ -99,15 +99,24 @@
 
       <!-- 卡片列表：只渲染封面、标题、标签。列表响应体里本来就没有
            总结 / 字幕 / 思维导图——组件也**不去读**这些字段，
-           免得后端哪天放宽了白名单而前端顺手就把它显示出来。 -->
-      <ul v-else class="grid gap-4 sm:grid-cols-2">
+           免得后端哪天放宽了白名单而前端顺手就把它显示出来。
+
+           单列铺满：之前是 sm:grid-cols-2，卡片挤在半宽里，
+           大屏上右侧整片空白，看起来像没加载完。 -->
+      <ul v-else class="grid gap-4">
         <li v-for="item in items" :key="item.id">
-          <div class="group h-full bg-panel rounded-2xl border border-line hover:border-blue-200
-                      transition-all duration-200 cursor-pointer overflow-hidden"
-            @click="openDetail(item)">
+          <!-- 用 button 而不是 div：整张卡片就是一个可点区域，
+               键盘能聚焦、回车能触发、屏幕阅读器会念成可点击。
+               之前 div + @click 让卡片「看起来能点但点不动」——用户
+               按了空白处没反应，只能以为功能坏了。 -->
+          <button type="button" @click="openDetail(item)"
+            class="group w-full h-full text-left bg-panel rounded-2xl border border-line
+                   hover:border-blue-200 hover:shadow-md transition-all duration-200
+                   active:scale-[0.995] focus:outline-none focus-visible:ring-2
+                   focus-visible:ring-blue-400 overflow-hidden">
             <div class="flex gap-4 p-4">
               <img v-if="item.cover_url" :src="proxyThumbnail(item.cover_url)"
-                :alt="item.video_title" loading="lazy"
+                :alt="item.video_title || '视频封面'" loading="lazy"
                 class="w-28 h-20 rounded-xl object-cover bg-panel border border-line flex-shrink-0" />
               <div v-else
                 class="w-28 h-20 rounded-xl bg-blue-50 border border-line flex-shrink-0
@@ -128,7 +137,7 @@
                 </div>
               </div>
             </div>
-          </div>
+          </button>
         </li>
       </ul>
 

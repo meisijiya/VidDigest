@@ -1124,6 +1124,17 @@ def get_parse_histories(user_id: int, limit: int = MAX_PARSE_HISTORY_PER_USER) -
             """SELECT id, video_url, video_title, summary_md,
                       COALESCE(updated_at, created_at) AS updated_at,
                       created_at,
+                      -- 封面地址供历史列表渲染缩略图。video_data 本身是
+                      -- 大字段，列表页不需要，所以只把里面那一项用
+                      -- json_extract 挑出来，不整块拉出来再丢。
+                      --
+                      -- json_valid 是**必需**的守卫，不是保险：实测（.scratch/
+                      -- probe_json_extract.py）一行非法 JSON 就会让整条查询
+                      -- 抛 "malformed JSON"，也就是**一条坏记录足以让整个
+                      -- 历史列表 500**。取不到就返回空串，前端回落到占位图标。
+                      CASE WHEN json_valid(video_data)
+                           THEN COALESCE(json_extract(video_data, '$.thumbnail'), '')
+                           ELSE '' END AS cover_url,
                       -- 追问记录在 chat_messages（工单 #8）。
                       -- 后面 OR 的是老库那一列：新表为空时它仍然是唯一有记录的地方，
                       -- 漏掉它会让「详情里读得到记录、列表里却没有」自相矛盾。
@@ -1143,6 +1154,10 @@ def get_parse_histories(user_id: int, limit: int = MAX_PARSE_HISTORY_PER_USER) -
             item["summary_preview"] = summary_md.strip()[:120]
             item["has_chat"] = has_chat
             item["has_ai_result"] = has_chat or bool(item["summary_preview"])
+            # cover_url 由上面的 json_valid 守卫保证是字符串；
+            # 这里只做一次类型归一，前端不必再判 null。
+            if not isinstance(item.get("cover_url"), str):
+                item["cover_url"] = ""
             items.append(item)
         return items
 
