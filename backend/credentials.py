@@ -36,3 +36,16 @@ class UserCredential:
         「哪里会打印它」就再也数不清了。
         """
         return self._api_key
+
+    @classmethod
+    def from_secret(cls, secret) -> "UserCredential | None":
+        """从 pydantic 的 ``SecretStr`` 构造；空白等价于「没填」，返回 None。
+
+        **为什么路由不自己取值**：``get_secret_value()`` 返回的是裸字符串，
+        路由里一旦写成 ``raw = req.user_api_key.get_secret_value()``，
+        就等于在路由的局部变量里放了一条裸串——而路由正是最容易被
+        ``logger.debug(f"{req}")`` 顺手扫到的地方，异常回溯也会把它带出去。
+        裸串因此只在本模块内部短暂存在，一句就交给 ``__init__``。
+        """
+        value = secret.get_secret_value() if secret is not None else ""
+        return cls(value) if value.strip() else None

@@ -8,8 +8,10 @@ load_dotenv()
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from downloader import VideoDownloader
@@ -50,6 +52,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+#: 请求模型里**绝不能出现在 422 校验错误体**里的字段名。
+#:
+#: FastAPI 的 422 默认把出错的 input 原样回显：
+#: `{"loc": ["body", "user_api_key"], "input": ["sk-...", "x"]}`。
+#: 校验失败的输入恰恰可能是用户刚发来的凭据（发成数组时尤其如此）。
+#: 这**不是**跨边界泄漏——它只回给发请求的那个人自己——但工单 #9 的 AC4
+#: 白纸黑字列了「异常响应体」，所以在这里抹掉，且只抹这一个字段。
+_REDACTED_ON_VALIDATION_ERROR = {"user_api_key"}
+
+
+@app.exception_handler(RequestValidationError)
+async def _redact_credential_in_validation_error(request, exc):
+    """422 响应里抹掉凭据字段的 input，其余结构与 FastAPI 默认一致。
+
+    刻意不吞掉整个错误：loc / msg / type 照常返回，客户端仍能知道
+    是哪个字段、为什么错。被遮蔽的只有 input——那是唯一可能含凭据的字段。
+    """
+    errors = []
+    for err in exc.errors():
+        err = dict(err)
+        if any(part in _REDACTED_ON_VALIDATION_ERROR for part in err.get("loc", ())):
+            err["input"] = "***"
+        errors.append(err)
+    return JSONResponse(status_code=422,
+                        content={"detail": jsonable_encoder(errors)})
 
 
 class ParseRequest(BaseModel):

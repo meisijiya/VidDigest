@@ -463,3 +463,77 @@ class TestChatSessionStillWorks:
             ("user", "讲了什么"), ("assistant", "答案片段")
         ], "自带凭据的追问没有落进会话记录"
         assert rows[0]["user_id"] == uid
+
+
+# ── 复审判出的两个 MEDIUM：凭据在「封装之外」还有一段裸串路径 ────────
+
+class TestCredentialNeverSitsInTheRequestModelAsAPlainString:
+    """遮蔽必须从**请求模型这一层**就成立。
+
+    复审实测：裸 str 字段时 `repr(ChatRequest(...))` 与 `model_dump()` 都会
+    带出真值，于是「进路由立刻包成封装对象」只在封装类那一层为真——
+    路由的局部变量 `req` 本身随时可能被 `logger.debug(f"{req}")` 或异常回溯
+    顺手带出去。改成 SecretStr 之后，这两条路从源头就不存在。
+    """
+
+    def test_repr_of_the_request_model_is_masked(self):
+        req = api_summarize.ChatRequest(url="u", question="q", user_api_key=SENTINEL)
+        assert SENTINEL not in repr(req), f"请求模型的 repr 带出了凭据：{repr(req)}"
+
+    def test_model_dump_does_not_hand_out_the_plain_value(self):
+        req = api_summarize.ChatRequest(url="u", question="q", user_api_key=SENTINEL)
+        assert SENTINEL not in str(req.model_dump()), (
+            f"model_dump() 带出了凭据：{req.model_dump()}"
+        )
+
+    def test_the_router_holds_no_plain_string_local(self):
+        """路由里不该出现 get_secret_value() 的裸串局部变量。
+
+        裸串一旦落进路由的局部变量，异常回溯会把所有局部变量带出去。
+        取值由 UserCredential.from_secret 在 credentials 模块内部完成。
+        """
+        import inspect
+        src = inspect.getsource(api_summarize)
+        assert "get_secret_value()" not in src, (
+            "路由模块里直接调了 get_secret_value()：裸串会落进局部变量"
+        )
+
+
+class TestValidationErrorBodyIsRedacted:
+    """422 校验错误体会原样回显 input——而校验失败的输入可能正是凭据。
+
+    FastAPI 默认 `{"loc": ["body","user_api_key"], "input": [...]}`。
+    发成数组时 input 是整个列表，凭据逐字出现在里面。
+    这不是跨边界泄漏（只回给发请求的人自己），但 AC4 明写了「异常响应体」。
+    """
+
+    def test_credential_is_absent_from_the_422_body(self, app):
+        client, headers = make_client(app), auth_headers(auth.create_token(1, "a@example.com"))
+        r = client.post("/api/chat",
+                        json={"url": "u", "question": "q", "user_api_key": [SENTINEL, "x"]},
+                        headers=headers)
+        assert r.status_code == 422
+        assert SENTINEL not in r.text, f"422 响应体回显了凭据：{r.text}"
+
+    def test_the_error_is_still_usable(self, app):
+        """遮蔽 input 不等于把错误吞掉：loc / msg / type 照常返回。"""
+        client, headers = make_client(app), auth_headers(auth.create_token(1, "a@example.com"))
+        r = client.post("/api/chat",
+                        json={"url": "u", "question": "q", "user_api_key": [SENTINEL, "x"]},
+                        headers=headers)
+        detail = r.json()["detail"][0]
+        assert detail["loc"][-1] == "user_api_key", f"遮蔽把字段位置也弄没了：{detail}"
+        assert detail["msg"] and detail["type"], f"遮蔽把错误信息也弄没了：{detail}"
+
+    def test_other_fields_still_echo_their_input(self, app):
+        """只抹凭据字段：普通字段的校验错误体与默认行为一致。
+
+        全局处理器最坏的情况是把所有 422 都变成同一种看不懂的东西。
+        """
+        client, headers = make_client(app), auth_headers(auth.create_token(1, "a@example.com"))
+        r = client.post("/api/chat",
+                        json={"url": ["u"], "question": "q"}, headers=headers)
+        assert r.status_code == 422
+        detail = r.json()["detail"][0]
+        assert detail["loc"][-1] == "url"
+        assert detail["input"] == ["u"], f"普通字段的 input 被误抹了：{detail}"

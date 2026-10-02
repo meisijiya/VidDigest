@@ -8,7 +8,7 @@ from collections.abc import AsyncIterable
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.sse import ServerSentEvent, EventSourceResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from auth import get_optional_user
 from credentials import UserCredential
@@ -100,9 +100,15 @@ class ChatRequest(BaseModel):
     url: str
     question: str
     subtitle_text: str = ""
-    # 用户自带凭据（BYOK）。只在这一条字段上短暂存在：进路由立刻被包成
-    # UserCredential，之后全程以封装对象流转。不建表、不落盘。
-    user_api_key: str = ""
+    # 用户自带凭据（BYOK）。进路由立刻被包成 UserCredential，之后全程
+    # 以封装对象流转。不建表、不落盘。
+    #
+    # 用 SecretStr 而不是裸 str：它让遮蔽**从请求模型这一层就成立**。
+    # 裸 str 的模型 repr 与 model_dump() 都会带出真值，于是「进路由就包起来」
+    # 只在封装类那一层为真，再外面一层仍是裸的——将来任何一句
+    # logger.debug(f"{req}") 就会漏。SecretStr 的 repr 是
+    # SecretStr('**********')，model_dump() 返回的还是 SecretStr 对象。
+    user_api_key: SecretStr = SecretStr("")
 
 
 def _check_quota_permission(user: dict | None, kind: str):
@@ -464,13 +470,10 @@ async def chat_with_video(
     用户自付费，不该白扣平台额度。此时额度三件套（check / consume /
     refund）一行都不碰，额度耗尽也照常放行。
     """
-    # 进路由第一件事就是包成封装对象。裸字符串一旦进了局部变量，
-    # f-string、repr、异常回溯里被顺手打印的局部变量都可能把它带出去。
-    credential = (
-        UserCredential(req.user_api_key)
-        if (req.user_api_key or "").strip()
-        else None
-    )
+    # 进路由第一件事就是包成封装对象，且**不在路由里留裸串变量**——
+    # from_secret 内部取一次值就交给 __init__，路由里的局部变量
+    # 从头到尾只有封装对象。
+    credential = UserCredential.from_secret(req.user_api_key)
 
     if credential is not None:
         # 仍要登录：追问会话按用户隔离，没登录就没有「他的会话」可言，
