@@ -29,13 +29,31 @@ make_client,
 class TestStubCountsPerMethod:
     def test_each_method_counted_separately(self):
         s = StubSummarizer()
+        list(s.summarize_full_stream("t", "zh"))
         list(s.summarize_stream("t", "zh"))
         s.generate_mindmap("t", "zh")
         list(s.chat_stream("t", "q"))
 
+        assert s.calls_of("summarize_full_stream") == 1
         assert s.calls_of("summarize_stream") == 1
         assert s.calls_of("generate_mindmap") == 1
         assert s.calls_of("chat_stream") == 1
+
+    def test_full_stream_stub_mirrors_the_model_protocol(self):
+        """桩必须复刻生产的事件形状，否则路由测试测的是另一个协议。
+
+        事件类型错一个（少 tags、标签不是数组），路由层的契约测试就会
+        在一个假的失败上打转，而不是真的在验生产行为。
+        """
+        s = StubSummarizer()
+        events = list(s.summarize_full_stream("t", "zh"))
+
+        assert [k for k, _ in events] == [
+            "summary", "summary", "mindmap", "tags",
+        ], events
+        assert events[-2][1] == "# mindmap"
+        assert events[-1][1] == ["编程"]
+        assert s.calls_of("summarize_full_stream") == 1
 
     def test_mindmap_is_counted(self):
         """旧桩的思维导图方法不计数——这正是「未调用模型」假通过的根源。"""
@@ -707,9 +725,15 @@ class TestFixtureWiringIsLoadBearing:
         assert emails == [], f"主线程读到了上一个测试的残留数据：{emails}"
 
 
-class TestExistingSuiteUntouched:
-    def test_route_level_suite_still_passes(self, db, make_user, monkeypatch):
-        """抽样复核：路由层旧写法仍然通过，说明本工单没改变被测行为。"""
+class TestRouteLevelSummarizeContract:
+    """路由层契约复核：一次解析产出三项，逐方法计数在此真正可用。
+
+    工单 #5 之前这里守的是「总结与思维导图各调一次模型」；现在守的是它的
+    反面——**只调一次**。``called_methods()`` 恰好只有新方法，比断言
+    「某个方法没被调」更强：任何第二处模型调用都会让它变红。
+    """
+    def test_one_call_produces_all_three(self, db, make_user, monkeypatch):
+        """抽样复核：真实路由走一遍桩，事件序列与调用次数都符合契约。"""
         import asyncio
         import json
 
@@ -732,9 +756,16 @@ class TestExistingSuiteUntouched:
 
         events = asyncio.run(_run())
         assert [e[0] for e in events] == [
-        "subtitle", "quota", "summary", "summary", "mindmap", "done",
+        "subtitle", "quota", "summary", "summary", "mindmap", "tags", "done",
         ]
+        # 按事件名取，不用负下标：done 的负载是字符串 "[DONE]"，下标容易错位
+        by_kind = {kind: payload for kind, payload in events}
+        assert by_kind["mindmap"] == {"markdown": "# mindmap"}
+        assert by_kind["tags"] == ["编程"]
         # 逐方法断言在这里才第一次真正可用
-        assert s.calls_of("summarize_stream") == 1
-        assert s.calls_of("generate_mindmap") == 1
+        assert s.calls_of("summarize_full_stream") == 1
+        assert s.calls_of("generate_mindmap") == 0
+        assert s.calls_of("summarize_stream") == 0
         assert s.calls_of("chat_stream") == 0
+        assert s.called_methods() == {"summarize_full_stream"}
+        assert s.calls == 1, "一次解析只该调一次模型"

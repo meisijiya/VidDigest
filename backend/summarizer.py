@@ -14,6 +14,8 @@ import httpx
 import yt_dlp
 from openai import OpenAI
 
+from tags import vocabulary_prompt_text
+
 logger = logging.getLogger("summarizer")
 
 # ── extract() 的失败原因 ────────────────────────────────
@@ -558,14 +560,126 @@ def _empty_asr(language: str = "zh", asr_fail_reason: str = "") -> dict:
     }
 
 
+# ── 单次调用的分段协议 ────────────────────────────────
+#: 哨兵行：它**之前**是总结正文（逐 token 下发），**之后**到流末尾是一段 JSON。
+#:
+#: 用哨兵而不是「等全文结束再吐」，正是为了保住打字机效果；也不能改成
+#: 「让模型直接返回完整 JSON」——那样同样要等全文，而且总结就不再逐字输出了。
+MINDMAP_TAGS_SENTINEL = "<<<VIDDIGEST_MINDMAP_TAGS>>>"
+
+#: 事件类型。与 api_summarize 下发的 SSE 事件名一一对应。
+EVENT_SUMMARY = "summary"
+EVENT_MINDMAP = "mindmap"
+EVENT_TAGS = "tags"
+
+
+def parse_dual_output(chunks):
+    """把一次流式响应拆成「总结正文」与「尾部 JSON」，yield ``(kind, payload)``。
+
+    逐块喂进来：哨兵之前的块**立刻** yield 出去（打字机效果就靠这个），
+    哨兵之后的部分攒起来，流结束时一次性 ``json.loads``。
+
+    哨兵可能被切在两块之间（甚至更多块），所以每块都先按「尾部这段可能是
+    哨兵的前缀」留下尾巴，剩下的才算正文——否则哨兵的一部分会被当正文吐出去。
+
+    尾部解析失败（模型没给哨兵 / JSON 坏了）不算整次失败：总结已经拿到了，
+    思维导图与标签退化成空值，交给调用方兜底。
+    """
+    buffer = ""
+    tail: list[str] = []
+    seen = False
+
+    for chunk in chunks:
+        if seen:
+            tail.append(chunk)
+            continue
+        buffer += chunk
+        at = buffer.find(MINDMAP_TAGS_SENTINEL)
+        if at >= 0:
+            # rstrip：哨兵独占一行，它前面那个换行属于哨兵，不属于正文
+            head = buffer[:at].rstrip("\n")
+            if head:
+                yield EVENT_SUMMARY, head
+            tail.append(buffer[at + len(MINDMAP_TAGS_SENTINEL):])
+            seen = True
+            buffer = ""
+            continue
+        keep = _hold_back_len(buffer)
+        if keep < len(buffer):
+            yield EVENT_SUMMARY, buffer[:len(buffer) - keep]
+            buffer = buffer[len(buffer) - keep:]
+
+    if not seen and buffer:
+        # 整段流里没有哨兵：扣下的尾巴确实是正文，不能凭空吞掉
+        yield EVENT_SUMMARY, buffer
+
+    # 两条尾事件恒定发出：事件序列不该随模型是否听话而变
+    mindmap, tags = _parse_tail("".join(tail))
+    yield EVENT_MINDMAP, mindmap
+    yield EVENT_TAGS, tags
+
+
+def _hold_back_len(buffer: str) -> int:
+    """buffer 末尾要扣住、暂不当正文 yield 出去的字符数。
+
+    有两类尾巴都属于哨兵那一行：
+
+    - **哨兵的前缀**：哨兵可能被切在两块之间（"...VIDDIGEST_MIND" +
+      "MAP_TAGS>>>"），先吐出去就会把哨兵的一半混进总结。
+    - **哨兵前面那个换行**：哨兵独占一行。只在哨兵到达时才 rstrip 是不够
+      的——换行可能早在上一块就被当成正文吐出去了，得先扣住。
+    """
+    for n in range(min(len(buffer), len(MINDMAP_TAGS_SENTINEL) - 1), 0, -1):
+        if MINDMAP_TAGS_SENTINEL.startswith(buffer[-n:]):
+            return n
+    return 1 if buffer.endswith("\n") else 0
+
+
+def _parse_tail(tail: str) -> tuple[str, list]:
+    """解析哨兵之后那段 JSON → ``(思维导图原文, 模型给的原始标签)``。
+
+    这里只负责协议：把 JSON 读出来，读不出来就退回空值。
+    思维导图的清洗（``clean_mindmap_markdown``）与标签的词表校验
+    （``tags.validate_tags``）都在调用方做——前者是渲染要求，后者是产品规则。
+    """
+    # 模型偶尔会给 JSON 套上 ```json 围栏
+    body = re.sub(r"^```(?:json)?\s*\n?", "", tail.strip(), flags=re.IGNORECASE)
+    body = re.sub(r"\n?```\s*$", "", body).strip()
+    if not body:
+        logger.warning(
+            "模型没有输出哨兵行 %s，思维导图与标签为空", MINDMAP_TAGS_SENTINEL
+        )
+        return "", []
+
+    try:
+        data = json.loads(body)
+    except ValueError as e:
+        logger.warning("哨兵之后的 JSON 解析失败: %s", e)
+        return "", []
+    if not isinstance(data, dict):
+        logger.warning("哨兵之后的 JSON 不是对象（%s），思维导图与标签为空",
+                       type(data).__name__)
+        return "", []
+
+    # 模型输出是不可信输入：类型不对就当没有，不让它变成下游的 TypeError
+    mindmap = data.get("mindmap")
+    if not isinstance(mindmap, str):
+        mindmap = ""
+    raw_tags = data.get("tags")
+    if not isinstance(raw_tags, list):
+        raw_tags = []
+    return mindmap, list(raw_tags)
+
+
 class VideoSummarizer:
     """
     ────────────────────────────────────────────────────────────
     LC :: AI 视频总结模块（多后端可切换）
     ────────────────────────────────────────────────────────────
-    职责 : 调用 LLM API，基于字幕文本生成：
+    职责 : 调用 LLM API，基于字幕文本**一次**产出：
            - 结构化视频总结（流式，逐 token 推送）
-           - 思维导图 Markdown（非流式，一次性返回）
+           - 思维导图 Markdown（哨兵之后的 JSON，随总结同一次调用返回）
+           - 标签（同一份 JSON，只能取自固定词表）
            - AI 问答（流式，基于字幕上下文）
 
     支持后端（按优先级读取环境变量）:
@@ -641,17 +755,35 @@ class VideoSummarizer:
                 "  获取地址: https://bailian.console.aliyun.com/  或  https://platform.deepseek.com/api_keys"
             )
 
-    # ── 流式总结 ────────────────────────────────────────
+    # ── 总结 + 思维导图 + 标签（一次调用）────────────────
 
-    def summarize_stream(self, subtitle_text: str, language: str = "zh"):
-        """流式生成视频总结，yield 每个 token"""
-        prompt = self._build_summary_prompt(subtitle_text, language)
+    def summarize_full_stream(self, subtitle_text: str, language: str = "zh"):
+        """一次模型调用产出三件事，yield ``(kind, payload)`` 事件。
+
+        事件顺序：``("summary", token)`` 若干（逐 token，对应打字机效果），
+        然后 ``("mindmap", markdown)`` 与 ``("tags", 模型给的原始标签)``。
+
+        思维导图在这里就洗过一遍（markmap 渲染要求唯一一级根标题）。
+        标签**不校验**：词表是产品规则，由 api_summarize 在下发前用
+        ``tags.validate_tags`` 兜住——模型自创的词到不了线上。
+        """
+        chunks = self._stream_chunks(self._build_full_prompt(subtitle_text, language))
+        for kind, payload in parse_dual_output(chunks):
+            if kind == EVENT_MINDMAP:
+                payload = self.clean_mindmap_markdown(payload)
+            yield kind, payload
+
+    def _stream_chunks(self, prompt: str):
+        """把一次流式响应摊平成纯文本块。"""
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {
                     "role": "system",
-                    "content": "你是一个专业的视频内容分析助手。你擅长从字幕中提取关键信息并给出结构化总结。",
+                    "content": (
+                        "你是一个专业的视频内容分析助手。你在一次回复里同时给出"
+                        "结构化总结、思维导图和标签，并严格遵守输出格式。"
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -663,27 +795,6 @@ class VideoSummarizer:
             delta = chunk.choices[0].delta
             if delta.content:
                 yield delta.content
-
-    # ── 思维导图 ────────────────────────────────────────
-
-    def generate_mindmap(self, subtitle_text: str, language: str = "zh") -> str:
-        """生成思维导图 Markdown（非流式），并做结构清洗保证可被渲染"""
-        prompt = self._build_mindmap_prompt(subtitle_text, language)
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是一个专业的思维导图生成助手。你只输出严格符合 Markdown 标题层级结构的导图内容。",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            stream=False,
-            temperature=0.5,
-            max_tokens=4096,
-        )
-        raw = response.choices[0].message.content or ""
-        return self.clean_mindmap_markdown(raw)
 
     @staticmethod
     def clean_mindmap_markdown(md: str) -> str:
@@ -746,65 +857,51 @@ class VideoSummarizer:
     # ── Prompt 设计 ────────────────────────────────────
 
     @staticmethod
-    def _build_summary_prompt(subtitle_text: str, language: str) -> str:
+    def _build_full_prompt(subtitle_text: str, language: str) -> str:
+        """一次调用要涵盖三件事的格式要求，外加分段协议的硬规定。
+
+        词表原样拼进 prompt：模型只能从里面选。prompt 只是「告知」，
+        真正的拦截在 tags.validate_tags（服务端），两层缺一不可。
+        """
         truncated = subtitle_text[:15000]
         lang_hint = "中文" if language.startswith("zh") else "与原文相同的语言"
-        return f"""请对以下视频字幕内容进行深度总结分析，使用{lang_hint}输出。
+        return f"""请对以下视频字幕内容做一次分析，一次给出三样东西：总结、思维导图、标签。使用{lang_hint}输出。
 
-【输出格式要求 —— 必须严格遵守】
+【第一部分：总结正文】
 1. 必须输出标准 Markdown，并使用多级标题构建清晰的层级结构：
    - `# 视频主题`：一级标题，全文有且仅有一个；
    - `## 章节`：二级标题作为主要章节（如 视频概述 / 内容大纲 / 核心知识要点 / 总结）；
    - `### 小节`：三级标题用于章节内部的细分要点。
 2. 严禁用 `**加粗**` 代替标题，所有章节标题都必须以 # 号开头独占一行。
 3. 章节内部的要点使用无序列表（`- `）呈现，子要点通过缩进（`  - `）形成层级，禁止整段堆砌文字。
-4. 参考结构（章节名可按实际内容微调，但必须保留多级标题层级）：
+4. 只输出 Markdown 正文，不要输出代码块围栏，也不要任何解释性文字。
 
-# （视频主题）
-## 视频概述
-（用 2-3 句话概括视频的主题和核心内容）
-## 内容大纲
-### 章节小标题
-- 要点一
-  - 补充细节
-- 要点二
-## 核心知识要点
-### 分类一
-- 要点
-### 分类二
-- 要点
-## 总结
-（用 1-2 句话给出整体评价或一句话总结）
+【第二部分：思维导图】
+只输出 Markdown 标题层级结构，禁止代码块围栏、禁止任何说明、问候或总结性文字：
+- `# 视频主题`：一级标题，有且仅有一个，作为导图中心主题；
+- `## 主要章节`：二级标题，作为一级分支（一般 3-6 个）；
+- `### 次级要点`：三级标题，作为二级分支；
+- `- 细节要点`：无序列表，作为叶子节点（可选）。
+每个节点文字尽量不超过 15 个字，全图节点总数控制在 30 个以内。
 
-5. 只输出 Markdown 正文，不要输出代码块围栏，也不要任何解释性文字。
+【第三部分：标签】
+从下列固定词表中选出最多 3 个最贴切的标签，必须用词表里的中文原词，
+不要自创近义词（例如不要写「AI 编程」「编程教学」）：
+{vocabulary_prompt_text()}
+确实没有合适的就只选「其他」。
 
----
-视频字幕内容：
-{truncated}"""
+【输出格式 —— 必须严格遵守】
+第一部分正文之后，另起一行输出哨兵行（一个字都不能改，也不要加代码块围栏）：
+{MINDMAP_TAGS_SENTINEL}
+紧接着输出一行 JSON，形如：
+{{"mindmap": "# 视频思维导图\\n## 章节\\n### 要点", "tags": ["编程", "人工智能"]}}
 
-    @staticmethod
-    def _build_mindmap_prompt(subtitle_text: str, language: str) -> str:
-        truncated = subtitle_text[:15000]
-        lang_hint = "中文" if language.startswith("zh") else "与原文相同的语言"
-        return f"""请将以下视频字幕内容整理为思维导图结构，使用{lang_hint}输出。
-
-【输出格式要求 —— 必须严格遵守】
-1. 只输出 Markdown 标题层级结构，禁止使用代码块围栏（``` ），禁止任何说明、问候或总结性文字。
-2. 层级规定（层级错误的导图无法渲染）：
-   - `# 视频主题`：一级标题，有且仅有一个，作为导图中心主题；
-   - `## 主要章节`：二级标题，作为一级分支（一般 3-6 个）；
-   - `### 次级要点`：三级标题，作为二级分支；
-   - `- 细节要点`：无序列表，作为叶子节点（可选）。
-3. 每个节点文字简洁精炼（尽量不超过 15 个字），全图节点总数控制在 30 个以内。
-
-输出结构示例（仅示意层级，内容需基于实际字幕）：
+完整示例：
 # 视频主题
-## 章节一
-### 要点一
-- 细节
-### 要点二
-## 章节二
-### 要点一
+## 视频概述
+（总结正文……）
+{MINDMAP_TAGS_SENTINEL}
+{{"mindmap": "# 视频主题\\n## 章节一\\n### 要点一", "tags": ["编程"]}}
 
 ---
 视频字幕内容：

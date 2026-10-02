@@ -15,27 +15,36 @@ from seams import StubExtractor, StubSummarizer, auth_headers, make_client
 
 
 class ExplodingSummarizer(StubSummarizer):
-    """在指定方法上抛异常——用来验证「模型失败不白扣」。
+    """在解析的那次模型调用上抛异常——用来验证「模型失败不白扣」。
+
+    工单 #5 之后解析是**一次**调用产出三项，所以「总结失败」与
+    「思维导图失败」不再是两个步骤，而是同一次调用里的两个失败点：
+
+    - `before_any`：一个字都还没吐就炸（最常见的连接失败）
+    - `mid_stream`：已经吐了总结 token 才炸 —— **用户拿到了半截内容**，
+      这时回滚更要有理由，否则就是「付了钱只拿到一半」
 
     逐方法计数照常，这样既能证明「确实调到了那个方法」，
     也能证明失败没有掩盖掉其他方法的调用。
     """
 
-    def __init__(self, fail_on="summarize_stream", **kwargs):
+    def __init__(self, fail_on="before_any", **kwargs):
         super().__init__(**kwargs)
         self.fail_on = fail_on
 
-    def summarize_stream(self, text, language):
-        self._calls["summarize_stream"] += 1
-        if self.fail_on == "summarize_stream":
+    def summarize_full_stream(self, text, language):
+        self._calls["summarize_full_stream"] += 1
+        if self.fail_on == "before_any":
             raise RuntimeError("模型服务不可用")
-        yield from self._summary_tokens
-
-    def generate_mindmap(self, text, language):
-        self._calls["generate_mindmap"] += 1
-        if self.fail_on == "generate_mindmap":
-            raise RuntimeError("模型服务不可用")
-        return self._mindmap
+        if self.fail_on == "mid_stream":
+            # 先把一个 token 交出去，制造「用户已经看到内容」的局面
+            first, *rest = self._summary_tokens
+            yield ("summary", first)
+            raise RuntimeError("模型在输出中途断开")
+        for token in self._summary_tokens:
+            yield ("summary", token)
+        yield ("mindmap", self._mindmap)
+        yield ("tags", list(self._tags))
 
     def chat_stream(self, text, question, history=None):
         self._calls["chat_stream"] += 1
@@ -154,7 +163,7 @@ class TestNoSubtitleStillFree:
 
 class TestModelFailureRefunds:
     def test_summary_failure_refunds_parse_quota(self, db, make_user, wired):
-        wired(summarizer=ExplodingSummarizer(fail_on="summarize_stream"))
+        wired(summarizer=ExplodingSummarizer(fail_on="before_any"))
         uid = make_user()
         collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
         assert _counts(uid) == (0, 0), "模型失败不该白扣解析额度"
@@ -162,12 +171,20 @@ class TestModelFailureRefunds:
             True, database.DAILY_PARSE_LIMIT
         )
 
-    def test_mindmap_failure_refunds_parse_quota(self, db, make_user, wired):
-        """思维导图是解析的第二步，它失败也要回滚——否则用户拿到半截内容却照扣。"""
-        wired(summarizer=ExplodingSummarizer(fail_on="generate_mindmap"))
+    def test_mid_stream_failure_refunds_parse_quota(self, db, make_user, wired):
+        """已经在流式吐总结了才炸——用户拿到了半截内容，这时更不该扣费。
+
+        工单 #5 之后思维导图不再是独立的第二步，但「部分内容已下发后失败
+        仍要回滚」这条保证没有消失，只是失败点挪到了同一次调用的中途。
+        """
+        wired(summarizer=ExplodingSummarizer(fail_on="mid_stream"))
         uid = make_user()
-        collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
-        assert _counts(uid) == (0, 0), "思维导图失败不该白扣解析额度"
+        events = collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+        assert "summary" in [e[0] for e in events], (
+            "前提：失败前确实已经下发过总结 token"
+        )
+        assert "mindmap" not in [e[0] for e in events], "失败后不该再有思维导图"
+        assert _counts(uid) == (0, 0), "拿到半截内容不该白扣解析额度"
 
     def test_chat_failure_refunds_chat_quota(self, db, make_user, wired):
         wired(summarizer=ExplodingSummarizer(fail_on="chat_stream"))
@@ -189,14 +206,14 @@ class TestModelFailureRefunds:
 
     def test_failure_still_reports_error(self, db, make_user, wired):
         """回滚不是吞错误——用户仍要知道这次失败了。"""
-        wired(summarizer=ExplodingSummarizer(fail_on="summarize_stream"))
+        wired(summarizer=ExplodingSummarizer(fail_on="before_any"))
         uid = make_user()
         events = collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
         assert [e[0] for e in events][-1] == "error", events
 
     def test_repeated_failures_do_not_inflate_quota(self, db, make_user, wired):
         """反复失败不该把额度越加越多——回滚的下界是 0。"""
-        wired(summarizer=ExplodingSummarizer(fail_on="summarize_stream"))
+        wired(summarizer=ExplodingSummarizer(fail_on="before_any"))
         uid = make_user()
         for _ in range(5):
             collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
@@ -254,54 +271,64 @@ class TestClientDisconnectRefunds:
         assert _counts(uid) == (1, 0), "跑完的总结不该回滚"
 
 
-class BlockingMindmapSummarizer(StubSummarizer):
-    """思维导图阶段卡在闸门上——制造一个可取消的 await 点。"""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.entered = threading.Event()
-        self.release = threading.Event()
-
-    def generate_mindmap(self, text, language):
-        self._calls["generate_mindmap"] += 1
-        self.entered.set()
-        self.release.wait(timeout=10)   # 取消已生效时这线程的结果没人要
-        return self._mindmap
-
-
 class TestCancelledRequestRefunds:
-    """请求被取消（客户端断开、服务端超时）同样要回滚。"""
+    """请求被取消（客户端断开、服务端超时）同样要回滚。
 
-    def test_cancel_during_mindmap_refunds(self, db, make_user, wired):
-        s = BlockingMindmapSummarizer()
-        wired(summarizer=s)
+    工单 #5 之后解析不再有 `_run_in_thread(generate_mindmap, ...)` 那个
+    可取消的 await 点——`summarize_full_stream` 是同步生成器，直接在路由的
+    `for` 里被消费。**真实的挂起点变成了路由自己的 `yield`**：SSE 每发一个
+    事件就挂一次，客户端断开正是在这里发生的。
+
+    所以这里不再造一个「卡在闸门上的线程」，而是直接在路由的挂起点上
+    模拟两种终止：断流（aclose → GeneratorExit）与取消（athrow CancelledError）。
+    这两种都不在 Exception 族里，`except Exception` 抓不到——正是工单 #4
+    把回滚收敛到 `finally` 的原因。
+    """
+
+    def test_client_disconnect_mid_stream_refunds(self, db, make_user, wired):
+        """客户端在总结流到一半时断开 → 额度退回。"""
+        wired()
         uid = make_user()
 
-        async def _drain():
-            async for _ in api_summarize.summarize_video(
-                summarize_req(), user={"id": uid}
-            ):
-                pass
+        async def _run():
+            agen = api_summarize.summarize_video(summarize_req(), user={"id": uid})
+            seen = []
+            async for event in agen:
+                seen.append(event.event)
+                if event.event == "summary":
+                    break          # 就在这里断开
+            assert "summary" in seen, f"前提：断流前应已收到 summary，实际 {seen}"
+            await agen.aclose()    # 客户端断开
+
+        asyncio.run(_run())
+        assert _counts(uid) == (0, 0), "客户端断开不该白扣额度"
+
+    def test_cancellation_mid_stream_refunds(self, db, make_user, wired):
+        """任务在流式中途被取消（服务端超时 / 上游掐断）→ 额度退回。"""
+        wired()
+        uid = make_user()
 
         async def _run():
-            try:
-                task = asyncio.ensure_future(_drain())
-                # 等到思维导图那个 await 点真的挂上去了再取消
-                for _ in range(500):
-                    if s.entered.is_set():
-                        break
-                    await asyncio.sleep(0.01)
-                assert s.entered.is_set(), "没等到思维导图阶段，取消时机没测到"
-                assert _counts(uid) == (1, 0), "前提：额度此时应已扣"
-
-                task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await task
-            finally:
-                s.release.set()
+            agen = api_summarize.summarize_video(summarize_req(), user={"id": uid})
+            async for event in agen:
+                if event.event == "summary":
+                    # athrow 就是 asyncio 取消一个正在 __anext__ 的任务时，
+                    # 把 CancelledError 打进生成器里的那个动作
+                    with pytest.raises((asyncio.CancelledError, StopAsyncIteration)):
+                        await agen.athrow(asyncio.CancelledError())
+                    return
+            pytest.fail("没走到 summary 事件，取消时机没测到")
 
         asyncio.run(_run())
         assert _counts(uid) == (0, 0), "请求被取消不该白扣额度"
+
+    def test_completed_stream_is_not_refunded(self, db, make_user, wired):
+        """反向检查：完整跑完的流照扣，否则这条测试会把白送额度也放过。"""
+        wired()
+        uid = make_user()
+        events = collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+        assert events[-1][0] == "done", events
+        assert _counts(uid) == (1, 0), "完整跑完不该回滚"
 
 
 class TestQuotaLimitStaysConsistent:

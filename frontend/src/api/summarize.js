@@ -111,6 +111,7 @@ const SUMMARY_ROUTES = {
   subtitle: 'onSubtitle',
   summary: 'onSummary',
   mindmap: 'onMindmap',
+  tags: 'onTags',
   quota: 'onQuota',
   error: 'onError',
 }

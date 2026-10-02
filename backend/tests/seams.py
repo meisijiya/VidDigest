@@ -25,7 +25,14 @@ import database
 # ── 接缝一：按方法计数的桩 ─────────────────────────────────
 
 #: 会被计数的模型方法。逐方法断言必须能区分它们，否则「未调用模型」不可证。
-MODEL_METHODS = ("summarize_stream", "generate_mindmap", "chat_stream")
+#:
+#: ``summarize_full_stream`` 是工单 #5 之后总结走的**唯一**入口；下面两个
+#: 旧方法（总结 / 思维导图分开调）在生产类里已经没有了，但仍留在桩上：
+#: 它们是「没有第二次模型调用」的见证——真有人把两段式实现改回来，
+#: ``called_methods() == {"summarize_full_stream"}`` 会立刻红。
+MODEL_METHODS = (
+    "summarize_full_stream", "summarize_stream", "generate_mindmap", "chat_stream",
+)
 
 
 class StubSummarizer:
@@ -34,13 +41,18 @@ class StubSummarizer:
     ``calls_of(method)`` 给出单个方法的调用次数，断言时逐方法检查。
     ``calls`` 保留为所有方法之和，方便一眼看出「总共调过没有」，
     但它**不能**单独用来断言「某个方法没被调用」。
+
+    ``summarize_full_stream`` 复刻生产协议：先逐 token 吐 ``("summary", ...)``，
+    再吐 ``("mindmap", ...)`` 与 ``("tags", ...)``。``tags`` 给的是**模型原话**
+    （可以故意给词表外的值），词表校验在路由层，不在桩里。
     """
 
     def __init__(self, summary_tokens=("tok-a", "tok-b"), mindmap="# mindmap",
-                 answer_tokens=("answer-1",)):
+                 answer_tokens=("answer-1",), tags=("编程",)):
         self._summary_tokens = tuple(summary_tokens)
         self._mindmap = mindmap
         self._answer_tokens = tuple(answer_tokens)
+        self._tags = tuple(tags)
         self._calls = {m: 0 for m in MODEL_METHODS}
 
     def calls_of(self, method: str) -> int:
@@ -59,6 +71,13 @@ class StubSummarizer:
     def called_methods(self) -> set:
         """被调用过的方法名集合。"""
         return {m for m, n in self._calls.items() if n > 0}
+
+    def summarize_full_stream(self, text, language):
+        self._calls["summarize_full_stream"] += 1
+        for token in self._summary_tokens:
+            yield ("summary", token)
+        yield ("mindmap", self._mindmap)
+        yield ("tags", list(self._tags))
 
     def summarize_stream(self, text, language):
         self._calls["summarize_stream"] += 1

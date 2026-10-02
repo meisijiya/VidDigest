@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterable
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,6 +16,9 @@ from database import (
     quota_limit,
     refund_quota,
 )
+from tags import validate_tags
+
+logger = logging.getLogger("api_summarize")
 
 router = APIRouter(prefix="/api", tags=["AI 总结"])
 
@@ -156,7 +160,10 @@ async def summarize_video(
 ) -> AsyncIterable[ServerSentEvent]:
     """
     AI 视频总结（SSE 流式）
-    事件顺序：subtitle → quota → summary(流式token) → mindmap → done
+    事件顺序：subtitle → quota → summary(流式token) → mindmap → tags → done
+
+    一次解析产出三件事（总结 / 思维导图 / 标签），共用同一份字幕上下文，
+    也只调一次模型、只扣一次额度。
     """
     allowed, remaining, message = _check_quota_permission(user, "parse")
     if not allowed:
@@ -208,22 +215,34 @@ async def summarize_video(
             event="quota",
         )
 
-        # 流式生成总结摘要
+        # 一次模型调用产出三件事：总结逐 token 下发（打字机效果），
+        # 哨兵之后的 JSON 在流末尾一次性解析。模型只被调一次，额度也只扣这一次。
         summarizer = _get_summarizer()
-        for token in summarizer.summarize_stream(full_text, req.language):
-            yield ServerSentEvent(
-                raw_data=json.dumps(token, ensure_ascii=False),
-                event="summary",
-            )
+        for kind, payload in summarizer.summarize_full_stream(full_text, req.language):
+            if kind == "summary":
+                yield ServerSentEvent(
+                    raw_data=json.dumps(payload, ensure_ascii=False),
+                    event="summary",
+                )
+            elif kind == "mindmap":
+                yield ServerSentEvent(
+                    raw_data=json.dumps({"markdown": payload}, ensure_ascii=False),
+                    event="mindmap",
+                )
+            elif kind == "tags":
+                # 词表是产品规则，模型说了不算：校验在这里做，
+                # 线上只可能拿到词表内、去重、非空的数组。
+                accepted, rejected = validate_tags(payload)
+                if rejected:
+                    logger.info("丢弃词表外的标签：%s", rejected)
+                yield ServerSentEvent(
+                    raw_data=json.dumps(accepted, ensure_ascii=False),
+                    event="tags",
+                )
+            else:
+                logger.warning("未知的产出类型 %r，本次解析忽略它", kind)
 
-        # 生成思维导图（非流式）
-        mindmap_md = await _run_in_thread(summarizer.generate_mindmap, full_text, req.language)
-        yield ServerSentEvent(
-            raw_data=json.dumps({"markdown": mindmap_md}, ensure_ascii=False),
-            event="mindmap",
-        )
-
-        # 内容已完整产出，扣费就此结清：此后即便客户端断流也不回滚。
+        # 三项都已产出，扣费就此结清：此后即便客户端断流也不回滚。
         quota_spent = False
         yield ServerSentEvent(raw_data="[DONE]", event="done")
 

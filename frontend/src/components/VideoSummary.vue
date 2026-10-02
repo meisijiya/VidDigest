@@ -32,6 +32,16 @@
       </div>
     </div>
 
+    <!-- 视频标签：属于视频的属性而不是总结的内容，所以挂在面板常驻行（切 Tab 都在）。
+         数组为空时不渲染容器，只留 v-if 在容器上、不与 v-for 同元素。 -->
+    <div v-if="videoTags.length" class="flex flex-wrap items-center gap-1.5 px-5 py-2 border-b border-line bg-panel-2/30">
+      <span class="text-[10px] font-pixel text-gray-500">#TAGS</span>
+      <span v-for="tag in videoTags" :key="tag"
+        class="text-[10px] font-pixel bg-blue-50 text-blue-400 border border-blue-100 px-1.5 py-0.5 rounded">
+        #{{ tag }}
+      </span>
+    </div>
+
     <!-- Tab 内容 -->
     <div class="p-5 min-h-[200px]">
       <!-- 空状态 -->
@@ -265,6 +275,8 @@ const started = ref(false)
 const summaryMd = ref('')
 const mindmapMd = ref('')
 const subtitleData = ref(null)
+// 视频标签：一次解析产出的视频级属性，后端保证非空且已去重，这里只存不加工
+const videoTags = ref([])
 const errorMsg = ref('')
 const noSubtitle = ref(false)
 const renderedSummary = computed(() => summaryMd.value ? marked(summaryMd.value) : '')
@@ -407,6 +419,7 @@ watch(() => props.videoUrl, (newUrl) => {
   summaryMd.value = ''
   mindmapMd.value = ''
   subtitleData.value = null
+  videoTags.value = []
   errorMsg.value = ''
   noSubtitle.value = false
   chatAnswer.value = ''
@@ -421,6 +434,7 @@ function startSummarize() {
   summaryMd.value = ''
   mindmapMd.value = ''
   subtitleData.value = null
+  videoTags.value = []
   errorMsg.value = ''
   noSubtitle.value = false
   chatAnswer.value = ''
@@ -438,6 +452,9 @@ function startSummarize() {
     },
     onMindmap: (data) => {
       mindmapMd.value = data.markdown
+    },
+    onTags: (data) => {
+      videoTags.value = data
     },
     onQuota: applyQuotaEvent,
     onCancel: () => {

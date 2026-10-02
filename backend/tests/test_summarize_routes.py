@@ -7,6 +7,9 @@
 只是额度种类换成了对应的那个。
 断言一律读 daily_parse_count / daily_chat_count——旧的
 daily_summary_count 在工单 #4 之后已无生产写入者，拿它断言等于恒真。
+
+工单 #5 之后一次解析产出三项（总结 / 思维导图 / 标签），事件序列尾部
+多了 tags，模型从两次调用变成一次。下面既有用例守的扣减时机没变。
 """
 import asyncio
 import json
@@ -15,8 +18,12 @@ import pytest
 
 import api_summarize
 import database
+import summarizer
+import tags
+from seams import StubSummarizer as SeamStubSummarizer
 
 FAR_FUTURE = "2099-01-01T00:00:00+00:00"
+SENTINEL = summarizer.MINDMAP_TAGS_SENTINEL
 
 
 def parse_count_of(uid):
@@ -40,16 +47,21 @@ class StubExtractor:
 
 
 class StubSummarizer:
+    """本文件既有的桩：只数总调用次数，够守「扣几个 / 调没调」。
+
+    新方法的产出形状对齐生产协议（summary token → mindmap → tags）。
+    「模型只被调一次」这类逐方法断言用 seams.StubSummarizer，不靠它。
+    """
+
     def __init__(self):
         self.calls = 0
 
-    def summarize_stream(self, text, language):
+    def summarize_full_stream(self, text, language):
         self.calls += 1
-        yield "tok-a"
-        yield "tok-b"
-
-    def generate_mindmap(self, text, language):
-        return "# mindmap"
+        yield ("summary", "tok-a")
+        yield ("summary", "tok-b")
+        yield ("mindmap", "# mindmap")
+        yield ("tags", ["编程"])
 
     def chat_stream(self, text, question):
         self.calls += 1
@@ -202,7 +214,7 @@ class TestSummarizeQuotaTiming:
         uid = make_user()
         events = collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
         assert [e[0] for e in events] == [
-            "subtitle", "quota", "summary", "summary", "mindmap", "done",
+            "subtitle", "quota", "summary", "summary", "mindmap", "tags", "done",
         ]
         assert parse_count_of(uid) == 1
         quota = next(e[1] for e in events if e[0] == "quota")
@@ -237,6 +249,233 @@ class TestSummarizeQuotaTiming:
         assert [e[0] for e in events] == ["error"]
         assert events[0][1]["need_login"] is True
         assert events[0][1]["need_vip"] is False
+
+
+class TestSingleCallThreeArtifacts:
+    """工单 #5 的验收：一次解析产出总结 + 思维导图 + 标签，模型只被调一次。
+
+    这里用 seams.StubSummarizer（别名 SeamStubSummarizer）而不是本文件那个
+    总计数桩：核心 AC 是「模型只被调一次」，而总计数证明不了「调的是哪个
+    方法」——接缝建立的起因正是思维导图方法不计数，导致「未调用模型」
+    这类断言假通过。
+    """
+
+    def _run(self, monkeypatch, make_user, summarizer, email):
+        """按给定桩跑一次解析，返回 (事件列表, 用户 id)。"""
+        monkeypatch.setattr(
+            api_summarize, "_get_extractor", lambda: StubExtractor(has_subtitle=True)
+        )
+        monkeypatch.setattr(api_summarize, "_get_summarizer", lambda: summarizer)
+        uid = make_user(email)
+        return collect(api_summarize.summarize_video(
+            summarize_req(), user={"id": uid}
+        )), uid
+
+    @staticmethod
+    def _payloads(events, name):
+        return [payload for kind, payload in events if kind == name]
+
+    def test_three_artifacts_come_out_of_one_request(self, db, make_user, monkeypatch):
+        s = SeamStubSummarizer(
+            summary_tokens=("甲", "乙"), mindmap="# 主题\n## 章节", tags=("编程", "读书"),
+        )
+        events, _ = self._run(monkeypatch, make_user, s, "three@example.com")
+
+        assert self._payloads(events, "summary") == ["甲", "乙"], "总结应逐 token 原样下发"
+        assert self._payloads(events, "mindmap") == [{"markdown": "# 主题\n## 章节"}]
+        assert self._payloads(events, "tags") == [["编程", "读书"]]
+        assert [e[0] for e in events][-1] == "done"
+
+    def test_model_is_called_exactly_once(self, db, make_user, monkeypatch):
+        """核心 AC：逐方法断言——三个产出同属这一次调用。"""
+        s = SeamStubSummarizer()
+        self._run(monkeypatch, make_user, s, "once@example.com")
+
+        assert s.calls_of("summarize_full_stream") == 1
+        # 「只有这一个方法被调过」比「某个方法没被调」更强：
+        # 任何第二处模型调用（哪怕是重名的旧方法）都会让它变红
+        assert s.called_methods() == {"summarize_full_stream"}
+        assert s.calls_of("generate_mindmap") == 0, "思维导图不该再单独调一次模型"
+        assert s.calls_of("summarize_stream") == 0, "总结不该再走那条旧路径"
+        assert s.calls == 1, "一次解析只该调一次模型"
+
+    def test_three_artifacts_cost_one_quota(self, db, make_user, monkeypatch):
+        """三项产出只扣 1 次：额度条不是每样减 1。"""
+        s = SeamStubSummarizer()
+        events, uid = self._run(monkeypatch, make_user, s, "quota1@example.com")
+
+        assert parse_count_of(uid) == 1
+        assert [k for k, _ in events].count("tags") == 1
+        assert [k for k, _ in events].count("mindmap") == 1
+        quota = next(p for k, p in events if k == "quota")
+        assert quota["remaining"] == database.DAILY_PARSE_LIMIT - 1
+        assert db.check_quota_kind(uid, "parse") == (True, database.DAILY_PARSE_LIMIT - 1)
+
+    def test_out_of_vocabulary_tags_never_reach_the_client(self, db, make_user, monkeypatch):
+        """模型自创的词一个都不能下发——ADR 0005 说的服务端兜底。"""
+        s = SeamStubSummarizer(tags=("AI 编程", "编程", "随便编的"))
+        events, _ = self._run(monkeypatch, make_user, s, "vocab@example.com")
+
+        (payload,) = self._payloads(events, "tags")
+        assert payload == ["编程"], payload
+
+    def test_empty_tags_fall_back_to_other(self, db, make_user, monkeypatch):
+        """模型一个都没给、或给的全是词表外时下发 ["其他"]，数组永不为空。"""
+        for tags in ((), ("不在词表里", "也不在")):
+            s = SeamStubSummarizer(tags=tags)
+            events, _ = self._run(
+                monkeypatch, make_user, s, f"empty{len(tags)}@example.com"
+            )
+            (payload,) = self._payloads(events, "tags")
+            assert payload == ["其他"], (tags, payload)
+
+    def test_model_giving_five_tags_is_capped_at_three(self, db, make_user, monkeypatch):
+        s = SeamStubSummarizer(tags=("读书", "健身", "旅行", "摄影", "影视"))
+        events, _ = self._run(monkeypatch, make_user, s, "cap@example.com")
+
+        (payload,) = self._payloads(events, "tags")
+        assert len(payload) == 3, payload
+        assert set(payload) <= {"读书", "健身", "旅行", "摄影", "影视"}
+
+    def test_failed_single_call_refunds_the_quota(self, db, make_user, monkeypatch):
+        """模型失败不白扣：工单 #4 的唯一 finally 回滚点仍然生效。"""
+
+        class Exploding(SeamStubSummarizer):
+            def summarize_full_stream(self, text, language):
+                self._calls["summarize_full_stream"] += 1
+                yield ("summary", "半个总结")
+                raise RuntimeError("模型服务不可用")
+
+        events, uid = self._run(monkeypatch, make_user, Exploding(), "boom@example.com")
+
+        assert [e[0] for e in events][-1] == "error", events
+        assert parse_count_of(uid) == 0, "模型失败不该白扣额度"
+        assert db.check_quota_kind(uid, "parse") == (True, database.DAILY_PARSE_LIMIT)
+
+    def test_no_subtitle_produces_none_of_the_three(self, db, make_user, monkeypatch):
+        """字幕拿不到：三项一个都不产出，模型一次都不调，额度不动。"""
+        s = SeamStubSummarizer()
+        monkeypatch.setattr(
+            api_summarize, "_get_extractor", lambda: StubExtractor(has_subtitle=False)
+        )
+        monkeypatch.setattr(api_summarize, "_get_summarizer", lambda: s)
+        uid = make_user("nosub@example.com")
+        events = collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+
+        kinds = [e[0] for e in events]
+        assert kinds == ["subtitle", "error"], kinds
+        assert not {"summary", "mindmap", "tags"} & set(kinds)
+        assert s.calls == 0, "无字幕却调了模型"
+        assert parse_count_of(uid) == 0, "无字幕却扣了额度"
+
+
+class TestDualOutputProtocol:
+    """模型侧的分段协议（summarizer.parse_dual_output）。
+
+    协议长这样：
+
+        <总结正文，逐字流式>
+        <<<VIDDIGEST_MINDMAP_TAGS>>>
+        {"mindmap": "# ...", "tags": ["编程"]}
+
+    协议级测试住在路由测试文件里：工单 #5 的可写范围里没有单独的
+    summarizer 测试文件，而这份协议是「一次调用产出三项」的前半段——
+    路由拿到的每一项都由它决定。
+    """
+
+    @staticmethod
+    def _summary_of(events):
+        return [p for k, p in events if k == "summary"]
+
+    def test_summary_is_yielded_before_the_stream_ends(self):
+        """核心约束：不能先把整个响应读完再吐——那就没有打字机效果了。
+
+        观察点是**上游消费进度**，不是最终事件列表：等流结束再比内容，
+        「边收边吐」和「读完再吐」会给出完全相同的结果，断言会恒真。
+        """
+        consumed = []
+
+        def _upstream():
+            for part in ("甲", "乙", SENTINEL, '{"mindmap": "# x", "tags": []}'):
+                consumed.append(part)
+                yield part
+
+        stream = summarizer.parse_dual_output(_upstream())
+
+        first = next(stream)
+        assert first == ("summary", "甲"), first
+        assert consumed == ["甲"], (
+            f"第一个总结事件之前就把整段流读完了：{consumed}"
+        )
+
+    def test_sentinel_cut_across_chunks_is_not_leaked_into_the_summary(self):
+        cut = len(SENTINEL) // 2
+        events = list(summarizer.parse_dual_output([
+            "总结正文", SENTINEL[:cut],
+            SENTINEL[cut:] + '{"mindmap": "# x", "tags": ["编程"]}',
+        ]))
+
+        assert self._summary_of(events) == ["总结正文"], events
+        assert ("mindmap", "# x") in events, events
+        assert ("tags", ["编程"]) in events, events
+
+    def test_newline_before_the_sentinel_belongs_to_the_sentinel(self):
+        events = list(summarizer.parse_dual_output(
+            ["正文\n", SENTINEL, '{"mindmap": "# x", "tags": []}']
+        ))
+
+        assert self._summary_of(events) == ["正文"], events
+
+    def test_missing_sentinel_still_streams_the_whole_summary(self):
+        """模型不听话时总结不能丢；两条尾事件恒定发出，前端才不用写两套分支。"""
+        events = list(summarizer.parse_dual_output(["只有总结", "没有哨兵"]))
+
+        assert self._summary_of(events) == ["只有总结", "没有哨兵"], events
+        assert ("mindmap", "") in events, events
+        assert ("tags", []) in events, events
+
+    def test_broken_tail_json_degrades_instead_of_raising(self):
+        events = list(summarizer.parse_dual_output(["正文", SENTINEL, "{不是 JSON"]))
+
+        assert self._summary_of(events) == ["正文"], events
+        assert ("mindmap", "") in events, events
+        assert ("tags", []) in events, events
+
+    def test_fenced_json_tail_is_still_parsed(self):
+        events = list(summarizer.parse_dual_output([
+            "正文", SENTINEL,
+            '```json\n{"mindmap": "# x", "tags": ["编程"]}\n```',
+        ]))
+
+        assert ("mindmap", "# x") in events, events
+        assert ("tags", ["编程"]) in events, events
+
+    def test_wrong_shaped_fields_do_not_leak_types(self):
+        """模型输出是不可信输入：类型不对就当没有，不许变成下游 TypeError。"""
+        events = list(summarizer.parse_dual_output([
+            "正文", SENTINEL, '{"mindmap": {"不是": "字符串"}, "tags": "编程"}',
+        ]))
+
+        assert ("mindmap", "") in events, events
+        assert ("tags", []) in events, events
+
+    def test_non_object_json_degrades(self):
+        events = list(summarizer.parse_dual_output(["正文", SENTINEL, "[1, 2, 3]"]))
+
+        assert ("mindmap", "") in events, events
+        assert ("tags", []) in events, events
+
+    def test_prompt_carries_the_vocabulary_and_the_sentinel(self):
+        """prompt 少一样东西，模型就少一样产出——而这种失败是沉默的。
+
+        解析器再正确，模型没被告知哨兵行就只会吐出总结、连思维导图和标签
+        都没有；词表不进 prompt，模型就只能自创标签。
+        """
+        prompt = summarizer.VideoSummarizer._build_full_prompt("字幕正文", "zh")
+
+        assert SENTINEL in prompt, "prompt 没告诉模型哨兵行，尾部 JSON 不会被产出"
+        assert tags.vocabulary_prompt_text() in prompt, "词表没进 prompt，模型只能自创标签"
+        assert "字幕正文" in prompt, "字幕正文没进 prompt"
 
 
 class TestChatQuota:
