@@ -35,6 +35,9 @@ data/
 *.sqlite
 *.log
 
+# Agent 临时工作区（issue 正文草稿、一次性探针脚本）
+.scratch/
+
 # 临时文件
 *.tmp
 *.bak

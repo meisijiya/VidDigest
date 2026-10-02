@@ -2,10 +2,10 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
-> **Prerequisite (as of 2026-10-01):** this repo has **no `git remote` yet**, so every `gh` command below
-> will fail with "not a git repository" / "no remotes found" until one is added. The intended remote is
-> this repo's own GitHub repo under owner `meisijiya`. Once the remote exists, `gh` resolves the
-> repository automatically and no edits to this file are needed.
+> **Remote**: this repo's own GitHub repo under owner `meisijiya` (`https://github.com/meisijiya/VidDigest.git`).
+> `gh` resolves the repository automatically from inside the clone — no `-R` flag needed.
+> If a `gh` command fails with "no remotes found" / "not a git repository", check `git remote -v` first;
+> the remote is a prerequisite to verify, not an assumption to make.
 
 ## Conventions
 
