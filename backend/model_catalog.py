@@ -259,3 +259,207 @@ def platform_default_model(provider_id: str) -> str | None:
         logger.warning("模型清单里没有 provider=%s 这一行", provider_id)
         return None
     return row.get("default_model") or None
+# ── 写入（ADR 0010 的「模型清单可改」）─────────────────────────
+#
+# 只做**改已有行**，不提供新增端点：新增一个平台厂商还得在 .env 里配凭据
+# 并重启（ADR 0011 记录的代价），所以「在后台建一个行」出来的是一条
+# 立刻不可用的记录 —— 那是比「不能建」更糟的体验。改已有行则是纯配置操作，
+# 效果当场可见。
+#
+# 下面每条规则都在挡一类「改完看着对、跑起来不对」：
+#   · default_model 必须在 models 里 —— 表里指着一个不存在的模型名，
+#     正是工单 #13 要消灭的那种漂移，只是从代码搬进了数据
+#   · models 去重 —— 重复项在下拉里会出现两次，而 deepEqual 断言
+#     分不出「重复」和「顺序不同」
+#   · enabled 显式拒 bool —— Python 里 True == 1，
+#     `{"enabled": true}` 会静静地变成「上架」
+#   · base_url 只收 http/https 且不含 userinfo —— 与前端
+#     validateBaseUrl 同一套口径，避免后端收下一条前端会拒的端点
+
+
+class ModelValueError(ValueError):
+    """清单字段值域非法。路由层翻译成 400。"""
+
+
+#: 可改的字段白名单。不在名单里的键一律拒绝——「多传一个字段就静默忽略」
+#: 会让调用方以为改成功了。
+EDITABLE_FIELDS = ("label", "hint", "base_url", "models",
+                   "default_model", "enabled", "sort_order")
+
+#: 单个字段的长度上界。都是「够用又不至于把接口当数据库用」的量级。
+MAX_LABEL = 60
+MAX_HINT = 200
+MAX_MODELS = 40
+SORT_ORDER_MIN, SORT_ORDER_MAX = -1000, 1000
+
+
+def _validate_models(value) -> list[str]:
+    if not isinstance(value, list):
+        raise ModelValueError(f"models 必须是数组，实得 {type(value).__name__}")
+    if not value:
+        raise ModelValueError("models 不能为空数组——一个可选模型都没有的厂商没法用")
+    if len(value) > MAX_MODELS:
+        raise ModelValueError(f"models 最多 {MAX_MODELS} 项，实得 {len(value)}")
+    out = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ModelValueError(f"models 里的每一项都必须是字符串，实得 {item!r}")
+        text = item.strip()
+        if not text:
+            raise ModelValueError("models 里不能有空字符串")
+        out.append(text)
+    dupes = sorted({m for m in out if out.count(m) > 1})
+    if dupes:
+        raise ModelValueError(f"models 里有重复项：{dupes}（重复项在下拉里会出现两次）")
+    return out
+
+
+def _validate_base_url(value) -> str:
+    text = "" if value is None else str(value).strip().rstrip("/")
+    if not text:
+        return ""
+    from urllib.parse import urlparse
+    parts = urlparse(text)
+    if parts.scheme not in ("http", "https"):
+        raise ModelValueError("base_url 只支持 http 或 https")
+    if parts.username or parts.password:
+        raise ModelValueError("base_url 里不能带用户名或密码")
+    if not parts.hostname:
+        raise ModelValueError("base_url 缺少主机名")
+    return text
+
+
+def _validate_enabled(value) -> int:
+    if isinstance(value, bool):
+        raise ModelValueError("enabled 必须是 0 或 1，不能是布尔值")
+    if value not in (0, 1):
+        raise ModelValueError(f"enabled 只能取 0（下架）或 1（上架），实得 {value!r}")
+    return int(value)
+
+
+def _validate_sort_order(value) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ModelValueError(f"sort_order 必须是整数，实得 {value!r}")
+    if not SORT_ORDER_MIN <= value <= SORT_ORDER_MAX:
+        raise ModelValueError(
+            f"sort_order 只能取 {SORT_ORDER_MIN}..{SORT_ORDER_MAX}，实得 {value}"
+        )
+    return value
+
+
+def _validate_text(value, field: str, limit: int, allow_empty: bool) -> str:
+    text = "" if value is None else str(value).strip()
+    if not text and not allow_empty:
+        raise ModelValueError(f"{field} 不能为空")
+    if len(text) > limit:
+        raise ModelValueError(f"{field} 最长 {limit} 字符，实得 {len(text)}")
+    return text
+
+
+def update_model_provider(provider_id: str, patch: dict) -> dict | None:
+    """改一个厂商行。**只改 patch 里出现的字段**，返回回读后的管理视图。
+
+    返回 None 表示 provider_id 不存在——路由层据此回 404，不静默成功。
+
+    ## 为什么要「回读」而不是「回显」
+
+    回显的是「我们请求写进去的是什么」，回读的是「库里现在是什么」。
+    后者才在 `default_model` 被规范化、或并发改动发生时仍然为真。
+
+    ## 为什么 `default_model` 必须在 `models` 里
+
+    表里指着一个不存在的模型名，是工单 #13 点名要消灭的那种漂移，
+    只是从写死的代码搬进了数据。而它比代码漂移更难发现：代码漂移
+    grep 得到，数据漂移只在真的发起模型调用时才炸。
+    """
+    if not isinstance(patch, dict):
+        raise ModelValueError("请求体必须是对象")
+
+    unknown = sorted(set(patch) - set(EDITABLE_FIELDS))
+    if unknown:
+        raise ModelValueError(
+            f"这些字段不可改：{unknown}；可改的是 {list(EDITABLE_FIELDS)}"
+        )
+    if not patch:
+        raise ModelValueError("请求体为空，没有任何要改的字段")
+
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT * FROM {TABLE} WHERE id = ?", (provider_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        current = dict(row)
+        try:
+            current_models = json.loads(current.get("models") or "[]")
+        except (ValueError, TypeError):
+            current_models = []
+
+        # 先算「改动之后」的 models 与 default_model，再校验二者的关系 ——
+        # 只改 models 不改 default_model 时，默认值也必须仍在新列表里，
+        # 否则「换个模型列表」这一步就会静默留下一个失效的默认。
+        if "models" in patch:
+            new_models = _validate_models(patch["models"])
+        else:
+            new_models = current_models
+
+        if "default_model" in patch:
+            raw_default = patch["default_model"]
+            new_default = "" if raw_default is None else str(raw_default).strip()
+            if new_default and new_default not in new_models:
+                raise ModelValueError(
+                    f"default_model {new_default!r} 不在 models 里，"
+                    f"当前可选项是 {new_models}。指着一个不存在的模型名正是"
+                    "工单 #13 要消灭的漂移，只是从代码搬进了数据。"
+                )
+        elif "models" in patch:
+            # 只有**这次请求真的换了列表**才拦。models 没出现在
+            # patch 里时，new_models 就是库里原样那份，
+            # 此时的 default 不在列表中是**存量漂移**，不是这次改出来的。
+            existing_default = (current.get("default_model") or "").strip()
+            if existing_default and existing_default not in new_models:
+                raise ModelValueError(
+                    f"换了 models 之后，原默认模型 {existing_default!r} "
+                    f"不在新列表里：{new_models}。要么把它加回去，"
+                    "要么同时传 default_model 指定新的。"
+                )
+            new_default = existing_default
+        else:
+            # models 与 default_model 都没传：两列原样保留，**不校验**。
+            # 拿存量漂移去挡「改显示名」「下架」是反的——下架恰恰是
+            # 管理员对着一行脏数据最想做的事。修复漂移的入口是显式传
+            # default_model（上面那个分支会拿它对着 models 校验）。
+            new_default = (current.get("default_model") or "").strip()
+
+        if "enabled" in patch:
+            new_enabled = _validate_enabled(patch["enabled"])
+        else:
+            new_enabled = current.get("enabled", 1)
+
+        assignments = {
+            "models": json.dumps(new_models, ensure_ascii=False),
+            "default_model": new_default,
+            "enabled": new_enabled,
+        }
+        if "label" in patch:
+            assignments["label"] = _validate_text(
+                patch["label"], "label", MAX_LABEL, allow_empty=False)
+        if "hint" in patch:
+            assignments["hint"] = _validate_text(
+                patch["hint"], "hint", MAX_HINT, allow_empty=True)
+        if "base_url" in patch:
+            assignments["base_url"] = _validate_base_url(patch["base_url"])
+        if "sort_order" in patch:
+            assignments["sort_order"] = _validate_sort_order(patch["sort_order"])
+
+        conn.execute(
+            f"UPDATE {TABLE} SET "
+            + ", ".join(f"{k} = ?" for k in assignments)
+            + " WHERE id = ?",
+            (*assignments.values(), provider_id),
+        )
+        fresh = conn.execute(
+            f"SELECT * FROM {TABLE} WHERE id = ?", (provider_id,)
+        ).fetchone()
+
+    return _project(fresh, ADMIN_FIELDS)

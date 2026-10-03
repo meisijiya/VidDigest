@@ -212,7 +212,7 @@
 
           <!-- ══ AI 服务：只读的厂商 / 模型清单（工单 #13 的展示侧）。 ══ -->
           <div v-else>
-            <p class="mb-3 text-xs text-gray-400">只读。厂商与模型来自服务端配置，key 存在 .env，不经前端。</p>
+            <p class="mb-3 text-xs text-gray-400">可改显示名、端点、可选模型、平台默认与上下架。凭据（key）仍只在 <code class="font-pixel">.env</code>，不经前端也不入库（ADR 0011）。</p>
             <div class="grid gap-3 sm:grid-cols-2">
               <div v-for="m in view.items" :key="m.id" class="rounded-2xl bg-panel border border-line p-4">
                 <div class="flex items-start justify-between gap-2">
@@ -237,6 +237,78 @@
                     class="text-[10px] font-pixel bg-panel-2 text-gray-600 border border-line px-1.5 py-0.5 rounded">{{ one }}</span>
                 </div>
                 <p v-if="m.hint" class="mt-2 text-xs text-gray-400">{{ m.hint }}</p>
+
+                <div class="mt-3 flex items-center gap-2">
+                  <button type="button" class="text-xs px-2.5 py-1 rounded-lg border border-line bg-panel-2 text-gray-600 hover:border-blue-200"
+                    @click="openModelEditor(m.id)">编辑</button>
+                </div>
+
+                <div v-if="expandedModelId === m.id" class="mt-3 border-t border-line pt-3 space-y-2">
+                  <div>
+                    <label :for="`m-label-${m.id}`" class="block text-xs text-gray-500 mb-1">显示名</label>
+                    <input :id="`m-label-${m.id}`" v-model="modelDrafts[m.id].label" type="text"
+                      class="w-full px-3 py-1.5 rounded-lg bg-panel border border-line text-sm text-gray-800" />
+                  </div>
+                  <div>
+                    <label :for="`m-hint-${m.id}`" class="block text-xs text-gray-500 mb-1">提示文案</label>
+                    <input :id="`m-hint-${m.id}`" v-model="modelDrafts[m.id].hint" type="text"
+                      class="w-full px-3 py-1.5 rounded-lg bg-panel border border-line text-sm text-gray-800" />
+                  </div>
+                  <div>
+                    <label :for="`m-url-${m.id}`" class="block text-xs text-gray-500 mb-1">端点</label>
+                    <input :id="`m-url-${m.id}`" v-model="modelDrafts[m.id].baseUrl" type="text"
+                      class="w-full px-3 py-1.5 rounded-lg bg-panel border border-line text-sm font-pixel text-gray-800" />
+                  </div>
+                  <div v-if="hasModels(m)">
+                    <label :for="`m-models-${m.id}`" class="block text-xs text-gray-500 mb-1">可选模型（逗号分隔）</label>
+                    <input :id="`m-models-${m.id}`" v-model="modelDrafts[m.id].modelsText" type="text"
+                      :aria-describedby="`m-modelhint-${m.id}`"
+                      class="w-full px-3 py-1.5 rounded-lg bg-panel border border-line text-sm font-pixel text-gray-800" />
+                    <p :id="`m-modelhint-${m.id}`" class="mt-1 text-[11px] text-gray-400">平台默认必须从这里面选。</p>
+                  </div>
+                  <!-- 占位行（platform / custom）本来就没有可选模型。
+                       渲染那两个输入框又禁止保存，只会把「编辑」变成死路。 -->
+                  <p v-else class="text-[11px] text-gray-400">
+                    这一行是占位，没有可选模型。可以改显示名、端点、上下架与排序；
+                    要接真实厂商得在 .env 里配好凭据再重启（ADR 0011）。
+                  </p>
+                  <div class="flex flex-wrap gap-2">
+                    <div v-if="hasModels(m)" class="min-w-40">
+                      <label :for="`m-default-${m.id}`" class="block text-xs text-gray-500 mb-1">平台默认</label>
+                      <select :id="`m-default-${m.id}`" v-model="modelDrafts[m.id].defaultModel"
+                        class="w-full px-3 py-1.5 rounded-lg bg-panel border border-line text-sm font-pixel text-gray-800">
+                        <option value="">（无）</option>
+                        <option v-for="one in (modelDrafts[m.id].modelsText || '').split(/[,，\n]/).map(s => s.trim()).filter(Boolean)"
+                          :key="one" :value="one">{{ one }}</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label :for="`m-enabled-${m.id}`" class="block text-xs text-gray-500 mb-1">状态</label>
+                      <select :id="`m-enabled-${m.id}`" v-model.number="modelDrafts[m.id].enabled"
+                        class="px-3 py-1.5 rounded-lg bg-panel border border-line text-sm text-gray-800">
+                        <option :value="1">上架</option>
+                        <option :value="0">停用</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label :for="`m-sort-${m.id}`" class="block text-xs text-gray-500 mb-1">排序</label>
+                      <input :id="`m-sort-${m.id}`" v-model.number="modelDrafts[m.id].sortOrder" type="number" min="-1000" max="1000"
+                        class="w-24 px-3 py-1.5 rounded-lg bg-panel border border-line text-sm font-pixel text-gray-800" />
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button type="button"
+                      :disabled="savingModelId !== null"
+                      class="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-on-primary disabled:opacity-50"
+                      @click="saveModel(m)">
+                      {{ savingModelId === m.id ? '保存中…' : '保存' }}
+                    </button>
+                    <button type="button" class="text-xs px-3 py-1.5 rounded-lg border border-line bg-panel-2 text-gray-600"
+                      @click="closeModelEditor(m.id)">取消</button>
+                    <span aria-live="polite"
+                      :class="['text-xs', feedbackClass(modelFeedbackOf(m.id).kind)]">{{ modelFeedbackOf(m.id).text }}</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -273,7 +345,8 @@
  *    useTheme 只读 DOM；后台再判一次必然和那两处打架。
  */
 import { ref, reactive, computed, onMounted } from 'vue'
-import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModels } from '../api/admin.js'
+import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModels,
+         updateAdminModel } from '../api/admin.js'
 
 const emit = defineEmits(['back'])
 
@@ -373,12 +446,145 @@ const toModel = (r) => ({
  * 在渲染之前就播种好——由 primeDrafts 在每次加载后负责。
  */
 const drafts = reactive({})
+
+/**
+ * 厂商行的草稿。与额度草稿同一套硬约束：`modelDrafts[m.id]` 的写法是
+ * Vue v-model 只接受成员表达式逼出来的，必须在渲染前播种。
+ * 由 primeModelDrafts 在每次 loadModels 之后负责。
+ */
+const modelDrafts = reactive({})
+const expandedModelId = ref(null)
+const savingModelId = ref(null)
+const modelFeedbacks = reactive({})
 const expandedId = ref(null)
 const savingId = ref(null)
 const feedbacks = reactive({})
 
 function draftText(v) {
   return v === null || v === undefined ? '' : String(v)
+}
+
+/** 把厂商行灌进草稿。渲染前必须先跑，否则 v-model 绑不到成员表达式。 */
+function primeModelDrafts(items) {
+  for (const m of items) {
+    modelDrafts[m.id] = {
+      label: m.label || '',
+      hint: m.hint || '',
+      baseUrl: m.baseUrl || '',
+      modelsText: (m.models || []).join(', '),
+      defaultModel: m.defaultModel || '',
+      enabled: m.enabled ? 1 : 0,
+      sortOrder: m.sortOrder ?? 0,
+    }
+  }
+}
+
+function openModelEditor(id) {
+  expandedModelId.value = id
+}
+
+function closeModelEditor(id) {
+  if (expandedModelId.value === id) expandedModelId.value = null
+}
+
+/**
+ * 这一行有没有可选模型。
+ *
+ * platform / custom 两个占位行的 models 就是空数组（后端播种如此），
+ * 它们只能改显示名、端点、上下架与排序。判据用「有没有模型」而不是
+ * 「是不是真实厂商」——前者是**这一行实际能不能存**的判据。
+ */
+function hasModels(m) {
+  return Array.isArray(m.models) && m.models.length > 0
+}
+
+function modelFeedbackOf(id) {
+  if (!modelFeedbacks[id]) modelFeedbacks[id] = { kind: '', text: '' }
+  return modelFeedbacks[id]
+}
+
+/**
+ * 模型列表文本 → 数组。
+ *
+ * 重复项在这里就拦掉，不发到服务端：后端会回 400，但那条错误信息讲的是
+ * 「后端的规则」，而用户刚做的是「把两个一样的名字删了一个」。
+ */
+function toModelList(text) {
+  const parts = String(text || '')
+    .split(/[,，\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (parts.length === 0) {
+    return { ok: false, value: [], message: '至少要留一个可选模型' }
+  }
+  const dupes = parts.filter((p, i) => parts.indexOf(p) !== i)
+  if (dupes.length > 0) {
+    return { ok: false, value: [], message: `模型名重复了：${[...new Set(dupes)].join('、')}` }
+  }
+  return { ok: true, value: parts, message: '' }
+}
+
+/** 用服务端回读的那份替换本地行：成功提示与卡片显示必须是同一份。 */
+function replaceModel(raw) {
+  if (!raw) return
+  const fresh = toModel(raw)
+  const list = views.models.items
+  const i = list.findIndex((m) => m.id === fresh.id)
+  if (i >= 0) list.splice(i, 1, fresh)
+  primeModelDrafts([fresh])
+}
+
+/**
+ * 保存厂商行。
+ *
+ * 与 saveQuota 同一纪律：**不做乐观更新**。先本地改卡片、请求失败时静默
+ * 回滚，管理员看到的是「改成功了」而实际没改 —— 那比报错更坏。
+ * 成功后也不自动收起编辑行：收起只由「取消」负责，否则反馈会跟着一起消失。
+ */
+async function saveModel(m) {
+  if (savingModelId.value !== null) return
+  const d = modelDrafts[m.id] || {}
+  const patch = {
+    label: d.label,
+    hint: d.hint,
+    baseUrl: d.baseUrl,
+    enabled: d.enabled === 1,
+    sortOrder: Number(d.sortOrder),
+  }
+  // 只有真的有可选模型时才碰这两列。占位行走 else 分支：一个字段都不发，
+  // 而不是发一个空数组 —— 后端拒空 models，硬发会让这一行彻底存不了。
+  if (hasModels(m)) {
+    const list = toModelList(d.modelsText)
+    if (!list.ok) {
+      modelFeedbackOf(m.id).kind = 'error'
+      modelFeedbackOf(m.id).text = `可选模型：${list.message}`
+      return
+    }
+    if (list.value.indexOf(d.defaultModel) < 0) {
+      modelFeedbackOf(m.id).kind = 'error'
+      modelFeedbackOf(m.id).text = '平台默认模型必须从上面的可选模型里选'
+      return
+    }
+    patch.models = list.value
+    patch.defaultModel = d.defaultModel
+  }
+
+  savingModelId.value = m.id
+  modelFeedbackOf(m.id).kind = ''
+  modelFeedbackOf(m.id).text = ''
+  try {
+    const res = await updateAdminModel(m.id, patch)
+    replaceModel(res.item)
+    modelFeedbackOf(m.id).kind = 'ok'
+    modelFeedbackOf(m.id).text = res.platformDefault
+      ? `已保存。该厂商的平台默认模型现在是 ${res.platformDefault}。`
+      : '已保存。该厂商当前没有平台默认模型（已停用，或没配默认）。'
+  } catch (err) {
+    modelFeedbackOf(m.id).kind = 'error'
+    modelFeedbackOf(m.id).text = `没改成：${messageOf(err)}`
+  } finally {
+    savingModelId.value = null
+  }
 }
 
 function primeDrafts(users) {
@@ -494,6 +700,7 @@ async function loadModels() {
     const res = await fetchAdminModels()
     v.items = (res.items || []).map(toModel)
     v.total = v.items.length
+    primeModelDrafts(v.items)
   } catch (err) {
     markFailure(v, err)
   } finally {

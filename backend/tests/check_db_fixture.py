@@ -53,6 +53,10 @@ DB_FUNCS = {
     # 模型清单（工单 #13）：DDL、播种、三个查询口。
     "init_model_catalog", "list_model_providers", "get_model_provider",
     "platform_default_model",
+    # 模型清单的**写**路径（ADR 0010「模型清单可改」）。它是写操作，
+    # 漏掉它，这道门禁就对「测试直接调它」失明 —— 而那条测试会连上
+    # 真实 app.db 并改 model_providers。
+    "update_model_provider",
 }
 
 #: 取了这些参数就算拿到了 db 夹具（client_app 内部依赖 db）

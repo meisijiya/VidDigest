@@ -615,13 +615,20 @@ describe('键盘可达与 aria', () => {
 })
 
 describe('后端契约 · snake_case 转换收在一处', () => {
-  test('从 ../api/admin.js 导入四个函数（不建这个文件，读它也不做断言）', () => {
+  test('从 ../api/admin.js 导入五个函数（不建这个文件，读它也不做断言）', () => {
+    // [^}]* 不是 [\s\S]*? —— 后者会从文件里第一个 import {（vue 那行）起吞到
+    // 这里，名单里混进 'onMounted } from \'vue\'...' 这种垃圾。
+    // [^}]* 天然锚定「最后一个 } 之前」的那条 import，同时照样能跨行。
     const m = adminCode.match(/import \{([^}]*)\} from '\.\.\/api\/admin\.js'/)
     assert.ok(m, "没有从 '../api/admin.js' 导入")
     const names = m[1].split(',').map((s) => s.trim()).filter(Boolean)
+    // 契约从四个长到五个：多出来的 updateAdminModel 是 ADR 0010
+    // 「模型清单可改」的前端出口。**这份名单是冻结的**——
+    // 少一个说明有路径绕过了 api 层，多一个说明有新的未审接口混进来了。
     assert.deepEqual(names.sort(),
-      ['fetchAdminCommunity', 'fetchAdminModels', 'fetchAdminUsers', 'setUserQuota'],
-      '导入的四个 API 名字与冻结的契约不一致')
+      ['fetchAdminCommunity', 'fetchAdminModels', 'fetchAdminUsers',
+       'setUserQuota', 'updateAdminModel'],
+      '导入的 API 名字与冻结的契约不一致')
   })
 
   test('四个转换函数都在（用户 / 社区 / 模型各自的形状）', () => {
@@ -654,5 +661,256 @@ describe('后端契约 · snake_case 转换收在一处', () => {
     for (const f of ['parse_limit_override', 'chat_limit_override', 'parse_limit_source', 'chat_limit_source']) {
       assert.ok(m[1].includes(f), `toUser 没有读 ${f} —— 改完额度看不到有没有真的落成 override`)
     }
+  })
+})
+
+describe('AI 服务页签 · 模型清单可改（ADR 0010）', () => {
+  const apiAdmin = stripComments(read('../src/api/admin.js'))
+
+  test('页签不再自称「只读」—— 文案必须与实现对得上', () => {
+    // ADR 0010 写的是「AI 服务（模型清单可改）」，ADR 0011 更把
+    // 「只读展示」明确列为**被否决**的方案（理由：等于诊断页）。
+    // 文案说只读、实现也只读，那是两头都不落：既没实现可改，
+    // 也没把它登记成显式延后。
+    assert.ok(!/^只读[。.]/m.test(admin), 'AI 服务页签仍自称「只读」，但它现在可改')
+    assert.ok(/可改显示名/.test(admin), '页签应说明哪些字段可改')
+    assert.ok(/\.env/.test(admin), '仍要说明凭据留在 .env（ADR 0011）')
+  })
+
+  test('保存真的调 updateAdminModel（挂上函数不调用 = 装饰）', () => {
+    assert.match(adminCode, /import\s*\{[^}]*\bupdateAdminModel\b[^}]*\}\s*from\s*'\.\.\/api\/admin\.js'/,
+      'AdminPage.vue 没有 import updateAdminModel')
+    assert.match(adminCode, /await\s+updateAdminModel\(/,
+      '保存逻辑没有真的调 updateAdminModel')
+    assert.match(adminCode, /@click="saveModel\(/,
+      '保存按钮没有绑 saveModel')
+  })
+
+  test('enabled 必须翻成 0/1 —— 后端显式拒布尔值', () => {
+    // Python 里 True == 1：`{"enabled": true}` 会静静地变成「上架」。
+    // 这条断言断的是那层翻译真的在，而不是「enabled 这个词出现过」。
+    assert.match(apiAdmin, /body\.enabled\s*=\s*patch\.enabled\s*\?\s*1\s*:\s*0/,
+      'api/admin.js 没把 enabled 翻成 0/1，后端会拒布尔值')
+  })
+
+  test('只带调用方传了的键（PATCH 语义）', () => {
+    // 守卫与赋值用的是**两套**键名，这里必须分开查：
+    //   守卫  'baseUrl' in patch      （camelCase，看调用方传了什么）
+    //   赋值  body.base_url = ...      （snake_case，后端契约）
+    // 早先只按 snake_case 查守卫，于是七条一条都查不到 ——
+    // 断言恒假。恒假和恒真一样让人以为「有守卫」。
+    //
+    // 无条件把七个字段全发过去 = 每次改一个显示名都顺手刷掉模型列表、
+    // 端点、排序成草稿里的值 —— 而草稿可能没加载全。
+    for (const key of ['label', 'hint', 'baseUrl', 'models', 'defaultModel', 'enabled', 'sortOrder']) {
+      assert.match(apiAdmin, new RegExp(`'${key}'\\s+in\\s+patch`),
+        `请求体无条件带上了 ${key}：没传这个键时后端也会改它，PATCH 语义被破坏`)
+    }
+    assert.match(apiAdmin, /Object\.keys\(body\)\.length\s*===\s*0/,
+      '空 patch 应当在前端就挡住（后端会回 400，但省一次往返）')
+  })
+
+  test('键名翻成 snake_case（发 camelCase 会静默什么都不改还返回 200）', () => {
+    for (const key of ['base_url', 'default_model', 'sort_order']) {
+      assert.match(apiAdmin, new RegExp(`body\\.${key}\\s*=`),
+        `没有翻成 snake_case 的 ${key}`)
+    }
+  })
+
+  test('成功用**回读**结果替换本地行，不做乐观更新', () => {
+    // 先本地改卡片、请求失败时静默回滚 —— 管理员看到「改成功了」
+    // 而实际没改，那比报错更坏。
+    assert.match(adminCode, /await\s+updateAdminModel\([\s\S]*?replaceModel\(res\.item\)/,
+      '保存成功后没有用服务端回读的那份替换本地行')
+    assert.match(adminCode, /function\s+replaceModel\(/, '缺少 replaceModel')
+    assert.ok(!/replaceModel\(\{\s*\.\.\./.test(adminCode),
+      'replaceModel 收了本地草稿而不是服务端回读结果')
+  })
+
+  test('反馈走 aria-live，且成功提示说清平台默认变成了什么', () => {
+    // 改默认模型的影响面是「平台实际会用哪个模型」，不说的话
+    // 管理员只能看见「保存成功」，不知道刚才那下改了什么。
+    const modelEditor = admin.slice(admin.indexOf('openModelEditor(m.id)'))
+    assert.match(modelEditor, /aria-live="polite"/, '厂商编辑区没有 aria-live 反馈区')
+    assert.match(adminCode, /platformDefault/, '成功提示里没带上平台默认模型的新值')
+  })
+
+  test('前端挡住「默认模型不在可选列表里」，不等服务端 400', () => {
+    assert.match(adminCode, /list\.value\.indexOf\(d\.defaultModel\)\s*<\s*0/,
+      '没在前端校验「平台默认必须从可选模型里选」')
+    assert.match(adminCode, /indexOf\(p\)\s*!==\s*i/,
+      '没在前端挡住重复的模型名')
+  })
+
+  test('草稿在渲染前播种（v-model 绑不到成员表达式）', () => {
+    // 与额度草稿同一条硬约束：Vue 的 v-model 只接受成员表达式，
+    // `modelDrafts[m.id].label` 必须在该 key 已存在时才合法。
+    assert.match(adminCode, /function\s+primeModelDrafts\(/, '缺少 primeModelDrafts')
+    assert.match(adminCode, /primeModelDrafts\(v\.items\)/,
+      'loadModels 渲染前没有播种草稿')
+  })
+
+  test('保存中禁用按钮，避免重复提交', () => {
+    const modelEditor = admin.slice(admin.indexOf('openModelEditor(m.id)'))
+    assert.match(modelEditor, /:disabled="savingModelId\s*!==\s*null"/,
+      '保存中没禁用按钮，连点会发多次')
+  })
+})
+// ── 把 saveModel 抽出来实跑 ──────────────────────────────────
+//
+// 前面那些断言是「在源码里找某个表达式」，它们证明不了这个表达式**接对了线**：
+// 变异 FM6（saveModel 改发旧行而不是草稿）全绿，FM5（去掉 !list.ok 早退）全绿。
+// 下面这组把函数体真的执行一遍，断的是「updateAdminModel 收到的 payload」。
+//
+// 抽函数用大括号配平计数。saveModel / toModelList / hasModels 三个函数体里
+// 没有正则字面量，模板串里的 ${} 自身配平，所以朴素计数是安全的 ——
+// 这个前提哪天不成立，计数会失配并在这里直接抛错，不会静默抽错。
+
+function extractFn(src, name) {
+  const at = src.indexOf(`function ${name}(`)
+  // saveModel is async: slicing from `function` drops the keyword and
+  // every `await` inside turns into a SyntaxError at Function() time.
+  const start = src.slice(Math.max(0, at - 6), at) === 'async ' ? at - 6 : at
+  assert.ok(at > 0, `抽不出 ${name}`)
+  let i = src.indexOf('{', start)
+  let depth = 0
+  for (; i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1
+    else if (src[i] === '}') {
+      depth -= 1
+      if (depth === 0) return src.slice(start, i + 1)
+    }
+  }
+  throw new Error(`${name} 的大括号不配对 —— 抽出来的会是半个函数`)
+}
+
+const SAVE_FN_BODY = [
+  extractFn(adminCode, 'toModelList'),
+  extractFn(adminCode, 'hasModels'),
+  extractFn(adminCode, 'saveModel'),
+].join('\n')
+
+/**
+ * 造一个能跑 saveModel 的沙箱。
+ *
+ * modelDrafts **必须是同一个对象**贯穿「工厂入参」与「返回值」——
+ * 各造一份的话种子写进了函数看不见的地方，所有用例都因为 d={} 而早退，
+ * 而「全绿」看起来和「判据在咬」一模一样。
+ */
+function makeSaveSandbox({ saving = null } = {}) {
+  const calls = []
+  const modelDrafts = {}
+  const modelFeedbacks = {}
+  const modelFeedbackOf = (id) => {
+    if (!modelFeedbacks[id]) modelFeedbacks[id] = { kind: '', text: '' }
+    return modelFeedbacks[id]
+  }
+  const factory = new Function(
+    'modelDrafts', 'modelFeedbacks', 'savingModelId', 'modelFeedbackOf',
+    'updateAdminModel', 'replaceModel', 'messageOf',
+    `${SAVE_FN_BODY}\nreturn { saveModel, toModelList, hasModels }`,
+  )
+  const api = factory(
+    modelDrafts, modelFeedbacks, { value: saving }, modelFeedbackOf,
+    async (id, patch) => {
+      calls.push({ id, patch })
+      return { item: { id, label: patch.label }, platformDefault: 'm1' }
+    },
+    () => {}, (e) => String((e && e.message) || e),
+  )
+  return { ...api, modelDrafts, calls, modelFeedbacks, modelFeedbackOf }
+}
+
+const REAL_ROW = {
+  id: 'bailian', label: '阿里云百炼', enabled: true, sortOrder: 10,
+  models: ['qwen-plus', 'qwen-turbo'], defaultModel: 'qwen-plus',
+}
+/** platform / custom：后端播种就是 models=[] 的占位行 */
+const PLACEHOLDER_ROW = {
+  id: 'platform', label: '平台', enabled: true, sortOrder: 0,
+  models: [], defaultModel: '',
+}
+
+function seedDraft(box, row, over = {}) {
+  box.modelDrafts[row.id] = {
+    label: row.label, hint: '', baseUrl: '',
+    modelsText: (row.models || []).join(', '),
+    defaultModel: row.defaultModel || '',
+    enabled: row.enabled ? 1 : 0, sortOrder: row.sortOrder,
+    ...over,
+  }
+}
+
+describe('saveModel 真跑 · 发出去的 payload', () => {
+  test('沙箱自检：种子与函数看见的是同一份草稿', async () => {
+    const box = makeSaveSandbox()
+    seedDraft(box, REAL_ROW, { label: '草稿里的名字' })
+    await box.saveModel(REAL_ROW)
+    assert.equal(box.calls.length, 1,
+      '沙箱没接上：草稿写进了函数看不见的对象，后面所有用例都会假绿')
+  })
+
+  test('正常行：带上 models 与 defaultModel，值取自草稿', async () => {
+    const box = makeSaveSandbox()
+    seedDraft(box, REAL_ROW, { label: '改过的名', defaultModel: 'qwen-turbo' })
+    await box.saveModel(REAL_ROW)
+    assert.equal(box.calls.length, 1)
+    const { patch } = box.calls[0]
+    assert.equal(patch.label, '改过的名', 'label 必须取自草稿，不是旧行')
+    assert.deepEqual(patch.models, ['qwen-plus', 'qwen-turbo'])
+    assert.equal(patch.defaultModel, 'qwen-turbo', '平台默认必须取自草稿')
+    assert.equal(patch.enabled, true)
+    assert.equal(patch.sortOrder, 10)
+  })
+
+  test('占位行（models 为空）：能保存，且**不发** models/defaultModel', async () => {
+    // HIGH-1 的回归测试：占位行过去第一步就早退，任何字段都存不了
+    const box = makeSaveSandbox()
+    seedDraft(box, PLACEHOLDER_ROW, { label: '平台（改名成功）', enabled: 0 })
+    await box.saveModel(PLACEHOLDER_ROW)
+    assert.equal(box.calls.length, 1,
+      `占位行应当也能保存，实得 ${box.calls.length} 次调用：`
+      + `${box.modelFeedbacks.platform && box.modelFeedbacks.platform.text}`)
+    const { patch } = box.calls[0]
+    assert.equal(patch.label, '平台（改名成功）')
+    assert.equal(patch.enabled, false, '下架也要能存')
+    // 关键：不能发空数组。后端拒空 models，硬发等于让这一行彻底存不了
+    assert.ok(!('models' in patch),
+      `占位行不该发 models，实得 ${JSON.stringify(patch.models)}`)
+    assert.ok(!('defaultModel' in patch), '占位行不该发 defaultModel')
+  })
+
+  test('空模型列表的早退仍在：正常行清空可选模型必须被拒，且不发请求', async () => {
+    // 变异 A：删掉 if (!list.ok) return —— 这条必须转红
+    const box = makeSaveSandbox()
+    seedDraft(box, REAL_ROW, { modelsText: '  ' })
+    await box.saveModel(REAL_ROW)
+    assert.equal(box.calls.length, 0, '空可选模型必须挡住，不该发出请求')
+    const fb = box.modelFeedbacks.bailian
+    assert.equal(fb.kind, 'error', '要给出错误态')
+    assert.match(fb.text, /可选模型/, `错误文案要说清是可选模型的问题：${fb.text}`)
+  })
+
+  test('平台默认不在可选列表里：挡住且不发请求', async () => {
+    const box = makeSaveSandbox()
+    seedDraft(box, REAL_ROW, { defaultModel: 'ghost' })
+    await box.saveModel(REAL_ROW)
+    assert.equal(box.calls.length, 0, '默认模型越出列表必须挡住')
+    assert.equal(box.modelFeedbacks.bailian.kind, 'error')
+  })
+
+  test('模型名重复：挡住且不发请求（后端也会拒，但那边讲的是后端规则）', async () => {
+    const box = makeSaveSandbox()
+    seedDraft(box, REAL_ROW, { modelsText: 'a, b, a' })
+    await box.saveModel(REAL_ROW)
+    assert.equal(box.calls.length, 0)
+    assert.match(box.modelFeedbacks.bailian.text, /重复/)
+  })
+
+  test('保存中再点一次不会发第二个请求', async () => {
+    const box = makeSaveSandbox({ saving: 'bailian' })
+    seedDraft(box, REAL_ROW)
+    await box.saveModel(REAL_ROW)
+    assert.equal(box.calls.length, 0, '正在保存时再点必须直接返回')
   })
 })

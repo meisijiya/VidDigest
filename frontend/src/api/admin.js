@@ -161,3 +161,45 @@ export async function setUserQuota(userId, { parseLimit = null, chatLimit = null
   }
   return { user: res.data.user, note: res.data.note ?? null, message: res.data.message ?? '' }
 }
+/**
+ * 改一个厂商行（ADR 0010「模型清单可改」）。**需管理员**。
+ *
+ * 两条不可省的翻译：
+ *
+ * 1. **只带调用方真的传了的键**。后端是 PATCH 语义：没出现的键 = 不改那一项。
+ *    无条件把七个字段全发过去，等于每次改一个显示名都顺手把模型列表、
+ *    端点、排序全刷成草稿里的值 —— 而草稿可能没加载全。
+ * 2. **enabled 翻成 0/1**。后端显式拒布尔值（Python 里 `True == 1`，
+ *    `{"enabled": true}` 会静静地变成「上架」）。前端必须先翻。
+ *
+ * 键名翻成 snake_case：发 camelCase 的话 pydantic 会当成「七个字段都没出现」，
+ * 静默什么都不改还返回 200 —— 与 setUserQuota 那条是同一类坑。
+ *
+ * @returns {Promise<{item: object, platformDefault: string|null}>}
+ *   `item` 是**回读**结果。`platformDefault` 让前端能当场显示
+ *   「这一改会影响平台默认模型是什么」，而不是让管理员去猜。
+ */
+export async function updateAdminModel(providerId, patch = {}) {
+  const body = {}
+  if ('label' in patch) body.label = patch.label
+  if ('hint' in patch) body.hint = patch.hint
+  if ('baseUrl' in patch) body.base_url = patch.baseUrl
+  if ('models' in patch) body.models = patch.models
+  if ('defaultModel' in patch) body.default_model = patch.defaultModel
+  if ('enabled' in patch) body.enabled = patch.enabled ? 1 : 0
+  if ('sortOrder' in patch) body.sort_order = patch.sortOrder
+
+  if (Object.keys(body).length === 0) {
+    // 与后端同一条纪律：空 patch 会被判 400，这里先挡住，省一次往返
+    throw new Error('没有任何要改的字段')
+  }
+
+  const res = await client().patch(`/api/admin/models/${providerId}`, body)
+  if (!res.data || !res.data.item) {
+    throw new Error('模型清单更新响应形状不对')
+  }
+  return {
+    item: toAdminModelItem(res.data.item),
+    platformDefault: res.data.platform_default || null,
+  }
+}

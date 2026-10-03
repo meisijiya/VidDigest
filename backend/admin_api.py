@@ -6,8 +6,9 @@
 |---|---|---|
 | `GET /api/models` | **公开** | 只读 |
 | `GET /api/admin/models` | require_admin | 只读 |
+| `PATCH /api/admin/models/{id}` | require_admin | **写**（改已有行，不新增） |
 | `GET /api/admin/users` | require_admin | 只读 |
-| `POST /api/admin/users/{id}/quota` | require_admin | **本文件唯一的写操作** |
+| `POST /api/admin/users/{id}/quota` | require_admin | **写** |
 | `GET /api/admin/community` | require_admin | 只读 |
 
 ## 为什么 `/api/models` 是公开的
@@ -34,7 +35,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 import model_catalog
 from auth import require_admin
@@ -142,6 +143,64 @@ async def admin_model_providers(_: dict = Depends(require_admin)):
             only_enabled=False, admin_view=True
         )
     }
+
+
+class ModelUpdateRequest(BaseModel):
+    """改一个厂商行。字段全是 ``Any``，值域判定交给数据层的纯函数。
+
+    声明成具体类型的话非法值会由 pydantic 变成 422，而契约要的是 400 ——
+    「参数不合法」与「请求体结构不对」是两种客户端错误，不该混成一个码
+    （与 QuotaUpdateRequest 同一理由）。
+
+    **没出现的键 = 不改这一项**，所以改默认模型不必把整行重发一遍。
+
+    ``extra="forbid"`` 不是洁癖：pydantic 默认会**悄悄丢掉**未声明的键，
+    于是 ``{"api_key": "...", "label": "新名"}`` 会只剩 label 生效并返回
+    200 —— 调用方以为凭据也改了。数据层的 ``EDITABLE_FIELDS`` 拦得住这个，
+    但它在 HTTP 边界根本走不到（键先被 pydantic 丢了），白写了。
+
+    用 422 而不是 400 正是本类自己的口径：「参数不合法」(400) 与
+    「请求体结构不对」(422) 是两种客户端错误，不该混成一个码。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: Any = None
+    hint: Any = None
+    base_url: Any = None
+    models: Any = None
+    default_model: Any = None
+    enabled: Any = None
+    sort_order: Any = None
+
+
+@router.patch("/admin/models/{provider_id}")
+async def admin_update_model(
+    provider_id: str,
+    payload: ModelUpdateRequest,
+    _: dict = Depends(require_admin),
+):
+    """改厂商行。**可改**：显示名、提示、端点、模型列表、平台默认、上下架、排序。
+
+    明确不提供**新增**端点：新增平台厂商还得在 .env 里配凭据并重启
+    （ADR 0011 记录的代价）。后台建出来的那一行会立刻不可用 ——
+    那比「不能建」更糟。改已有行是纯配置操作，效果当场可见。
+
+    改完**回读**而不是回显：返回的是「库里现在是什么」。
+    """
+    # exclude_unset=True → 只处理请求里真的出现的键
+    patch = payload.model_dump(exclude_unset=True)
+    try:
+        updated = model_catalog.update_model_provider(provider_id, patch)
+    except model_catalog.ModelValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if updated is None:
+        # 厂商 id 不存在：不能静默成功——那会让调用方以为改到了
+        raise HTTPException(status_code=404, detail=f"厂商 {provider_id} 不存在")
+
+    # 下架的即时可见性：平台默认模型读的就是 enabled=1 的行
+    return {"item": updated, "platform_default": model_catalog.platform_default_model(provider_id)}
 
 
 # ── 用户记录（工单 #12）─────────────────────────────────────
