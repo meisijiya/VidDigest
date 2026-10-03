@@ -87,6 +87,12 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 - **`db` 夹具会遮住升级路径。** 夹具每次 `init_db()` 出一个**全新**库，于是「老库缺列、靠迁移补上」那条路径一次都没被执行过——补列排错了顺序，全量绿，真库一升级就 `no such column` 打不开（2026-10-03 实测：索引 `ON parse_history(is_favorite)` 在 `executescript` 里，补列迁移排在它后面，老库直接 abort；**这条当时只在未提交的工作区草稿里，提交历史中没有**，所以它证明的是「新写迁移必须自己验升级路径」，不是「CI 能挡住回归」）。**给 `init_db` 加列时，测试必须从一个真缺列的库启动**：用 `legacy_db` 夹具（`conftest.py`，只换 `DB_PATH` + 清连接、不建表），它已进 `check_db_fixture.DB_FIXTURE_ARGS`。门禁豁免的是「自己管库结构」这一个理由，不取任何夹具照样被报出来。
 - **断言必须跑在能区分两种实现的状态上。** 同一次实测里，「展开态下 measure 不该改 overflowing」这条断言喂的是**不换行但溢出**的宽度，于是 `needsExpand` 照样返回 true，去掉 early return 两种实现结果一样，**变异存活**。真实的展开态下行会 wrap（`scrollWidth == clientWidth`），只有这个形状才能把它区分开。写完断言问一句：**拿它去测另一种实现，会不会红**。
 - **「多选取并集」不是交集。** 历史页与社区页的标签筛选都是命中任一即列出（交集在标签很少共现时直接返回空，界面上与「筛选坏了」一模一样）。前端 `lib/tag-filter.js` 里曾把注释写成「多选 = 与」，而后端是并集——**注释里的语义错了比代码错了更贵**，改代码时顺手搜一遍 `docs/`、`AGENTS.md`、`CONTEXT.md` 里的同类描述。
+- **平台链接形态先查 `_VALID_URL`，别猜也别拿假 id 试。** 2026-10-03 实测（yt-dlp 2026.08.19，结论只对该构建成立）：
+  - 小红书只有 `https://www.xiaohongshu\.com/(?:explore|discovery/item)/<24位hex>`。**不带 `www`、`m.` 开头、`xhslink.com` 短链、`/user/profile/` 全部 `Unsupported URL`** —— 而 App 分享出来的默认就是短链，`clean_url()` 会把它从整段文案里原样抽出来，所以「复制小红书链接」直接粘必然失败。
+  - 爱奇艺**必须带 `.html`**，否则不掉进 iqiyi extractor、而是掉进 `[generic]` 兜底，**不报错但等于没支持**。
+  - 微博 `weibo.com/tv/show/` 的 id 必须是 `<数字>:<32位hex>`；短 id 会被判 `Unsupported URL`。
+  - 西瓜视频 extractor 明确要求 Cookie（不必登录）；**快手在这个构建里没有 extractor**。
+  - **把「形态对不对」和「视频在不在」分开验**：格式正确但 id 不存在会拿到平台自己的错误（说明被认领并出网了）；形态错误才是 `Unsupported URL`，请求根本没出过进程。拿假 id 得出的「不支持」结论不可信——本仓已经因此错判过一次微博。
 
 ## 范围边界
 
