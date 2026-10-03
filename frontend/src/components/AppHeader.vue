@@ -72,9 +72,18 @@
                 </svg>
               </button>
 
+              <!-- 面板外层是**命中区**，内层才是视觉。
+                   这里不能用 `mt-2` 拉开间距：绝对定位元素的 top margin
+                   会在按钮与面板之间留下一条 8px 的**空带**，那条带既不属于
+                   按钮也不属于面板——鼠标从按钮往下移到「使用平台 Key」的
+                   途中必然穿过它，于是 mouseleave 先一步把面板收走了，
+                   按钮永远点不到（用户报的就是这个）。
+
+                   所以：外层用 `-mt-2` 顶回去、再用 `pt-2` 把同样的 8px
+                   补成**实心命中区**。视觉上仍是原来的间距，命中区连续。 -->
               <div v-if="quotaOpen"
-                class="absolute right-0 top-full mt-2 w-64 rounded-2xl bg-panel border border-line
-                       shadow-xl shadow-black/20 p-4 z-50">
+                class="absolute right-0 top-full -mt-2 pt-2 w-64 z-50">
+                <div class="rounded-2xl bg-panel border border-line shadow-xl shadow-black/20 p-4">
                 <p class="text-xs font-medium text-gray-400 mb-3">今日额度</p>
                 <div class="space-y-2.5">
                   <div v-for="slot in quotaRows" :key="slot.key"
@@ -111,6 +120,7 @@
                   </span>
                   <span v-else class="flex-shrink-0 text-[10px] text-gray-400">管理</span>
                 </button>
+                </div>
               </div>
             </div>
             <span v-if="showVipEntry && user.is_vip"
