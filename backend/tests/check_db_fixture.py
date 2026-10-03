@@ -38,6 +38,9 @@ DB_FUNCS = {
     "upsert_parse_history", "get_parse_histories", "get_parse_history_detail",
     "delete_parse_history", "get_user_orders",
     "update_order_stripe_session", "complete_order",
+    # 管理后台地基（工单 #11）：seed_admin_emails_from_env 会写 users 表。
+    # 漏掉它，这道门禁就对「播种测试会不会连上真实 app.db」失明。
+    "seed_admin_emails_from_env",
 }
 
 #: 取了这些参数就算拿到了 db 夹具（client_app 内部依赖 db）

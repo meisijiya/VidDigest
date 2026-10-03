@@ -204,6 +204,7 @@ def init_db():
                 password_hash TEXT NOT NULL,
                 is_vip INTEGER DEFAULT 0,
                 vip_expire_at TEXT,
+                is_admin INTEGER NOT NULL DEFAULT 0,
                 daily_summary_count INTEGER DEFAULT 0,
                 last_summary_date TEXT,
                 daily_parse_count INTEGER DEFAULT 0,
@@ -309,6 +310,7 @@ def init_db():
 
         _migrate_quota_columns(conn)
         _migrate_video_card_columns(conn)
+        _migrate_admin_column(conn)
         _create_video_search_index(conn)
 
 
@@ -330,6 +332,66 @@ def _migrate_quota_columns(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+def _migrate_admin_column(conn) -> None:
+    """给已存在的 users 表补上 is_admin 列（工单 #11，expand 阶段）。
+
+    与额度列同一套路：建表语句里已经有这一列，但 `CREATE TABLE IF NOT EXISTS`
+    对老库是空操作，老库的 users 表不会凭空多出列，而 auth.require_admin
+    一读就报 no such column。**两处都必须写**：只改建表语句，老库起不来。
+
+    NOT NULL + DEFAULT 0：没有「未设置」这个状态，一个账号要么是管理员要么不是。
+    老行由 DEFAULT 0 兜底，不会因为加列而被判成管理员。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "is_admin" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+
+
+# ── 首个管理员播种（工单 #11）──────────────────────────────
+#
+# 播种只做一件事：把 VIDDIGEST_ADMIN_EMAILS 里列出的账号置为 is_admin=1。
+# 它**不是**「同步」——配置里删掉一个邮箱不会撤销该账号的管理员身份
+# （撤销是人的操作，不是配置的副作用）。这样 env 少写一个字符不会在
+# 下次启动时静默削掉一个管理员。
+
+
+def _parse_admin_emails(raw: str | None) -> list[str]:
+    """把逗号分隔的邮箱串解析成去空、去首尾空白的列表。
+
+    strip 与跳过空串是必须的：运维手写 "a@x.com, b@x.com" 时逗号后面那个
+    空格是常态，邮箱本身还可能带着引号残留。不 strip 就会拿一个永远匹配不上的
+    字符串去查库，然后**安静地什么也不播种**——那是最难查的一种失败。
+
+    保持原样、不做大小写折叠：注册时 email 原样入库（见 create_user，
+    没有 lower），折叠会让「配了大写、注册用小写」这类偏差变成静默命中，
+    反过来更难解释。按原样匹配，配错就是不播种。
+    """
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def seed_admin_emails_from_env() -> int:
+    """按 VIDDIGEST_ADMIN_EMAILS 播种管理员，返回受影响的用户行数。
+
+    **未配置是合法配置**：返回 0，不报错、不播种。不是每个部署都有管理员。
+
+    刻意在**调用时**读 env（而不是模块级冻结成常量），与 quota_limit 同一理由：
+    冻结的副本会让「改了配置行为随之改变」这条无法验证。启动播种自然满足这一点，
+    但本函数也可能被测试直接调用。
+    """
+    emails = _parse_admin_emails(os.getenv("VIDDIGEST_ADMIN_EMAILS"))
+    if not emails:
+        return 0
+    placeholders = ",".join("?" * len(emails))
+    with get_db() as conn:
+        cursor = conn.execute(
+            f"UPDATE users SET is_admin = 1 WHERE email IN ({placeholders})",
+            emails,
+        )
+        return cursor.rowcount
 
 
 # ── 社区浏览与搜索（工单 #7）─────────────────────────────────

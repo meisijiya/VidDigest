@@ -2,6 +2,14 @@
 import os
 import sys
 
+# auth.py 在 JWT_SECRET 缺失时 **import 即失败**（工单 #11）。
+# conftest 是 pytest 收集阶段第一批执行的模块，早于任何 test_*.py，
+# 所以测试专用密钥必须在这里设，且早于 import database / auth。
+# setdefault：外部环境真的配了密钥时不覆盖，测试不会盖掉真实配置。
+os.environ.setdefault(
+    "JWT_SECRET", "test-only-jwt-secret-0123456789abcdef0123456789abcdef"
+)
+
 import pytest
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

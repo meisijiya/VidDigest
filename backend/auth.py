@@ -7,7 +7,22 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-JWT_SECRET = os.getenv("JWT_SECRET", "")
+# 密钥**没有默认值**：漏配时进程起不来，而不是拿一个公开在源码里的字符串兜底。
+#
+# 从「部署注意事项」升级为硬失败（工单 #11 / ADR 0010）：管理后台上线后，
+# 猜中这个常量就等于能伪造任意管理员 token——兜底值的代价从「不好看」变成
+# 「任何人都是管理员」。
+#
+# 纯空白视同未配置，与 database._env_int 里 `not raw.strip()` 的既有约定一致。
+_raw_jwt_secret = os.getenv("JWT_SECRET")
+if not _raw_jwt_secret or not _raw_jwt_secret.strip():
+    raise RuntimeError(
+        "缺少环境变量 JWT_SECRET，进程拒绝启动。\n"
+        "  配法一：在 backend/.env 里写一行 JWT_SECRET=<32 位以上随机串>\n"
+        "  配法二：导出环境变量 JWT_SECRET=$(openssl rand -hex 32)\n"
+        "  已有 .env 的部署请确认该文件未漏提交、且启动进程读得到它。"
+    )
+JWT_SECRET = _raw_jwt_secret.strip()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 72
 
@@ -77,3 +92,17 @@ async def get_optional_user(credentials: HTTPAuthorizationCredentials = Depends(
         return get_user_by_id(payload["sub"])
     except HTTPException:
         return None
+
+
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """管理员专用依赖。
+
+    身份**每次请求都回查 users 表**（get_current_user 已经是 SELECT *），
+    所以 is_admin 不进 JWT：提权与撤权在**下一次请求**就生效，不用等 token 过期。
+    代价是每次多一次查询——后台是低频操作，这个交换划算（ADR 0010）。
+
+    鉴权只在这里发生，路由体内不许再写 `if not user`。
+    """
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user

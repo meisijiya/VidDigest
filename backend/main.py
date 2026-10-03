@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from downloader import VideoDownloader
 from douyin import DouyinParser, is_douyin_url
-from database import init_db
+from database import init_db, seed_admin_emails_from_env
 
 # 全局单例
 downloader = VideoDownloader()
@@ -27,6 +27,9 @@ douyin_parser = DouyinParser(download_dir=downloader.DOWNLOAD_DIR)
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化数据库，关闭时清理下载文件"""
     init_db()
+    # 播种必须在 init_db 之后：users 表还不存在时插不进去。
+    # 未配置 VIDDIGEST_ADMIN_EMAILS 是合法配置，这里静默返回 0。
+    seed_admin_emails_from_env()
     yield
     # 关闭时清理下载文件
     download_dir = downloader.DOWNLOAD_DIR
