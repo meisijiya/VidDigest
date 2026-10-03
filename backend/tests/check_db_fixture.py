@@ -27,11 +27,15 @@ DB_FUNCS = {
     # 漏一个就等于这道门禁对那条路径失明。
     "consume_quota", "check_quota_kind", "refund_quota", "check_quota",
     "quota_limit", "is_vip_active",
-    # 社区视频表（工单 #6）：这四个函数会触库，测试直接调它们时必须取 db 夹具
-    "reserve_video", "complete_video", "release_video", "get_video_by_url",
+    # 社区视频表（工单 #6）：这些函数会触库，测试直接调它们时必须取 db 夹具
+    "reserve_video", "complete_video", "release_video",
+    "regenerate_video", "get_video_by_url",
+    # _paginate 是社区列表与搜索共用的分页信封助手，它自己 `with get_db()`。
+    # 上面那两个补进来的名字由 test_db_fixture_gate.py 从源码闭包算出来，
+    # 不是手查的 —— 那道元测试存在的意义就是别再靠手查。
     # 社区浏览与检索（工单 #7）：漏一个就等于这道门禁对那条路径失明
     "list_community_videos", "get_community_video",
-    "publish_video_card",
+    "publish_video_card", "_paginate",
     "search_community_videos",
     # 追问会话（工单 #8）：append_chat_history 已退役，追问记录改存 chat_messages
     "append_chat_turn", "get_recent_chat_messages", "get_chat_session",
