@@ -12,7 +12,7 @@ from fastapi.sse import ServerSentEvent, EventSourceResponse
 from pydantic import BaseModel, SecretStr
 
 from auth import get_optional_user
-from credentials import UserCredential
+from credentials import CredentialError, UserCredential
 from database import (
     append_chat_turn,
     check_quota_kind,
@@ -98,6 +98,12 @@ def _quota_payload(user_id: int, primary: str = "parse") -> dict:
     }
 
 
+#: 端点覆盖为什么不是白名单，只写在下面第一处（两个模型字段完全相同，
+#: 逐个抄一遍注释的代价是它们迟早会漂移——那正是本文件反复出问题的地方）。
+#: 简述：用户自建服务无法被提前枚举，风险由「只出网到用户自己指定的
+#: 那台机器」承担；协议与 userinfo 的硬校验在 credentials.validate_base_url。
+
+
 class SummarizeRequest(BaseModel):
     url: str
     language: str = "zh"
@@ -105,21 +111,24 @@ class SummarizeRequest(BaseModel):
     #: 只在 parsed_by 是本人时生效；否则服务端直接拒绝，不调模型不扣额度。
     #: 默认 False——绝大多数请求只是来看一眼或首次解析。
     overwrite: bool = False
+    # 自带凭据（BYOK）：用 SecretStr 让遮蔽从请求模型这一层就成立。
+    # 裸 str 的模型 repr 与 model_dump() 都会带出真值，将来任何一句
+    # logger.debug(f"{req}") 就会漏。进路由立刻包成 UserCredential，不落盘。
+    user_api_key: SecretStr = SecretStr("")
+    base_url: str = ""
+    model: str = ""
 
 
 class ChatRequest(BaseModel):
     url: str
     question: str
     subtitle_text: str = ""
-    # 用户自带凭据（BYOK）。进路由立刻被包成 UserCredential，之后全程
-    # 以封装对象流转。不建表、不落盘。
-    #
-    # 用 SecretStr 而不是裸 str：它让遮蔽**从请求模型这一层就成立**。
-    # 裸 str 的模型 repr 与 model_dump() 都会带出真值，于是「进路由就包起来」
-    # 只在封装类那一层为真，再外面一层仍是裸的——将来任何一句
-    # logger.debug(f"{req}") 就会漏。SecretStr 的 repr 是
-    # SecretStr('**********')，model_dump() 返回的还是 SecretStr 对象。
+    # 与 SummarizeRequest 同名字段，同一含义、同一校验。逐字段重复而不是
+    # 抽基类：两者的字段集合各自演化（summarize 有 overwrite，chat 没有），
+    # 共用基类会逼着每加一个字段就回答「另一边要不要也加上」。
     user_api_key: SecretStr = SecretStr("")
+    base_url: str = ""
+    model: str = ""
 
 
 def _check_quota_permission(user: dict | None, kind: str):
@@ -381,6 +390,22 @@ async def summarize_video(
             yield event
         return
 
+    # 自带凭据在这里就包好，之后全程只传封装对象。
+    # 构造可能抛 CredentialError（端点不合法），那是**用户填错了**：
+    # 必须在占位之前就拒绝，否则这个链接会先被占住再被还回来。
+    try:
+        credential = UserCredential.from_secret(
+            req.user_api_key, req.base_url, req.model
+        )
+    except CredentialError as e:
+        # 固定文案：CredentialError 的消息里没有用户原文（见 validate_base_url），
+        # 这里也不追加任何上下文。
+        async for event in fail(str(e)):
+            yield event
+        return
+    # 自带凭据时不消耗平台额度——钱是用户自己出的（ADR 0004）。
+    using_byok = credential is not None
+
     # 覆盖自己的那一份（ADR 0007）。判定放在**抢占位之前**：
     # 覆盖路径根本没有占位可言，先抢位再判断会凭空造出一行 pending。
     regenerate = False
@@ -413,13 +438,18 @@ async def summarize_video(
     # 到这里我们可以调模型了（占位者，或覆盖自己那一份的作者）。
     # 额度仍可能不够——占位必须还回去，否则这个链接会被一个注定失败的
     # 请求永久卡住。覆盖路径没有占位可还。
-    allowed, remaining, message = _check_quota_permission(user, "parse")
-    if not allowed:
-        if not regenerate:
-            release_video(req.url)
-        async for event in fail(message, need_vip=True):
-            yield event
-        return
+    #
+    # 自带凭据时**不查额度**：花的是用户自己的钱，平台没有理由拦他。
+    # 这条与「社区复用不查额度」是同一个道理——不是平台出的钱，就不是
+    # 平台的额度。
+    if not using_byok:
+        allowed, remaining, message = _check_quota_permission(user, "parse")
+        if not allowed:
+            if not regenerate:
+                release_video(req.url)
+            async for event in fail(message, need_vip=True):
+                yield event
+            return
 
     # 额度是否已扣。扣了之后没走完流程就要还回去。
     quota_spent = False
@@ -450,17 +480,27 @@ async def summarize_video(
 
         full_text = subtitle_data["full_text"]
 
-        # 真正要调用 AI 了，此刻才扣额度（字幕提取失败不扣）
-        consume_quota(user["id"], "parse")
-        quota_spent = True
-
-        # 额度尽早下发，前端在流式开始前就能显示剩余次数。
-        # 顶层字段由 _quota_payload 统一产出——在这里手写会被末尾展开的
-        # payload 覆盖掉，写了也不生效。
-        yield ServerSentEvent(
-            raw_data=json.dumps(_quota_payload(user["id"], "parse"), ensure_ascii=False),
-            event="quota",
-        )
+        # 真正要调用 AI 了，此刻才扣额度（字幕提取失败不扣）。
+        # 自带凭据时跳过扣减，也**没有余额可报**：凭空编一个数字报出去
+        # 就是撒谎。只报「本次没消耗」，余额由前端原样留着——
+        # 与 /api/chat 的 BYOK 分支同一个形状，前端一条 applyQuotaEvent 通吃。
+        if not using_byok:
+            consume_quota(user["id"], "parse")
+            quota_spent = True
+            # 额度尽早下发，前端在流式开始前就能显示剩余次数。
+            # 顶层字段由 _quota_payload 统一产出——在这里手写会被末尾展开的
+            # payload 覆盖掉，写了也不生效。
+            yield ServerSentEvent(
+                raw_data=json.dumps(_quota_payload(user["id"], "parse"), ensure_ascii=False),
+                event="quota",
+            )
+        else:
+            yield ServerSentEvent(
+                raw_data=json.dumps(
+                    {"byok": True, "consumed": False}, ensure_ascii=False
+                ),
+                event="quota",
+            )
 
         # 一次模型调用产出三件事：总结逐 token 下发（打字机效果），
         # 哨兵之后的 JSON 在流末尾一次性解析。模型只被调一次，额度也只扣这一次。
@@ -468,7 +508,11 @@ async def summarize_video(
         summary_parts: list[str] = []
         mindmap_md = ""
         tags_payload: list[str] = []
-        summarizer = _get_summarizer()
+        # 逐请求构造，绝不复用模块级单例：单例会活到进程结束，
+        # 下一个不带凭据的请求会拿上一个人的 client 去调模型。
+        summarizer = (
+            _build_user_summarizer(credential) if using_byok else _get_summarizer()
+        )
         for kind, payload in summarizer.summarize_full_stream(full_text, req.language):
             if kind == "summary":
                 summary_parts.append(payload)
@@ -537,10 +581,24 @@ async def summarize_video(
     except Exception as e:
         # 模型调用失败不该白扣额度。扣减与调用之间没有事务，
         # 这里是把已扣的那一次还回去——回滚本身不会把计数压到负数。
-        yield ServerSentEvent(
-            raw_data=json.dumps({"message": f"总结失败: {str(e)}"}, ensure_ascii=False),
-            event="error",
-        )
+        #
+        # 自带凭据时**不拼 str(e)**：第三方 SDK 的鉴权 / 连接异常可能带
+        # 请求体片段（部分服务端会回显 key 的前若干位），拼进去就是把用户
+        # 自己的凭据回显给他自己，同时进了浏览器历史与代理日志。
+        # 与 /api/chat 共用同一句固定文案——两条路径的口径必须一致。
+        if using_byok:
+            yield ServerSentEvent(
+                raw_data=json.dumps(
+                    {"message": _BYOK_FAILURE_MESSAGE, "byok": True},
+                    ensure_ascii=False,
+                ),
+                event="error",
+            )
+        else:
+            yield ServerSentEvent(
+                raw_data=json.dumps({"message": f"总结失败: {str(e)}"}, ensure_ascii=False),
+                event="error",
+            )
     finally:
         # 结果没能落进社区表就把位置还回去。只删 pending 行，
         # 已经 ready 的社区内容永远不会被这一步碰到。
@@ -575,8 +633,21 @@ async def chat_with_video(
     """
     # 进路由第一件事就是包成封装对象，且**不在路由里留裸串变量**——
     # from_secret 内部取一次值就交给 __init__，路由里的局部变量
-    # 从头到尾只有封装对象。
-    credential = UserCredential.from_secret(req.user_api_key)
+    # 从头到尾只有封装对象。端点一并进去，校验也在那一步做完。
+    try:
+        credential = UserCredential.from_secret(
+            req.user_api_key, req.base_url, req.model
+        )
+    except CredentialError as e:
+        yield ServerSentEvent(
+            raw_data=json.dumps({
+                "message": str(e),
+                "need_login": False,
+                "need_vip": False,
+            }, ensure_ascii=False),
+            event="error",
+        )
+        return
 
     if credential is not None:
         # 仍要登录：追问会话按用户隔离，没登录就没有「他的会话」可言，

@@ -720,24 +720,29 @@ class VideoSummarizer:
         视频下载功能不受此影响。
 
         传入 ``credential`` 时改用**用户自带凭据**（BYOK）：只有认证头换成
-        用户的，base_url 与 model 仍走平台配置。自定义 base_url 会让服务端
-        向用户指定的任意地址发请求，那是 SSRF 口子，票面也没要求换服务商。
+        用户的，base_url 与 model 默认仍走平台配置；用户显式指定了端点
+        （``credential.endpoint``）时才用他的。
+
+        端点校验不在这里做，而在 ``credentials.validate_base_url``——
+        那里是唯一一份规则，且拒绝内嵌 userinfo：带 userinfo 的地址
+        会触发 Basic 认证，与 Authorization 头互相覆盖。
         """
         if credential is not None:
-            # 平台配没配自己的 key 都不影响这条分支的取值：恒定走百炼兼容端点，
-            # 运维要用别的 OpenAI 兼容服务就改 ALIYUN_BAILIAN_BASE_URL / MODEL。
-            # 读平台的 key 反而会让「带没带凭据」的行为随部署配置漂移。
             self.provider = "user_credential"
+            user_base_url, user_model = credential.endpoint
+            # 用户指定的端点优先；留空才回落到平台配置。
+            # 「有没有端点」不该让「带没带凭据」的行为随部署漂移，
+            # 所以未指定时恒定走百炼兼容端点，不去读平台自己的 key。
             self.client = OpenAI(
                 # 全仓唯一一处 reveal()。多一个调用点，就要重新解释一遍
                 # 「这一行的真值会不会被谁打印」。
                 api_key=credential.reveal(),
-                base_url=os.getenv(
+                base_url=user_base_url or os.getenv(
                     "ALIYUN_BAILIAN_BASE_URL",
                     self.DEFAULT_BAILIAN_BASE_URL,
                 ).strip() or self.DEFAULT_BAILIAN_BASE_URL,
             )
-            self.model = os.getenv(
+            self.model = user_model or os.getenv(
                 "ALIYUN_BAILIAN_MODEL",
                 self.DEFAULT_BAILIAN_MODEL,
             ).strip() or self.DEFAULT_BAILIAN_MODEL

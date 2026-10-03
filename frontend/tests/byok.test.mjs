@@ -31,6 +31,7 @@ function read(...parts) {
 /** 去掉注释：断言要看代码，不是解释代码的散文 */
 function stripComments(src) {
   return src
+    .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .map((l) => l.replace(/\/\/.*$/, ''))
@@ -39,7 +40,15 @@ function stripComments(src) {
 
 const summaryVue = read('../src/components/VideoSummary.vue')
 const template = stripComments(summaryVue.split('</template>')[0])
+const summaryTemplate = template
 const script = stripComments(summaryVue.split('<script setup>')[1] ?? '')
+
+// 集中管理之后，凭据的输入处搬到了弹窗，存储搬到了 lib/byok。
+// 下面三条是它们各自被断言的形态。
+const dialogVue = read('../src/components/ByokDialog.vue')
+const dialogTemplate = stripComments(dialogVue.split('</template>')[0])
+const dialogScript = stripComments(dialogVue.split('<script setup>')[1] ?? '')
+const byokLib = read('../src/lib/byok.js')
 
 /** 造一个能响应 AbortSignal 的假流 */
 function fakeStream(chunks, { signal } = {}) {
@@ -146,42 +155,67 @@ describe('chatWithVideo：凭据只进 /api/chat', () => {
   })
 })
 
-describe('VideoSummary.vue 接线', () => {
+describe('BYOK 前端接线（集中管理后）', () => {
+  // 凭据的归属地从「VideoSummary 里的三个 ref」搬到了
+  // lib/byok.js（真值）+ ByokDialog.vue（唯一输入处）。
+  // 下面每条断言都跟着搬到新的归属地，而不是被删掉——
+  // 它们守的承诺没变，只是承载它的文件换了。
+
   test('提交时把凭据交给 chatWithVideo', () => {
     // 只断言「同一个调用里传了进去」，不绑回调块有多长——
-    // 写成 chatWithVideo(...) … { userApiKey } 的距离上限，改个回调就假红。
+    // 写成 chatWithVideo(...) … 的距离上限，改个回调就假红。
     const call = script.slice(script.indexOf('const stream = chatWithVideo'))
     const head = call.slice(0, call.indexOf('chatStream = stream'))
-    assert.match(head, /chatWithVideo\(\s*props\.videoUrl,\s*question,[\s\S]*?\{\s*userApiKey\s*\}\s*\)/)
+    assert.match(head, /chatWithVideo\(\s*props\.videoUrl,\s*question,[\s\S]*?\{\s*credential\s*\}\s*\)/)
+    // 真值必须是从共享出口取的，不是组件自己存的
+    assert.match(script, /const credential = getRequestCredential\(\)/)
   })
 
   test('输入框提交后立刻清空', () => {
-    assert.match(script, /const userApiKey = typedKey \|\| savedUserApiKey\.value/)
-    assert.match(script, /apiKeyInput\.value = ''/)
+    // 现在输入框住在 ByokDialog：明文活到点「保存」为止。
+    const save = dialogScript.slice(dialogScript.indexOf('function saveAndClose()'))
+    const body = save.slice(0, save.indexOf('function usePlatformMode'))
+    assert.match(body, /apiKeyInput\.value = ''/)
   })
 
   test('输入框是 password，不明文显示', () => {
-    assert.match(template, /<input[^>]*v-model="apiKeyInput"[^>]*type="password"/)
+    assert.match(dialogTemplate, /<input[^>]*v-model="apiKeyInput"[^>]*type="password"/)
   })
 
   test('凭据不绑在任何会渲染出来的节点上', () => {
-    // {{ }} 插值一旦提到凭据，它就出现在 DOM 里、也进得了截图与转发
-    const interpolations = template.match(/\{\{[^}]*\}\}/g) ?? []
-    const leaking = interpolations.filter((s) => /userApiKey|savedUserApiKey|apiKeyInput/.test(s))
-    assert.deepEqual(leaking, [], `凭据被渲染出来了：${leaking.join(' ')}`)
+    // {{ }} 插值一旦提到凭据，它就出现在 DOM 里、也进得了截图与转发。
+    // 两个文件都要查：凭据的输入处在弹窗，但状态提示在卡片上。
+    for (const [where, src] of [['VideoSummary', template], ['ByokDialog', dialogTemplate]]) {
+      const interpolations = src.match(/\{\{[^}]*\}\}/g) ?? []
+      const leaking = interpolations.filter(
+        (s) => /userApiKey|savedUserApiKey|apiKeyInput|getRequestCredential/.test(s),
+      )
+      assert.deepEqual(leaking, [], `${where} 把凭据渲染出来了：${leaking.join(' ')}`)
+    }
   })
 
-  test('只写 localStorage 一处，且键名唯一', () => {
-    const stores = script.match(/localStorage\.(setItem|removeItem|getItem)\([^)]*/g) ?? []
-    const keyStores = stores.filter((s) => s.includes('USER_API_KEY_STORE'))
-    assert.equal(stores.length, keyStores.length, `凭据用别的键/方式存了：${stores.join(' | ')}`)
-    assert.ok(stores.length >= 2, '保存与清除都要落到 localStorage 上')
+  test('localStorage 只在 lib/byok 里被写，且键名唯一', () => {
+    // VideoSummary 不再碰 localStorage：它碰一下就等于多了一个真相源，
+    // 而两份真相迟早会不一致——用户填的 key 解析不认，追问认。
+    const stores = byokLib.match(/localStorage\.(setItem|removeItem|getItem)\([^)]*/g) ?? []
+    assert.ok(stores.length >= 3, `保存 / 清除 / 读回都要落到 localStorage 上：${stores.join(' | ')}`)
+    // 键名只以常量的形式出现。调用点直接写字面量的话，「只有两个键」
+    // 就成了一句愿望——下一次有人手滑打错一个字，没人看得出来。
+    const defined = byokLib.match(/^const (KEY_STORE|CONFIG_STORE) = '([^']+)'/gm) ?? []
+    assert.deepEqual(
+      defined.map((d) => d.split("'")[1]).sort(),
+      ['viddigest_byok_config', 'viddigest_user_api_key'],
+      `键名不止一套：${defined.join(' | ')}`,
+    )
+    const literals = stores.filter((s) => /'viddigest/.test(s))
+    assert.deepEqual(literals, [], `调用点绕过了常量直接写字面量：${literals.join(' | ')}`)
+    assert.ok(!/localStorage\./.test(script), 'VideoSummary 仍在直接读写 localStorage')
   })
 
   test('界面写明了隐私承诺与「不消耗额度」', () => {
-    assert.match(template, /清除浏览器数据后无法恢复/)
-    assert.match(template, /不消耗平台额度/)
-    assert.match(template, /不写日志/)
+    const privacy = dialogTemplate + summaryTemplate
+    assert.match(privacy, /不写日志/)
+    assert.match(privacy, /不消耗平台额度/)
   })
 
   test('byok 额度事件不清空用户看得到的余额', () => {

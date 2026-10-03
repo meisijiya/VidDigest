@@ -87,8 +87,30 @@
                     class="text-xs text-gray-400 py-1">额度读取中…</div>
                 </div>
                 <p class="text-[11px] text-gray-400 mt-3 pt-3 border-t border-line">
-                  每天 0 点重置。带入自己的 API key 可不消耗追问额度。
+                  每天 0 点重置。带入自己的 API key 可不消耗额度。
                 </p>
+
+                <!-- API Key 入口：与额度放在一起，因为它们是同一个决定的两面
+                     ——「还剩几次」和「用谁的额度花」。分成两处的话，
+                     用户填了 key 却不知道解析仍会扣额度。 -->
+                <button type="button" @click="$emit('open-byok')"
+                  class="mt-3 w-full flex items-center justify-between gap-2 px-2.5 py-2
+                         rounded-xl border border-line text-xs transition-colors
+                         hover:border-blue-200 hover:bg-blue-50/60">
+                  <span class="flex items-center gap-1.5 min-w-0">
+                    <svg class="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3" />
+                    </svg>
+                    <span class="truncate">{{ byokLabel }}</span>
+                  </span>
+                  <span v-if="byok?.mode === 'byok'"
+                    class="flex-shrink-0 px-1.5 py-0.5 rounded-full text-[10px]"
+                    :class="byok.hasKey ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'">
+                    {{ byok.hasKey ? '不扣额度' : '未填 Key' }}
+                  </span>
+                  <span v-else class="flex-shrink-0 text-[10px] text-gray-400">管理</span>
+                </button>
               </div>
             </div>
             <span v-if="showVipEntry && user.is_vip"
@@ -128,8 +150,14 @@ const props = defineProps({
   showVipEntry: { type: Boolean, default: false },
   quota: { type: Object, default: null },
   quotaLoading: { type: Boolean, default: false },
+  /**
+   * 自带凭据的**公开**状态（lib/byok.getPublicState）。
+   * 结构上不含 key —— 顶栏只用它决定显示「用平台」还是「不扣额度」，
+   * 以及那个入口按钮的文案。
+   */
+  byok: { type: Object, default: null },
 })
-const emit = defineEmits(['login', 'register', 'logout', 'open-vip', 'go-home', 'open-history', 'open-community', 'request-quota'])
+const emit = defineEmits(['login', 'register', 'logout', 'open-vip', 'go-home', 'open-history', 'open-community', 'request-quota', 'open-byok'])
 
 const scrolled = ref(false)
 const headerRef = ref(null)
@@ -172,6 +200,17 @@ function onQuotaEnter() {
   quotaOpen.value = true
   emit('request-quota')
 }
+
+/**
+ * 入口按钮上那行字。厂商名取自预设表，厂商被删 / 改名时退回「使用自己的 Key」
+ * 而不是显示一个空白按钮。三态分开写：没配、选了没填、已就绪，
+ * 它们对用户是完全不同的三件事。
+ */
+const byokLabel = computed(() => {
+  const b = props.byok
+  if (!b || b.mode !== 'byok') return '使用平台 Key'
+  return `使用自己的 Key · ${b.model || '默认模型'}`
+})
 
 // 点击页面别处关闭面板
 function onDocClick(e) {

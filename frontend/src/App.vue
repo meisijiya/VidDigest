@@ -5,7 +5,9 @@
       :page="currentPage"
       :quota="quotaInfo"
       :quota-loading="quotaLoading"
+      :byok="byok"
       @request-quota="refreshQuota"
+      @open-byok="byokDialogOpen = true"
       @login="showAuthModal('login')"
       @register="showAuthModal('register')"
       @logout="handleLogout"
@@ -13,6 +15,11 @@
       @go-home="goHome"
       @open-history="openHistory"
       @open-community="openCommunity"
+    />
+    <ByokDialog
+      :visible="byokDialogOpen"
+      :loggedIn="!!currentUser"
+      @close="byokDialogOpen = false"
     />
     <main class="flex-1 pt-16">
       <template v-if="currentPage === 'home'">
@@ -66,8 +73,10 @@
                   :user="currentUser"
                   :hasCommunityResult="fromCache"
                   :regenerateRequested="regenerateRequested"
+                  :byok="byok"
                   @ownership="onOwnership"
                   @regenerating="reparseLoading = $event"
+                  @open-byok="byokDialogOpen = true"
                 />
               </div>
             </div>
@@ -118,13 +127,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { parseVideo, downloadViaServer } from './api/video.js'
 import { getSavedUser, fetchMe, logout as logoutApi, isLoggedIn } from './api/auth.js'
 import { fetchQuota } from './api/summarize.js'
 import { createCheckoutSession } from './api/payment.js'
 import { saveHistory } from './api/history.js'
 import { publishCommunityCard, fetchCommunityByUrl } from './api/community.js'
+import { getPublicState, subscribe as subscribeByok } from './lib/byok.js'
 
 import AppHeader from './components/AppHeader.vue'
 import HeroSection from './components/HeroSection.vue'
@@ -140,6 +150,7 @@ import HistoryPage from './components/HistoryPage.vue'
 import CommunityPage from './components/CommunityPage.vue'
 import AuthModal from './components/AuthModal.vue'
 import AppFooter from './components/AppFooter.vue'
+import ByokDialog from './components/ByokDialog.vue'
 import ErrorModal from './components/ErrorModal.vue'
 import { classifyError } from './lib/errors.js'
 
@@ -166,6 +177,22 @@ const reparseLoading = ref(false)
 const canRegenerate = ref(null)
 /** 一次性信号：下一次 VideoSummary 挂载时按「重新解析」发起，而不是复用。 */
 const regenerateRequested = ref(false)
+
+/**
+ * 自带凭据的**公开**状态。真实 key 始终关在 lib/byok 的闭包里，
+ * 这里只存一个不含 key 的对象供渲染。
+ *
+ * 订阅而不是每次读一次：用户在顶栏弹窗里改完设置，正在打开的
+ * 解析卡片上的状态提示要立刻跟着变，否则用户会以为保存没生效。
+ *
+ * 订阅在**挂载时**建立，卸载时退订。写成
+ * `onUnmounted(() => subscribe(fn))` 会在页面卸载那一刻才订阅——
+ * 顶栏于是永远停在「使用平台 Key」，而弹窗里明明已经选好了。
+ */
+const byok = ref(getPublicState())
+const stopByokSubscription = subscribeByok((next) => { byok.value = next })
+onUnmounted(stopByokSubscription)
+const byokDialogOpen = ref(false)
 const errorModal = ref({ visible: false, title: '', message: '', hint: '' })
 
 /** 顶栏额度面板的数据源。悬停时才拉，避免每次渲染都打一次接口。 */

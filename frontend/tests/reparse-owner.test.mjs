@@ -227,8 +227,8 @@ describe('VideoSummary 的覆盖接线', () => {
       'startSummarize 必须有一个默认 false 的 overwrite 形参')
     const args = callArgsOf(fn, 'summarizeVideo')
     assert.ok(args, '找不到 summarizeVideo 调用')
-    assert.ok(/\{\s*overwrite\s*\}\s*$/.test(args.trim()),
-      `overwrite 没有被传进 summarizeVideo，实参尾部是：${args.slice(-80)}`)
+    assert.ok(/\{\s*overwrite\s*,\s*credential:[^}]*\}\s*$/.test(args.trim()),
+      `overwrite 没有被传进 summarizeVideo，实参尾部是：${args.slice(-90)}`)
   })
 
   test('「开始 AI 解析」按钮显式加括号，不把 MouseEvent 当成 overwrite', () => {

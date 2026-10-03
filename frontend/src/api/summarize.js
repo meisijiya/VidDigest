@@ -130,9 +130,19 @@ const CHAT_ROUTES = {
  * 权限由服务端判：不是首次解析者就回一条 error 事件，这里不预判——
  * 前端手上没有「这份是谁解析的」这个事实（它由 ownership 事件给出），
  * 预判只会让按钮变成一个自己也不知道对不对的开关。
+ *
+ * `options.credential` 是自带凭据（来自 lib/byok）。逐字段列举而不展开整个
+ * 对象：写成 `...options` 会让将来任何顺手加进 options 的东西跟着上车。
  */
 export function summarizeVideo(url, language, callbacks, options = {}) {
-  return streamSse('/api/summarize', { url, language, overwrite: !!options.overwrite }, {
+  const payload = { url, language, overwrite: !!options.overwrite }
+  const cred = options.credential
+  if (cred) {
+    payload.user_api_key = cred.apiKey
+    if (cred.baseUrl) payload.base_url = cred.baseUrl
+    if (cred.model) payload.model = cred.model
+  }
+  return streamSse('/api/summarize', payload, {
     route: (event, data) => callbacks[SUMMARY_ROUTES[event]]?.(data),
     onError: callbacks.onError,
     onCancel: callbacks.onCancel,
@@ -151,8 +161,15 @@ export function summarizeVideo(url, language, callbacks, options = {}) {
  */
 export function chatWithVideo(url, question, callbacks, options = {}) {
   const payload = { url, question }
-  const userApiKey = options?.userApiKey
-  if (userApiKey) payload.user_api_key = userApiKey
+  const cred = options?.credential
+  if (cred) {
+    payload.user_api_key = cred.apiKey
+    if (cred.baseUrl) payload.base_url = cred.baseUrl
+    if (cred.model) payload.model = cred.model
+  } else if (options?.userApiKey) {
+    // 兼容旧调用方：只给 key 不给完整凭据时也走得通。
+    payload.user_api_key = options.userApiKey
+  }
   return streamSse('/api/chat', payload, {
     route: (event, data) => callbacks[CHAT_ROUTES[event]]?.(data),
     onError: callbacks.onError,
