@@ -33,6 +33,7 @@ from database import (
     COMMUNITY_PAGE_SIZE_MAX,
     VIDEO_STATUS_READY,
     get_community_video,
+    list_community_tags,
     get_video_by_url,
     list_community_videos,
     publish_video_card,
@@ -85,6 +86,18 @@ async def community_videos(
 # ⚠️ 必须声明在 /videos/{video_id} **之前**。FastAPI 按声明顺序匹配，
 # "{video_id}" 声明在前的话，"by-url" 会被它吃掉并按 int 解析 → 422，
 # 症状是「这个端点怎么调都是参数不合法」，与鉴权、与数据都无关。
+@router.get("/tags")
+async def community_tags():
+    """社区里出现过的全部标签及条数。**未登录也可用。**
+
+    标签筛选是列表本身的用法，不是特权（与 /videos 的口径一致）。
+
+    注册位置在 /videos/{video_id} 之前虽非必需（本前缀下 /tags 是单段
+    路径，不会被两段的 /videos/{id} 吃掉），但和 /search 排在一起读更顺。
+    """
+    return {"items": list_community_tags()}
+
+
 @router.get("/videos/by-url")
 async def community_video_by_url(
     url: str = Query(..., description="视频链接，需与解析时规范化后完全一致"),

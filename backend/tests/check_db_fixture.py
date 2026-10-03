@@ -65,6 +65,16 @@ DB_FUNCS = {
     # 漏掉它，这道门禁就对「测试直接调它」失明 —— 而那条测试会连上
     # 真实 app.db 并改 model_providers。
     "update_model_provider",
+    # 解析历史 · 搜索与筛选（上限 1000 + 收藏）：五个都是新出口。
+    # set_parse_history_favorite 与 clear_parse_history 是**写**出口，
+    # 漏掉它们，这条门禁就对「测试直接调它写开发机上的真实 app.db」失明。
+    "list_parse_histories", "list_parse_history_facets",
+    "set_parse_history_favorite", "get_parse_history_favorite",
+    "clear_parse_history",
+    # 社区标签清单（给「保持标签总量显示」当选项来源）。它是**只读**出口，
+    # 但漏掉它这条门禁就对「测试不取夹具、直接读开发机真实 app.db」失明 ——
+    # 失明的后果不是写坏数据，是那条测试的断言根本量不到它想量的东西。
+    "list_community_tags",
     # 账号生命周期（ADR 0012）：三个都是**写** users 表的，
     # 漏掉任何一个，这道门禁就对「测试直接调它」失明 ——
     # 而 delete_user 还会连带删 chat_messages。
@@ -72,7 +82,12 @@ DB_FUNCS = {
 }
 
 #: 取了这些参数就算拿到了 db 夹具（client_app 内部依赖 db）
-DB_FIXTURE_ARGS = {"db", "client_app"}
+#:
+#: legacy_db 是 db 的「只隔离、不建表」版本：老库升级测试必须先摆一张缺列的
+#: 旧表出来，而 db 夹具会先 init_db() 出一个全新库，那条路径在它下面走不到。
+#: 两者对数据库的隔离强度相同（都换 DB_PATH、都清所有线程连接），所以
+#: 豁免的是「自己管库结构」这一个理由，不是「碰库可以不隔离」。
+DB_FIXTURE_ARGS = {"db", "client_app", "legacy_db"}
 
 
 def find_offenders(path: Path) -> list:

@@ -83,6 +83,38 @@ class TestGuardItselfWorks:
         """)
         assert offenders == [], f"门禁误报了经 client_app 取夹具的测试：{offenders}"
 
+    def test_guard_accepts_legacy_db_fixture(self, tmp_path):
+        """legacy_db 是 db 的「只隔离、不建表」版本，升级测试必须能用它。
+
+        db 夹具会先 init_db() 造一张全新表，老库升级那条路径在它下面走不到；
+        而 legacy_db 同样换了 DB_PATH、同样清连接，隔离强度没有更松。
+        """
+        offenders = self._write_and_scan(tmp_path, """
+            import database
+
+            def test_upgrade(legacy_db):
+                with database.get_db() as c:
+                    c.execute("SELECT 1")
+        """)
+        assert offenders == [], f"门禁误报了取 legacy_db 的升级测试：{offenders}"
+
+    def test_guard_exemption_is_not_a_blanket_pass(self, tmp_path):
+        """豁免只认 legacy_db 这一个名字，取别的夹具照样要报出来。
+
+        少了这一条，把 DB_FIXTURE_ARGS 改成随便什么名字都能让门禁失效，
+        而全量测试照样全绿——「门禁失效」与「门禁通过」将无法区分。
+        """
+        offenders = self._write_and_scan(tmp_path, """
+            import database
+
+            def test_wrong_fixture(tmp_path):
+                with database.get_db() as c:
+                    c.execute("SELECT 1")
+        """)
+        assert [n for n, _ in offenders] == ["test_wrong_fixture"], (
+            f"门禁对非 db 类夹具放行了：{offenders}"
+        )
+
     def test_scan_is_not_hardcoded_empty(self, tmp_path, monkeypatch):
         """scan() 必须真的扫目录，不能被改成恒返回空。
 

@@ -34,7 +34,7 @@
                  hover:bg-blue-600 transition-colors disabled:opacity-50">
           {{ searching ? '搜索中...' : '搜索' }}
         </button>
-        <button v-if="activeQuery || activeTag" type="button" @click="clearSearch"
+        <button v-if="activeQuery || activeTags.length" type="button" @click="clearSearch"
           class="px-3 py-2 rounded-xl text-xs text-gray-400 hover:text-gray-700
                  hover:bg-panel transition-colors">
           清除
@@ -58,22 +58,26 @@
         至少需要 {{ tooShort.min }} 个——补全一点再搜。
       </div>
 
-      <!-- 标签筛选 -->
-      <div v-if="tagOptions.length" class="flex flex-wrap items-center gap-2 mb-5">
-        <button @click="selectTag('')"
-          :class="['px-3 py-1.5 rounded-lg text-xs font-pixel transition-colors border',
-                   activeTag === ''
-                     ? 'bg-blue text-on-primary border-blue'
-                     : 'bg-panel text-gray-500 border-line hover:border-gray-300']">
-          全部
-        </button>
-        <button v-for="t in tagOptions" :key="t" @click="selectTag(t)"
-          :class="['px-3 py-1.5 rounded-lg text-xs font-pixel transition-colors border',
-                   activeTag === t
-                     ? 'bg-blue text-on-primary border-blue'
-                     : 'bg-panel text-gray-500 border-line hover:border-gray-300']">
-          {{ t }}
-        </button>
+      <!-- 标签筛选：选项来自服务端完整清单（/api/community/tags），取一次后常驻。
+           之前是从当前页卡片汇总，翻页或选中某个标签之后其余标签会整片消失，
+           用户没法再叠加第二个筛选。现在行内多选、只占一行，溢出交给展开键。 -->
+      <div v-if="tagOptions.length || tagLoadError" class="mb-5">
+        <!-- 加载失败要说出来：静默变成一条空标签行，和「社区里还没有标签」
+             长得一模一样，用户会以为是自己筛出来的。 -->
+        <div v-if="tagLoadError" class="mb-2 flex items-center gap-3 rounded-xl px-3 py-2
+             bg-amber-50 border border-amber-100 text-xs text-amber-700">
+          <span>标签列表加载失败：{{ tagLoadError }}</span>
+          <button @click="loadTags"
+            class="ml-auto px-2.5 py-1 rounded-lg bg-panel border border-amber-200 font-medium
+                   hover:bg-amber-100 transition-colors">重试</button>
+        </div>
+        <div v-if="tagOptions.length">
+          <TagFilterRow :tags="tagOptions" :selected="activeTags" multiple show-count
+            all-label="全部" label="社区标签筛选" @update:selected="onTagsChange" />
+          <p class="mt-1 text-[11px] font-pixel text-gray-400">
+            可多选，取并集（命中任一标签即列出）
+          </p>
+        </div>
       </div>
 
       <!-- 加载骨架 -->
@@ -157,7 +161,9 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { fetchCommunityVideos, searchCommunity } from '../api/community.js'
+import { fetchCommunityVideos, searchCommunity, fetchCommunityTags } from '../api/community.js'
+import { tagsToQuery } from '../lib/tag-filter.js'
+import TagFilterRow from './TagFilterRow.vue'
 
 const emit = defineEmits(['back', 'need-login', 'open-video'])
 
@@ -184,20 +190,33 @@ const loadError = ref('')
  */
 const tooShort = ref(null)
 
-/** 生效中的检索条件：空串表示未按该维度筛选。 */
+/** 生效中的关键词：空串表示未按关键词筛选。 */
 const activeQuery = ref('')
-const activeTag = ref('')
 const keyword = ref('')
 
-/** 标签选项由当前页的卡片汇总而来，不额外维护一份标签词表。 */
-const tagOptions = computed(() => {
-  const seen = new Set()
-  for (const item of items.value) for (const t of item.tags) seen.add(t)
-  return [...seen]
-})
+/**
+ * 生效中的标签筛选。**多选取并集**，后端按逗号分隔解析。
+ * 用数组而不是单值，是为了让「再加一个标签」真的成立：单值形态下点第二个
+ * 就会顶掉第一个，用户只能先清空重来。
+ */
+const activeTags = ref([])
 
-const emptyText = computed(() => (activeQuery.value || activeTag.value ? '没有匹配的内容' : '社区还是空的'))
-const emptyHint = computed(() => (activeQuery.value || activeTag.value
+/**
+ * 标签选项：服务端给的**完整**清单，取一次后常驻。
+ * 刻意不从当前页卡片汇总——那样翻页或选中某个标签之后，其余标签会从
+ * 筛选行里消失，而「选择之后标签显示不减少」正是这一行存在的理由。
+ */
+const tagOptions = ref([])
+
+/**
+ * 标签清单加载失败的原因。刻意与「真的还没有标签」分开：两者都表现为
+ * 筛选行空着，用户会以为是自己筛出来的。
+ */
+const tagLoadError = ref('')
+
+const hasFilter = computed(() => Boolean(activeQuery.value) || activeTags.value.length > 0)
+const emptyText = computed(() => (hasFilter.value ? '没有匹配的内容' : '社区还是空的'))
+const emptyHint = computed(() => (hasFilter.value
   ? '换个关键词，或按标签浏览'
   : '第一个解析视频的人会把它放进来'))
 
@@ -217,7 +236,7 @@ async function load() {
   tooShort.value = null
   try {
     const res = await searchCommunity({
-      q: activeQuery.value, tag: activeTag.value, page: page.value, pageSize,
+      q: activeQuery.value, tag: tagsToQuery(activeTags.value), page: page.value, pageSize,
     })
     if (res.needLogin) {
       // 未登录：搜索不可用，退回公开列表。
@@ -226,7 +245,7 @@ async function load() {
       activeQuery.value = ''
       keyword.value = ''
       const list = await fetchCommunityVideos({
-        page: page.value, pageSize, tag: activeTag.value,
+        page: page.value, pageSize, tag: tagsToQuery(activeTags.value),
       })
       applyList(list)
       return
@@ -264,15 +283,30 @@ async function doSearch() {
 function clearSearch() {
   keyword.value = ''
   activeQuery.value = ''
-  activeTag.value = ''
+  activeTags.value = []
   page.value = 1
   load()
 }
 
-function selectTag(tag) {
-  activeTag.value = tag
+/**
+ * 标签选择变化。清单是常驻的，所以这一步只改选中集合与页码——
+ * chips 一个都不会少，也不用重新去拉清单。
+ */
+function onTagsChange(next) {
+  activeTags.value = next
   page.value = 1
   load()
+}
+
+/** 拉一次完整标签清单，之后常驻：翻页与选标签都不再动它。 */
+async function loadTags() {
+  tagLoadError.value = ''
+  try {
+    tagOptions.value = await fetchCommunityTags()
+  } catch (e) {
+    tagLoadError.value = (e && e.message) || '加载失败'
+    tagOptions.value = []
+  }
 }
 
 function goPage(n) {
@@ -295,7 +329,10 @@ function openDetail(item) {
   emit('open-video', item)
 }
 
-onMounted(load)
+onMounted(() => {
+  loadTags()
+  load()
+})
 </script>
 
 <style scoped>

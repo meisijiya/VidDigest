@@ -43,7 +43,18 @@ _conn_generation = 0
 def get_connection_generation() -> int:
     return _conn_generation
 
-MAX_PARSE_HISTORY_PER_USER = 30
+#: 每用户保留的解析历史条数。
+#:
+#: 曾经是 30，配合历史页一次全量渲染尚可。搜索 + 标签 + 收藏 + 分页
+#: 落地之后，30 条是一个用户**翻不到底也搜不到**的窗口：想找三个月前
+#: 存的那条链接，唯一的办法是它还没被挤出去。
+#:
+#: 1000 是保留条数，不是单页条数 —— 列表按 HISTORY_PAGE_SIZE_DEFAULT
+#: 分页取，否则一千个卡片一次进 DOM。
+MAX_PARSE_HISTORY_PER_USER = 1000
+
+#: 历史列表单页条数。与社区列表同值：两个列表的翻页手感不该不一样。
+HISTORY_PAGE_SIZE_DEFAULT = 20
 
 # 两个额度上限都从环境变量读取，改配置不必发版。
 # 各自独立取值：解析产出内容、追问消耗对话，用量节奏本就不同。
@@ -203,6 +214,16 @@ def get_db():
 def init_db():
     """初始化数据库表结构"""
     with get_db() as conn:
+        # is_favorite 的补列必须排在 executescript **之前**。
+        #
+        # 脚本里有 `CREATE INDEX ... ON parse_history(is_favorite)`，而
+        # `CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作：老库里那一列
+        # 不会凭空出现，索引一建就 no such column，整段脚本直接 abort，
+        # 排在后面的迁移永远轮不到 —— 表现为「代码本地好好的，一升级就打不开」。
+        #
+        # 全新库里 parse_history 还没建出来，那时也不能 ALTER，所以函数内部
+        # 自己判断表在不在。
+        _migrate_history_favorite_column(conn)
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,6 +276,11 @@ def init_db():
                 mindmap_md TEXT DEFAULT '',
                 subtitle_data TEXT DEFAULT '',
                 chat_history TEXT DEFAULT '[]',
+                -- 收藏（个人标记）。为什么是这一列而不是一张表：
+                -- 「收藏哪条解析」是 parse_history 行的属性，跟着行走
+                -- 才对，单独建表要多一次 join，还多一个能写歪的入口。
+                -- 它只影响**这条记录自己**的裁剪与删除，不进社区。
+                is_favorite INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (user_id) REFERENCES users(id)
@@ -262,6 +288,8 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_history_user ON parse_history(user_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_history_user_url ON parse_history(user_id, video_url);
+            -- 「仅收藏」是历史页的一个档位，这条索引让它不必扫全表。
+            CREATE INDEX IF NOT EXISTS idx_history_fav ON parse_history(user_id, is_favorite);
 
             -- 社区视频表（ADR 0001）：全站共享，一个链接只有一行。
             --
@@ -469,6 +497,33 @@ def _migrate_video_card_columns(conn) -> None:
             conn.execute(ddl)
 
 
+def _migrate_history_favorite_column(conn) -> None:
+    """给 parse_history 补上 is_favorite 列。
+
+    理由同 _migrate_video_card_columns：``CREATE TABLE IF NOT EXISTS``
+    对已存在的表是空操作，老库里不会凭空多出这一列，而收藏的读写都要
+    SELECT 它 —— 不补列，代码一跑就 no such column。
+
+    默认 0（未收藏），所以老记录升级过来不会被当成收藏。
+
+    **表还不存在时什么都不做**：``init_db`` 把本函数排在 executescript 之前
+    调用，而全新库的 parse_history 那一刻还不存在，ALTER 会直接抛
+    ``no such table``。那种情况下随后 CREATE TABLE 自带这一列。
+    """
+    existing = {
+        row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='parse_history'"
+        )
+    }
+    if not existing:
+        return
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(parse_history)")}
+    if "is_favorite" not in columns:
+        conn.execute(
+            "ALTER TABLE parse_history ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 #: 全文检索索引表名。
 #:
 #: 它是 videos 的**派生索引**，不是第二份数据：content='videos' 让索引的行
@@ -556,6 +611,21 @@ COMMUNITY_PAGE_SIZE_DEFAULT = 20
 COMMUNITY_PAGE_SIZE_MAX = 100
 
 
+def _decode_tags_text(raw) -> list:
+    """把 tags 列的 JSON 文本还原成字符串数组。
+
+    收在一处是因为这段已经在这个文件里长出了四份副本，各写各的。
+    类型不对就当没有，不让脏数据变成下游的 TypeError。
+    """
+    try:
+        parsed = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        parsed = []
+    if not isinstance(parsed, list):
+        return []
+    return [t for t in parsed if isinstance(t, str)]
+
+
 def _project_video(row, fields: tuple) -> dict:
     """按字段白名单投影一行，tags 由 JSON 文本还原成数组。
 
@@ -635,18 +705,44 @@ def _paginate(from_clause: str, where: str, params: tuple, page: int,
 _COMMUNITY_VISIBLE = "v.status = 'ready'"
 
 
-def _tag_clause(tag: str, alias: str = "v") -> tuple[str, tuple]:
-    """按标签精确筛选。
+def _split_tags(tag) -> list:
+    """把 ``"编程,架构设计"`` / ``["编程", "架构设计"]`` 统一成去空后的列表。"""
+    if tag is None:
+        return []
+    raw = tag if isinstance(tag, (list, tuple)) else str(tag).split(",")
+    out = []
+    for t in raw:
+        t = str(t).strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def _tag_clause(tag, alias: str = "v") -> tuple[str, tuple]:
+    """按一组标签精确筛选（**并集**：命中任一即可）。
+
+    为什么并集不是交集：交集在两个标签很少共同出现时直接返回空，
+    而「选了筛选反而一条都没有」在界面上和「筛选坏了」完全一样。
+    并集永远给得出东西，选错方向也就不会长得像 bug。
 
     刻意走 json_each 而不是 FTS：trigram 匹配不到 2 个字符的词
     （实测「编程」召回 0），而标签里大量是 2 字词。标签是**枚举值**，
     精确匹配既更快也更准。
+
+    json_valid 不是保险是必需：videos.tags 是存 JSON 的 TEXT 列，
+    坏一行 json_each 就抛，而调用方是列表接口 —— 一行坏数据 = 整个
+    页面 500。COALESCE 同理：历史页那边是 LEFT JOIN，v.tags 可能是 NULL。
     """
-    if not tag:
+    names = _split_tags(tag)
+    if not names:
         return "", ()
+    marks = ", ".join("?" * len(names))
     return (
-        f" AND EXISTS (SELECT 1 FROM json_each({alias}.tags) WHERE value = ?)",
-        (tag,),
+        f" AND EXISTS (SELECT 1 FROM json_each("
+        f"  CASE WHEN json_valid(COALESCE({alias}.tags, '[]'))"
+        f"       THEN {alias}.tags ELSE '[]' END"
+        f") WHERE value IN ({marks}))",
+        tuple(names),
     )
 
 
@@ -663,6 +759,29 @@ def list_community_videos(page: int = 1, page_size: int = COMMUNITY_PAGE_SIZE_DE
     result = _paginate("videos v", where, params, page, page_size, order)
     result["items"] = [_project_video(r, COMMUNITY_CARD_FIELDS) for r in result["items"]]
     return result
+
+
+def list_community_tags() -> list:
+    """社区里出现过的全部标签及各自条数（只数 ready 行）。
+
+    给社区页的标签筛选当**选项来源**。刻意不由前端从当前页汇总：
+    那样一来翻页或一筛选，标签就会增减，用户读起来是「筛选不生效」。
+
+    json_valid 守卫是必需的而不是保险：videos.tags 坏一行，json_each
+    就抛，而这一行正是整个标签行的数据源 —— 抛了就是整行标签都没了。
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT je.value AS tag, count(*) AS n
+               FROM videos v
+               JOIN json_each(
+                   CASE WHEN json_valid(COALESCE(v.tags, '[]'))
+                        THEN v.tags ELSE '[]' END) je
+               WHERE v.status = 'ready'
+               GROUP BY je.value
+               ORDER BY n DESC, je.value""",
+        ).fetchall()
+    return [{"tag": r["tag"], "count": r["n"]} for r in rows]
 
 
 def get_community_video(video_id: int) -> dict | None:
@@ -1511,12 +1630,23 @@ def get_user_orders(user_id: int) -> list:
 # ── 解析历史记录 ──────────────────────────────────────────
 
 def _trim_parse_history(conn, user_id: int):
-    """每用户只保留最近 MAX_PARSE_HISTORY_PER_USER 条记录"""
+    """每用户只保留最近 MAX_PARSE_HISTORY_PER_USER 条**未收藏**记录。
+
+    **收藏不参与裁剪。** 这不是「多给它一点空间」：上限不管多大，
+    越线那一刻被删的一定是最旧的那条，而那恰好可能是用户攒下来、
+    特意标了星的那条。界面上没有任何一处提示过「收藏也会被裁掉」，
+    所以那是一次静默的数据丢失 —— 收藏这个功能存在的全部意义就是
+    挡掉它。
+
+    因此收藏条数**不受上限约束**：1000 条未收藏 + 任意条收藏都成立。
+    """
     conn.execute(
-        f"""DELETE FROM parse_history WHERE user_id = ? AND id NOT IN (
-            SELECT id FROM parse_history WHERE user_id = ?
-            ORDER BY COALESCE(updated_at, created_at) DESC
-            LIMIT {int(MAX_PARSE_HISTORY_PER_USER)})""",
+        f"""DELETE FROM parse_history
+            WHERE user_id = ? AND is_favorite = 0 AND id NOT IN (
+                SELECT id FROM parse_history
+                WHERE user_id = ? AND is_favorite = 0
+                ORDER BY COALESCE(updated_at, created_at) DESC
+                LIMIT {int(MAX_PARSE_HISTORY_PER_USER)})""",
         (user_id, user_id),
     )
 
@@ -1743,6 +1873,181 @@ def get_parse_history_detail(user_id: int, history_id: int) -> dict | None:
     # 老列回退也归它管——这里不再另写一份。
     item["chat_history"] = get_chat_session(user_id, item["video_url"])
     return item
+
+
+#: 历史列表的「有 AI 结果」判定。**别名写死为 h** —— 一旦套上别名就
+#: 必须用别名指列，裸表名在 SQLite 里会报 no such column。
+#:
+#: 与 get_parse_histories 的 has_ai_result 同一口径：有问答记录，
+#: 或 summary_md 非空。字幕/思维导图单独存在不算「AI 解析过」——
+#: 那两个都不花模型调用，界面上那个 AI 徽标指的是总结。
+_HISTORY_HAS_AI_ALIASED_H = (
+    "(EXISTS (SELECT 1 FROM chat_messages m"
+    "  WHERE m.user_id = h.user_id AND m.video_url = h.video_url)"
+    " OR (h.chat_history IS NOT NULL AND h.chat_history != '[]')"
+    " OR COALESCE(TRIM(h.summary_md), '') != '')"
+)
+
+
+def list_parse_histories(user_id: int, q: str = "", tag: str = "",
+                         favorite: bool = False, ai: str = "",
+                         page: int = 1,
+                         page_size: int = HISTORY_PAGE_SIZE_DEFAULT) -> dict:
+    """历史列表：分页 + 关键词 / 标签 / 仅收藏 / AI 状态，可任意组合。
+
+    q 走 LIKE 而不是 FTS5，与社区刻意不同：社区是全站共享表、量级不封顶，
+    值得养一个 FTS 虚拟表；历史是**按 user_id 隔离的个人列表**，
+    上限 1000 条（且 _trim_parse_history 兜着），一条 B 树索引上的 LIKE
+    扫 1000 行是微秒级。为一个人最多 1000 行的表建 FTS + 触发器，
+    换来的是「一条坏记录就能让整张表 500」那类新风险。
+
+    链接定位（q 以 http 开头）走**等值**而不是子串：粘贴链接时用户要的
+    是「就是这一条」，而 LIKE 会同时命中被当成子串出现的别的记录。
+    """
+    q = (q or "").strip()
+    where = ["h.user_id = ?"]
+    params: list = [user_id]
+
+    if q.startswith(("http://", "https://")):
+        where.append("h.video_url = ?")
+        params.append(q)
+    elif q:
+        where.append("(COALESCE(h.video_title, '') LIKE ? OR h.video_url LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+
+    tag_clause, tag_params = _tag_clause(tag)
+    if tag_clause:
+        # 共享子句自带前导 " AND "（社区那两处是直接拼进 where 串的），
+        # 而这里把条件收集起来再统一 join —— 不去掉就会拼出
+        # "... AND  AND EXISTS ..."，SQLite 直接 syntax error near "AND"。
+        where.append(tag_clause.lstrip().removeprefix("AND "))
+        params.extend(tag_params)
+
+    if favorite:
+        where.append("h.is_favorite = 1")
+
+    if ai == "ai":
+        where.append(_HISTORY_HAS_AI_ALIASED_H)
+    elif ai == "parse":
+        where.append(f"NOT {_HISTORY_HAS_AI_ALIASED_H}")
+
+    page, page_size = _clamp_page(page, page_size)
+    clause = " AND ".join(where)
+    sql_from = "parse_history h LEFT JOIN videos v ON v.video_url = h.video_url"
+
+    with get_db() as conn:
+        total = conn.execute(
+            f"SELECT count(*) FROM {sql_from} WHERE {clause}", tuple(params)
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT h.id, h.video_url, h.video_title, h.summary_md,
+                       COALESCE(h.updated_at, h.created_at) AS updated_at,
+                       h.created_at, h.is_favorite,
+                       CASE WHEN json_valid(h.video_data)
+                            THEN COALESCE(json_extract(h.video_data, '$.thumbnail'), '')
+                            ELSE '' END AS cover_url,
+                       {_HISTORY_HAS_AI_ALIASED_H} AS has_ai_result,
+                       COALESCE(v.tags, '[]') AS tags
+                FROM {sql_from} WHERE {clause}
+                ORDER BY COALESCE(h.updated_at, h.created_at) DESC, h.id DESC
+                LIMIT ? OFFSET ?""",
+            (*params, page_size, (page - 1) * page_size),
+        ).fetchall()
+
+    items = []
+    for r in rows:
+        item = dict(r)
+        summary_md = item.pop("summary_md") or ""
+        item["summary_preview"] = summary_md.strip()[:120]
+        item["has_ai_result"] = bool(item["has_ai_result"])
+        item["is_favorite"] = bool(item["is_favorite"])
+        if not isinstance(item.get("cover_url"), str):
+            item["cover_url"] = ""
+        item["tags"] = _decode_tags_text(item.get("tags"))
+        items.append(item)
+
+    return {
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) // page_size,
+        # 三档计数要能对上：仅解析 + AI解析 == 全部（忽略搜索/标签/收藏过滤）。
+        # 不给这两个数的话，前端那三个档位的数字只能靠总数减出来，
+        # 而减法在有搜索条件时会骗人。
+        "has_ai": sum(1 for i in items if i["has_ai_result"]),
+        "favorites": sum(1 for i in items if i["is_favorite"]),
+    }
+
+
+def list_parse_history_facets(user_id: int) -> list:
+    """历史页标签筛选的选项（带计数），来自该用户的**全部**历史。
+
+    刻意不受当前筛选条件影响，也不按当前页汇总：
+    前者会让「选了标签 A 之后标签 B 消失」，后者会让「翻页之后标签增减」。
+    两种表现用户读起来都是同一个意思 —— 「这个筛选不生效」。
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT je.value AS tag, count(*) AS n
+               FROM parse_history h
+               LEFT JOIN videos v ON v.video_url = h.video_url
+               JOIN json_each(
+                   CASE WHEN json_valid(COALESCE(v.tags, '[]'))
+                        THEN v.tags ELSE '[]' END) je
+               WHERE h.user_id = ?
+               GROUP BY je.value
+               ORDER BY n DESC, je.value""",
+            (user_id,),
+        ).fetchall()
+    return [{"tag": r["tag"], "count": r["n"]} for r in rows]
+
+
+def set_parse_history_favorite(user_id: int, history_id: int,
+                               is_favorite: bool) -> bool:
+    """收藏 / 取消收藏。记录不存在时返回 False。
+
+    **不动 updated_at。** 列表按 updated_at 倒序；一旦收藏也顺带刷新
+    时间戳，用户点一下星标，这条记录就会从列表中间跳到最顶上 ——
+    在他手指底下重排，看起来像页面出 bug。
+    """
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE parse_history SET is_favorite = ? WHERE user_id = ? AND id = ?",
+            (1 if is_favorite else 0, user_id, history_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_parse_history_favorite(user_id: int, history_id: int):
+    """收藏状态：1 收藏 / 0 未收藏 / None 记录不存在。"""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT is_favorite FROM parse_history WHERE user_id = ? AND id = ?",
+            (user_id, history_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return 1 if row["is_favorite"] else 0
+
+
+def clear_parse_history(user_id: int, keep_favorites: bool = True) -> int:
+    """清空历史，返回删掉的条数。
+
+    默认**跳过收藏**：一键清空是典型的误操作，而收藏是用户唯一一处
+    「这条我特意留着的」标记。要连收藏一起删，调用方得显式要求。
+    """
+    with get_db() as conn:
+        if keep_favorites:
+            cur = conn.execute(
+                "DELETE FROM parse_history WHERE user_id = ? AND is_favorite = 0",
+                (user_id,),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM parse_history WHERE user_id = ?", (user_id,)
+            )
+        return cur.rowcount
 
 
 def delete_parse_history(user_id: int, history_id: int) -> bool:

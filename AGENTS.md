@@ -84,6 +84,9 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 - **接缝优先于内部改动。** 桩按方法分别计数、HTTP 层真实客户端这两条接缝是工单 #2 建的，用它们，别绕过。
 - 改 Python 代码必须重启后端进程（`main.py` 没有 `--reload`）。
 - **前端测试别在 `describe` 体里做会抛异常的事。** node 对 **describe 体里抛出的异常**给出的退出码是 **0**，runner 还会报 `tests 0 / pass 0 / fail 0`——那个 suite 的测试一条都没注册、没运行，真正的 AssertionError 被埋在摘要下面，而 `init.sh` 只看退出码。实测（变异 F1）：把 `<template v-if="audioFormats.length">` 改成 `v-if="false"`，整份文件报「12 passed / 0 failed」、退出码 0，而那个 suite 的 5 条测试根本没跑。对照实验：模块顶层抛、测试体抛都给 1，**只有 describe 体这一处是隐形的**。`ui-fixes` / `community-tags` / `theme` / `admin-ui` / `quota` 目前都在 describe 体里做 `readFileSync` / `stripComments(read(...))`——源码一改名，那一整个 suite 就会静默消失。
+- **`db` 夹具会遮住升级路径。** 夹具每次 `init_db()` 出一个**全新**库，于是「老库缺列、靠迁移补上」那条路径一次都没被执行过——补列排错了顺序，全量绿，真库一升级就 `no such column` 打不开（2026-10-03 实测：索引 `ON parse_history(is_favorite)` 在 `executescript` 里，补列迁移排在它后面，老库直接 abort；**这条当时只在未提交的工作区草稿里，提交历史中没有**，所以它证明的是「新写迁移必须自己验升级路径」，不是「CI 能挡住回归」）。**给 `init_db` 加列时，测试必须从一个真缺列的库启动**：用 `legacy_db` 夹具（`conftest.py`，只换 `DB_PATH` + 清连接、不建表），它已进 `check_db_fixture.DB_FIXTURE_ARGS`。门禁豁免的是「自己管库结构」这一个理由，不取任何夹具照样被报出来。
+- **断言必须跑在能区分两种实现的状态上。** 同一次实测里，「展开态下 measure 不该改 overflowing」这条断言喂的是**不换行但溢出**的宽度，于是 `needsExpand` 照样返回 true，去掉 early return 两种实现结果一样，**变异存活**。真实的展开态下行会 wrap（`scrollWidth == clientWidth`），只有这个形状才能把它区分开。写完断言问一句：**拿它去测另一种实现，会不会红**。
+- **「多选取并集」不是交集。** 历史页与社区页的标签筛选都是命中任一即列出（交集在标签很少共现时直接返回空，界面上与「筛选坏了」一模一样）。前端 `lib/tag-filter.js` 里曾把注释写成「多选 = 与」，而后端是并集——**注释里的语义错了比代码错了更贵**，改代码时顺手搜一遍 `docs/`、`AGENTS.md`、`CONTEXT.md` 里的同类描述。
 
 ## 范围边界
 
@@ -93,7 +96,7 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 - **已纳入管理后台**（ADR 0012）：建号、删号、管理员标记。删号语义是**有名下订单或解析历史就 409，绝不级联**；VIP 不在其中（仍只能由订单支付写入）。
 - **已纳入管理后台**（ADR 0013）：社区标签可改、社区条目可删（**真删，不是下架**）。删条目**只删 `videos` 那一行，用户的解析历史一行不动**；标签永远受固定词表约束，词表只有服务端一份真值。
 - 会员判定与相关额度语义**留在代码里不动**（前端入口已关），但**新增测试不得锁会员行为**。
-- 社区视频表**不做条数裁剪**；解析历史表的 30 条滚动删除规则不变。
+- 社区视频表**不做条数裁剪**。解析历史表保留 **1000** 条（`MAX_PARSE_HISTORY_PER_USER`），单页 20 条；**收藏（`is_favorite`）永不参与滚动裁剪，且收藏条数不受上限约束**。删一条收藏要 `force=true`，否则 409。
 
 ## 完成定义
 

@@ -187,8 +187,18 @@ describe('CommunityPage 列表只渲染卡片字段', () => {
   test('翻页与标签筛选都接到了 load 上', () => {
     assert.match(pageCode, /function goPage\(n\)/)
     assert.match(pageCode, /@click="goPage\(page \+ 1\)"/, '下一页按钮没接上')
-    assert.match(pageCode, /function selectTag\(tag\)/)
-    assert.match(pageCode, /@click="selectTag\(t\)"/, '标签按钮没接上')
+
+    // 标签改成多选后，页面这边不再有单选时代的 selectTag：选中集合由共享的
+    // TagFilterRow 通过 update:selected 交回来，由 onTagsChange 收口。
+    // 这里只断函数名等于什么都没断 —— 页码不复位、忘了 load，界面上都是
+    // 「筛选点了没反应」，所以三条都得落到函数体里。
+    assert.match(pageCode, /@update:selected="onTagsChange"/, '标签行没接上 onTagsChange')
+    const start = pageCode.indexOf('function onTagsChange(next)')
+    assert.notEqual(start, -1, '没有 onTagsChange')
+    const body = pageCode.slice(start, pageCode.indexOf('}', start))
+    assert.match(body, /activeTags\.value = next/, '新选的标签没写进去')
+    assert.match(body, /page\.value = 1/, '换标签没回到第一页')
+    assert.match(body, /\bload\(\)/, '换标签没有重新加载')
   })
 
   test('未登录提示给出去登录入口，而不是显示空结果', () => {

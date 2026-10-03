@@ -432,13 +432,20 @@ class TestTrimRules:
     def test_community_table_is_never_trimmed(self, db, make_user, monkeypatch):
         """AC4：社区视频表不做条数裁剪。
 
-        判据是「条数超过个人历史的 30 条上限之后仍然全在」——只要还
-        按 30 条裁，社区价值就没了：A 解析的视频被裁掉，B 就再也复用不到。
+        判据是「条数超过个人历史上限之后仍然全在」——只要还按那条上限
+        裁，社区价值就没了：A 解析的视频被裁掉，B 就再也复用不到。
+
+        这里把上限**钉回 30**：这条要证明的是「社区表不受个人历史上限影响」，
+        而不是「上限现在是 1000」（那是下一条独立断言的事）。跟着真实
+        上限走的话，1005 次 collect 会先撞上 DAILY_PARSE_LIMIT，被额度
+        挡下来后 video_count 停在 40——症状和「社区表被裁剪」一模一样，
+        实测就是这么误判过一次。额度也一并抬到 total 之上。
         """
-        monkeypatch.setattr(db, "DAILY_PARSE_LIMIT", 40)
+        monkeypatch.setattr(db, "MAX_PARSE_HISTORY_PER_USER", 30)
         wire(monkeypatch)
         uid = make_user()
-        total = db.MAX_PARSE_HISTORY_PER_USER + 5
+        total = 35
+        monkeypatch.setattr(db, "DAILY_PARSE_LIMIT", total + 10)
 
         for i in range(total):
             collect(summarize(url=f"{URL}/{i}", uid=uid))
@@ -447,16 +454,82 @@ class TestTrimRules:
             f"社区视频表只剩 {video_count(db)} 条，应为 {total} 条——被裁剪了"
         )
 
-    def test_parse_history_still_keeps_only_thirty(self, db, make_user):
-        """AC5：解析历史的 30 条滚动删除**原样保留**，没有被这次改动带偏。"""
-        uid = make_user()
-        total = db.MAX_PARSE_HISTORY_PER_USER + 5
+    def test_the_cap_is_a_thousand(self, db):
+        """真实上限就是 1000，且 30 那个数不是被人忘了改回去。
 
-        for i in range(total):
+        单独一条，而不是在别处顺带断言：上面两条把上限 monkeypatch 掉了，
+        它们对真实取值**完全没有发言权**。
+        """
+        assert db.MAX_PARSE_HISTORY_PER_USER == 1000
+
+    def test_parse_history_is_still_trimmed(self, db, make_user, monkeypatch):
+        """AC5：解析历史的滚动删除**原样保留**，没有被这次改动带偏。
+
+        滚动删除本身是承重的：没有它，个人历史会无限增长。
+        """
+        monkeypatch.setattr(db, "MAX_PARSE_HISTORY_PER_USER", 30)
+        uid = make_user()
+        for i in range(35):
             db.upsert_parse_history(uid, f"{URL}/h{i}")
 
-        assert db.MAX_PARSE_HISTORY_PER_USER == 30
         assert history_count(db, uid) == 30, "解析历史的滚动删除被改动了"
+
+    def test_favourites_are_never_trimmed_away(self, db, make_user,
+                                               monkeypatch):
+        """收藏不参与裁剪 —— 这条是收藏功能存在的全部理由。
+
+        越线那一刻被删的永远是最旧的那条，而那恰好可能是用户特意标星
+        的。界面上没有任何一处提示过「收藏也会被滚掉」，所以那是一次
+        静默的数据丢失。
+
+        判据形状：把**最早**的几条标星（它们正是最先被裁的），再插到
+        越线。若实现改成「先裁后看收藏」，这里会直接掉到 30。
+        """
+        monkeypatch.setattr(db, "MAX_PARSE_HISTORY_PER_USER", 30)
+        uid = make_user()
+
+        # 先插 10 条并给最早的 5 条打星。**必须先打星再插满**：
+        # upsert_parse_history 自己就会调 _trim_parse_history，一次性插满
+        # 35 条的话，最早那几条在测试还没收藏它们之前就已经被裁掉了 ——
+        # 实测过一次，set_parse_history_favorite 对着不存在的行返回 False，
+        # 症状看着像收藏功能坏了，其实是测试在给尸体发请求。
+        early = [db.upsert_parse_history(uid, f"{URL}/h{i}") for i in range(10)]
+        starred = early[:5]
+        for hid in starred:
+            assert db.set_parse_history_favorite(uid, hid, True) is True
+
+        # 再插到越线，让裁剪真的对着已收藏的行跑一遍
+        for i in range(10, 40):
+            db.upsert_parse_history(uid, f"{URL}/h{i}")
+
+        # 再收藏一条**最近**的。子查询里那层 is_favorite = 0 只有在
+        # 收藏项落进「最新 N 条」时才看得出来：留着它，保留的是 30 条
+        # 未收藏 + 6 条收藏；去掉它，被子查询选中的 30 条里已经占掉 1 个
+        # 收藏名额，未收藏就只剩 29 条。只收藏最早的 5 条看不出差别 ——
+        # 那时最新 30 条本来就没收藏项，两种写法结果一样。
+        recent = db.upsert_parse_history(uid, f"{URL}/recent")
+        assert db.set_parse_history_favorite(uid, recent, True) is True
+        starred = starred + [recent]
+
+        # 再插一条把裁剪**重新**触发一次。这一步不是多余的：打星本身不
+        # 触库（服务端刻意不改 updated_at），所以标完星那一刻根本没有
+        # 新的裁剪跑过 —— 那条 recent 用的还是它没被收藏时就分到的名额。
+        # 不补这一插，测试量的只是「收藏不占名额」，不是「上限只算未收藏」。
+        db.upsert_parse_history(uid, f"{URL}/trigger")
+
+        with db.get_db() as conn:
+            kept = {r["id"] for r in conn.execute(
+                "SELECT id FROM parse_history WHERE user_id = ?", (uid,)
+            ).fetchall()}
+
+        for hid in starred:
+            assert hid in kept, f"收藏记录 {hid} 被滚动删除了"
+        # 精确值：6 条收藏（永不裁剪）+ 30 条未收藏（裁到上限）= 36。
+        # 写成 >= 的话，裁剪整个停摆也照样绿；写成 35 的话，子查询里
+        # 那层收藏过滤被删掉也照样绿。
+        assert history_count(db, uid) == 36, (
+            f"应为 6 条收藏 + 30 条未收藏 = 36，实际 {history_count(db, uid)}"
+        )
 
     def test_the_two_tables_keep_independent_rows(self, db, make_user, monkeypatch):
         """职责分离：社区表按链接唯一，历史表按 (user_id, video_url) 去重。"""
