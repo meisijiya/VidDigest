@@ -120,10 +120,11 @@ export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' } = {}) 
 }
 
 /**
- * 后台社区记录列表（只读）。**需管理员**。
+ * 后台社区记录列表。**需管理员**。
  *
  * 不过滤 status：pending 占位行恰恰是后台最该看的（谁占了位没解析完）。
- * 契约里这一项没有 status 字段，所以组件也拿不到——见工单后续项。
+ * status 现已在契约里，组件据此显示「占位中」——管理员要能分辨一条空壳与
+ * 一条真内容，删之前才知道自己在删什么。
  */
 export async function fetchAdminCommunity({ page = 1, pageSize = 20 } = {}) {
   const { limit, offset } = toLimitOffset(page, pageSize)
@@ -241,6 +242,64 @@ export async function setUserAdmin(userId, isAdmin) {
     throw new Error('权限调整响应形状不对')
   }
   return { user: res.data.user }
+}
+
+/**
+ * 标签词表（分组 + 上限）。**需管理员**。
+ *
+ * 前端**不**自己维护一份词表：`CommunityPage.vue` 的标签筛选已经是
+ * 「从已加载的卡片汇总」，不在前端抄第二份。后台要让人**勾选**标签就绕不开
+ * 词表，所以从服务端取一次——多这一个端点，好过词表在两个地方各活一份。
+ *
+ * 保留 groups 是因为词表分组顺带说明了每个标签的适用语境，摊平就把这个
+ * 信息丢了。maxTags 由服务端给出，是上限的唯一真值。
+ *
+ * @returns {Promise<{maxTags: number, groups: {name: string, tags: string[]}[]}>}
+ */
+export async function fetchTagVocabulary() {
+  const res = await client().get('/api/admin/tags/vocabulary')
+  const d = res.data || {}
+  if (!Array.isArray(d.groups) || !d.groups.length) {
+    throw new Error('标签词表响应形状不对')
+  }
+  return {
+    maxTags: Number(d.max_tags) > 0 ? Number(d.max_tags) : 3,
+    groups: d.groups
+      .filter((g) => g && Array.isArray(g.tags) && g.tags.length)
+      .map((g) => ({ name: String(g.name || ''), tags: g.tags.map(String) })),
+  }
+}
+
+/**
+ * 改某条社区视频的标签。**需管理员**。
+ *
+ * `tags` 发**词表内**的值，最多 3 个。服务端会严格校验：词表外一律 400 并在
+ * detail 里点名被拒的值——不像模型那条路径会静默回落到「其他」，因为管理员
+ * 打错字不该被藏起来（见 ADR 0013）。
+ *
+ * @returns {Promise<{item: object}>} `item` 是**回读**结果，不是请求值的回显。
+ */
+export async function updateCommunityTags(videoId, tags) {
+  const res = await client().patch(`/api/admin/community/${videoId}`, {
+    tags: (tags || []).map(String),
+  })
+  if (!res.data || !res.data.item || typeof res.data.item !== 'object') {
+    throw new Error('改标签响应形状不对')
+  }
+  return { item: res.data.item }
+}
+
+/**
+ * 删掉一条社区视频（ADR 0013）。**需管理员**。
+ *
+ * **只删 `videos` 那一行**。解析过它的用户在自己「历史」里的记录不受影响——
+ * 库里没有任何外键指向 videos，这正是该语义成立的前提。
+ *
+ * @returns {Promise<{deleted: number}>}
+ */
+export async function deleteCommunityVideo(videoId) {
+  const res = await client().delete(`/api/admin/community/${videoId}`)
+  return { deleted: res.data?.deleted ?? videoId }
 }
 
 /**

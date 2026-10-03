@@ -1290,12 +1290,49 @@ def delete_user(user_id: int, *, acting_id: int | None = None) -> None:
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
 
+#: 后台社区列表项的 SELECT 投影。列表与「改完回读」共用同一段 SQL 是刻意的：
+#: 两处各写一份的话，字段集早晚会漂移，而前端会用 PATCH 的返回值**直接替换**
+#: 列表里那一行——漂移会立刻变成「改完之后这一行比别行少字段」。
+_ADMIN_COMMUNITY_ITEM_SQL = (
+    "SELECT v.id, v.video_url, v.video_title AS title, v.tags, v.created_at, "
+    "       v.status, u.email AS author_email "
+    "FROM videos v LEFT JOIN users u ON u.id = v.parsed_by"
+)
+
+
+def _admin_community_item(row) -> dict:
+    """后台社区列表项的投影：把 tags 从 JSON 字符串解析成 list。
+
+    单独抽出来是因为改标签的端点要回读**同一形状**（update_video_tags
+    末尾那次回读）。解析容错与列表那边逐字一致：解析不出来退回空数组，
+    而不是把原始字符串透出去——前端拿到字符串会直接渲染成 `["编程"]` 那样
+    一串带引号的怪东西。
+    """
+    item = dict(row)
+    try:
+        parsed = json.loads(item.get("tags") or "[]")
+    except (ValueError, TypeError):
+        parsed = []
+    item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
+    return item
+
+
 def list_admin_community(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0) -> dict:
     """后台社区记录列表（require_admin 保护）。
 
     **不过滤 status**：pending 行是占位，后台要看的是「谁占了位没解析完」，
-    这类记录恰恰只在 pending 状态里存在。项目范围边界也明确不做下架，
-    后台因此没有、也不该有「只看得见已就绪」这层过滤。
+    这类记录恰恰只在 pending 状态里存在。这条仍然成立。
+
+    这段注释的第三句原本是「项目范围边界也明确不做下架，后台因此没有、也不该有
+    「只看得见已就绪」这层过滤」——**这一句已经不成立了**：后台现在有改标签与
+    删除两个写出口。保留「不过滤」不是为了给下架让路，而是因为把占位行过滤掉
+    会让「谁占了位没解析完」这个问题**永远查不出来**：占位行本身就是答案。
+    删除端点的语义（只删 videos 一行）在 delete_video_record 里说全了，
+    与这里读不读得到是两件事。
+
+    列表项**带上 status**（ready / pending）：前端要按状态区别渲染——一个是社区
+    内容，一个是占位。只给一个「都看得见的列表」却不告知状态，前端就只能把占位
+    行当内容画出来，而 pending 行里根本没有总结与字幕。
 
     LEFT JOIN users 取作者邮箱：parsed_by 没有外键（ADR 0010——解析者注销后
     社区内容必须留下来），所以作者可能已经不在，用 LEFT 而不是 INNER，
@@ -1305,22 +1342,92 @@ def list_admin_community(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0) 
     with get_db() as conn:
         total = conn.execute("SELECT count(*) FROM videos").fetchone()[0]
         rows = conn.execute(
-            "SELECT v.id, v.video_url, v.video_title AS title, v.tags, v.created_at, "
-            "       u.email AS author_email "
-            "FROM videos v LEFT JOIN users u ON u.id = v.parsed_by "
-            "ORDER BY v.id DESC LIMIT ? OFFSET ?",
+            _ADMIN_COMMUNITY_ITEM_SQL + " ORDER BY v.id DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
-    items = []
-    for row in rows:
-        item = dict(row)
-        try:
-            parsed = json.loads(item.get("tags") or "[]")
-        except (ValueError, TypeError):
-            parsed = []
-        item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
-        items.append(item)
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+    return {
+        "items": [_admin_community_item(row) for row in rows],
+        "total": total, "limit": limit, "offset": offset,
+    }
+
+
+def update_video_tags(video_id: int, tags: list[str]) -> dict | None:
+    """改一条社区视频的标签，**回读**改动后的列表项；没有这一行就返回 None。
+
+    返回回读而不是 rowcount：前端拿返回值去替换列表里那一行，形状必须与
+    列表项**逐字段一致**，而这个一致性靠「共用 _ADMIN_COMMUNITY_ITEM_SQL 与
+    _admin_community_item」保证，不是靠两处抄得一样仔细。回读还在同一个事务里
+    做，所以并发删掉这一行时拿到的是 None（404），而不是一条刚被删掉的行的残影。
+
+    **只碰 tags 与 updated_at**：status / summary_md / mindmap_md /
+    subtitle_text 一个都不写。改分类不该顺手改内容；把它们塞进同一条 UPDATE
+    的代价是「以后加一列就默认能被后台改」，而那正好是在把后台变成第二条
+    内容写入路径。updated_at 要跟着动：它就是这一行「最后一次被维护」的时刻，
+    不动的话后台分不清「三个月前解析的」与「今天刚被改过标签的」。
+
+    **不带 status 条件**：ready 与 pending 都允许改标签。pending 行的标签此刻
+    还没写回（模型还没跑完），但后台正是要能给占位行标上人工指定的分类。
+    加 ``AND status = 'ready'`` 会让它对占位行静默 404，而 404 在契约里的
+    含义是「这一行不存在」——那是在说谎。
+
+    值域（词表 / 非空 / 不超过 MAX_TAGS）由调用方在进到这里之前判掉：
+    那是**请求**的合法性，不是存储的约束，判据的形态（400 + detail）属于
+    端点。这里只负责落库，因此不 import tags——省掉一条数据层到词表模块的边。
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(list(tags), ensure_ascii=False)
+    with get_db() as conn:
+        cursor = conn.execute(
+            "UPDATE videos SET tags = ?, updated_at = ? WHERE id = ?",
+            (payload, now, video_id),
+        )
+        if cursor.rowcount == 0:
+            # 0 只有一种含义：没有这一行。不静默成功——那会让管理员以为
+            # 改到了某个其实不存在的地方。
+            return None
+        row = conn.execute(
+            _ADMIN_COMMUNITY_ITEM_SQL + " WHERE v.id = ?", (video_id,)
+        ).fetchone()
+    return _admin_community_item(row) if row else None
+
+
+def delete_video_record(video_id: int) -> int:
+    """删掉一条社区视频记录，返回删掉的行数（0 = 没有这一行）。
+
+    **只删 videos 一张表。** 这是本设计成立的前提，而不是实现时的克制：
+    建表语句里全库只有两处外键，都是 ``REFERENCES users(id)``（orders 与
+    parse_history），**没有任何外键指向 videos**；parse_history 与
+    chat_messages 都不引用 videos——它们只按 user_id / video_url 记自己的事，
+    与「社区里那一行还在不在」无关。schema 里根本没有这条边，所以删这一行在
+    数据上就波及不到任何用户记录；**要是哪天给 videos 加上被引用的外键，
+    这条论证连同下面那段一起作废**。
+
+    parse_history 保留是用户明确要的语义：视频从社区消失，解析过它的用户在
+    自己的历史里仍看得到自己那条记录。级联删掉它等于替用户决定「你解析过
+    的东西不许留」——而解析历史是**用户自己的数据**，不是社区内容的附属品。
+    （对照 delete_user：那条是「有名下内容就 409，绝不级联」，方向一致。）
+
+    **允许删 pending 占位行，不加 status 守卫。** 代价先说清：一次正在进行的
+    解析会因此在 complete_video 处拿到 0，而那个函数的 docstring 明写「由
+    调用方报警而不是静默当作成功」——所以后果是**响亮地失败**，不是数据悄悄
+    写丢。仍然允许删的理由是**后台没有别的清理出口**：
+
+    - 占位行不带任何「我还活着」的凭据。updated_at 只在被写时才会动，
+      解析过程本身不会续租，所以「进程正在跑」与「半小时前崩了」在表里
+      是**同一种形状**。
+    - 唯一近似的判据是 :data:`VIDEO_PENDING_TTL_SECONDS`（默认 30 分钟），
+      而它只活在 reserve_video 的接管分支里：同一个链接被**再次解析**时
+      才会顺带回收陈旧占位。后台这个页面拿不到它，也用不上它。
+    - 于是禁止删 pending 的实际后果是：崩掉的占位行除非有人恰好重新解析
+      那个链接，否则后台永远清不掉它——把一种「偶发但响亮的失败」换成
+      一种「静默且永久的死条目」。这是更糟的死路。
+
+    选「响亮地失败」而不是「制造死条目」。complete_video 的调用方已经处理
+    0 的分支，不在本次改动范围内。
+    """
+    with get_db() as conn:
+        cursor = conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+        return cursor.rowcount
 
 
 # ── 订单操作 ──────────────────────────────────────────────

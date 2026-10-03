@@ -69,12 +69,12 @@
         </div>
 
         <template v-else>
-          <!-- ══ 用户 / 额度：同一张表。
-               「额度」页签就是把编辑控件常驻在行内的那一版（工单 #14 的
-               「挂在用户行内编辑」），所以两页共用一份表结构，
-               不必把额度维护成第二份数据。 ══ -->
-          <div v-if="tab === 'users' || tab === 'quota'">
-            <form v-if="tab === 'users'" @submit.prevent="search" class="flex flex-wrap items-center gap-2 mb-4">
+          <!-- ══ 用户。编辑区按行展开，不跟页签走。
+               原来还有一个「额度」页签，它就是把编辑控件常驻行内的那一版，
+               与本页同一个接口、同一份数据。用户页本来就能改额度，
+               同一个动作就不该有两个入口。 ══ -->
+          <div v-if="tab === 'users'">
+            <form @submit.prevent="search" class="flex flex-wrap items-center gap-2 mb-4">
               <label for="admin-user-q" class="text-xs text-gray-500">按邮箱搜</label>
               <input id="admin-user-q" v-model="query" type="search" placeholder="邮箱片段"
                 class="w-64 px-3 py-2 rounded-xl bg-panel border border-line text-sm text-gray-800
@@ -89,7 +89,7 @@
 
             <!-- ══ 建号（ADR 0012）。只挂在用户页：额度页是「改」的那一版，
                  放两个入口会让同一个动作有两个地方能点。 ══ -->
-            <div v-if="tab === 'users'" class="mb-4">
+            <div class="mb-4">
               <button type="button" @click="toggleCreate"
                 :aria-expanded="createOpen ? 'true' : 'false'"
                 aria-controls="admin-create-user"
@@ -147,14 +147,23 @@
                     <th scope="col" class="px-4 py-3 font-medium">解析</th>
                     <th scope="col" class="px-4 py-3 font-medium">追问</th>
                     <th scope="col" class="px-4 py-3 font-medium">注册时间</th>
-                    <th scope="col" class="px-4 py-3 font-medium">额度</th>
                     <th scope="col" class="px-4 py-3 font-medium">账号</th>
                   </tr>
                 </thead>
                 <tbody>
                   <template v-for="u in view.items" :key="u.id">
-                    <tr class="border-b border-line last:border-b-0">
-                      <td class="px-4 py-3 font-pixel text-xs text-gray-800">{{ u.email }}</td>
+                    <tr class="border-b border-line last:border-b-0 cursor-pointer"
+                      :class="editorOpen(u) ? 'bg-panel-2' : ''"
+                      @click="toggleRow(u)">
+                      <td class="px-4 py-3 font-pixel text-xs text-gray-800">
+                        <button type="button" class="flex items-center gap-1.5 w-full text-left"
+                          :aria-expanded="editorOpen(u) ? 'true' : 'false'"
+                          :aria-controls="`quota-editor-${u.id}`"
+                          @click.stop="toggleRow(u)">
+                          <span aria-hidden="true" class="text-gray-400 w-2">{{ editorOpen(u) ? '▾' : '▸' }}</span>
+                          <span class="truncate">{{ u.email }}</span>
+                        </button>
+                      </td>
                       <td class="px-4 py-3">
                         <span class="flex flex-wrap gap-1.5">
                           <span v-if="u.isAdmin"
@@ -172,20 +181,14 @@
                       </td>
                       <td class="px-4 py-3 text-xs text-gray-400">{{ u.createdAt }}</td>
                       <td class="px-4 py-3">
-                        <button v-if="tab !== 'quota'" type="button" @click="openEditor(u.id)"
-                          class="px-2.5 py-1 rounded-lg border border-line text-xs text-gray-500
-                                 hover:border-blue-200 hover:text-blue-600 transition-colors">编辑额度</button>
-                        <span v-else class="text-xs text-gray-400">行内编辑</span>
-                      </td>
-                      <td class="px-4 py-3">
                         <div class="flex flex-wrap items-center gap-1.5">
-                          <button type="button" @click="toggleAdmin(u)" :disabled="busyUserId !== null"
+                          <button type="button" @click.stop="toggleAdmin(u)" :disabled="busyUserId !== null"
                             class="px-2.5 py-1 rounded-lg border border-line text-xs text-gray-500
                                    hover:border-blue-200 hover:text-blue-600 transition-colors
                                    disabled:opacity-50">
                             {{ u.isAdmin ? '取消管理员' : '设为管理员' }}
                           </button>
-                          <button v-if="pendingDeleteId !== u.id" type="button" @click="askDelete(u)"
+                          <button v-if="pendingDeleteId !== u.id" type="button" @click.stop="askDelete(u)"
                             :disabled="busyUserId !== null"
                             class="px-2.5 py-1 rounded-lg border border-line text-xs text-red-500
                                    hover:border-red-200 transition-colors disabled:opacity-50">删除</button>
@@ -200,7 +203,7 @@
                     <!-- 删除二次确认。两步而不是 window.confirm：
                          同一个可测状态机，样式统一，也不会把用户卡在模态框里。 -->
                     <tr v-if="pendingDeleteId === u.id" class="bg-red-50">
-                      <td colspan="7" class="px-4 py-3">
+                      <td colspan="6" class="px-4 py-3">
                         <p class="text-xs text-red-700">
                           确认删除 {{ u.email }}？名下有订单或解析历史时会被服务端拒绝（409），
                           社区视频不受影响。此操作不可撤销。
@@ -219,8 +222,8 @@
                     </tr>
 
                     <!-- 行内额度编辑器。额度页常驻，用户页按需展开。 -->
-                    <tr v-if="editorOpen(u)" class="bg-panel-2">
-                      <td colspan="7" class="px-4 py-3">
+                    <tr v-if="editorOpen(u)" :id="`quota-editor-${u.id}`" class="bg-panel-2">
+                      <td colspan="6" class="px-4 py-3">
                         <div class="flex flex-wrap items-end gap-3">
                           <div>
                             <label :for="`quota-parse-${u.id}`" class="block text-xs text-gray-500 mb-1">解析上限</label>
@@ -241,7 +244,7 @@
                                    hover:bg-blue-600 transition-colors disabled:opacity-50">
                             {{ savingId === u.id ? '保存中…' : '保存' }}
                           </button>
-                          <button v-if="tab !== 'quota'" type="button" @click="closeEditor(u.id)"
+                          <button type="button" @click="closeEditor(u.id)"
                             class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
                                    hover:border-gray-300 transition-colors">取消</button>
                         </div>
@@ -264,9 +267,14 @@
             </div>
           </div>
 
-          <!-- ══ 社区：只读。删除与下架属于项目范围边界的「明确不做」（ADR 0010）。 ══ -->
+          <!-- ══ 社区：可改标签、可删条目（ADR 0013）。
+               删只删 videos 那一行：解析过它的用户在自己「历史」里的记录不受影响——
+               库里没有任何外键指向 videos，这正是该语义成立的前提。 ══ -->
           <div v-else-if="tab === 'community'">
-            <p class="mb-3 text-xs text-gray-400">只读。社区视频的删除与下架不在后台范围内。</p>
+            <p class="mb-3 text-xs text-gray-400">
+              点任意一行改标签。删除只移除社区条目，
+              <strong class="font-medium text-gray-600">不删用户的解析历史</strong>——用户在自己历史里仍看得到自己的记录。此操作不可撤销。
+            </p>
             <div class="overflow-x-auto rounded-2xl border border-line bg-panel">
               <table class="w-full text-sm">
                 <caption class="sr-only">社区视频列表</caption>
@@ -275,16 +283,29 @@
                     <th scope="col" class="px-4 py-3 font-medium">标题</th>
                     <th scope="col" class="px-4 py-3 font-medium">作者</th>
                     <th scope="col" class="px-4 py-3 font-medium">标签</th>
+                    <th scope="col" class="px-4 py-3 font-medium">状态</th>
                     <th scope="col" class="px-4 py-3 font-medium">时间</th>
+                    <th scope="col" class="px-4 py-3 font-medium">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="c in view.items" :key="c.id" class="border-b border-line last:border-b-0">
-                    <td class="px-4 py-3">
-                      <p class="text-xs text-gray-800">{{ c.title || '未命名视频' }}</p>
-                      <p class="mt-0.5 text-[11px] font-pixel text-gray-400 truncate max-w-xs">{{ c.videoUrl }}</p>
-                    </td>
-                    <td class="px-4 py-3 text-xs font-pixel text-gray-600">{{ c.authorEmail }}</td>
+                  <template v-for="c in view.items" :key="c.id">
+                    <tr class="border-b border-line last:border-b-0 cursor-pointer"
+                      :class="communityEditorOpen(c.id) ? 'bg-panel-2' : ''"
+                      @click="toggleCommunityRow(c)">
+                      <td class="px-4 py-3">
+                        <button type="button" class="flex items-start gap-1.5 w-full text-left"
+                          :aria-expanded="communityEditorOpen(c.id) ? 'true' : 'false'"
+                          :aria-controls="`community-tags-${c.id}`"
+                          @click.stop="toggleCommunityRow(c)">
+                          <span aria-hidden="true" class="text-gray-400 w-2 pt-0.5">{{ communityEditorOpen(c.id) ? '▾' : '▸' }}</span>
+                          <span class="min-w-0">
+                            <span class="block text-xs text-gray-800">{{ c.title || '未命名视频' }}</span>
+                            <span class="block mt-0.5 text-[11px] font-pixel text-gray-400 truncate max-w-xs">{{ c.videoUrl }}</span>
+                          </span>
+                        </button>
+                      </td>
+                      <td class="px-4 py-3 text-xs font-pixel text-gray-600">{{ c.authorEmail }}</td>
                     <td class="px-4 py-3">
                       <span class="flex flex-wrap gap-1.5">
                         <span v-for="t in c.tags" :key="t"
@@ -293,8 +314,96 @@
                         <span v-if="!c.tags.length" class="text-[10px] text-gray-400">无标签</span>
                       </span>
                     </td>
-                    <td class="px-4 py-3 text-xs text-gray-400">{{ c.createdAt }}</td>
-                  </tr>
+                      <td class="px-4 py-3">
+                        <span class="text-[10px] px-1.5 py-0.5 rounded border"
+                          :class="c.status === 'ready'
+                            ? 'bg-emerald-50 text-emerald-600 border-emerald-200'
+                            : 'bg-amber-50 text-amber-600 border-amber-200'">
+                          {{ c.status === 'ready' ? '已就绪' : '占位中' }}
+                        </span>
+                      </td>
+                      <td class="px-4 py-3 text-xs text-gray-400">{{ c.createdAt }}</td>
+                      <td class="px-4 py-3">
+                        <button type="button" @click.stop="askDeleteCommunity(c)"
+                          :disabled="communityBusyId !== null"
+                          class="px-2.5 py-1 rounded-lg border border-line text-xs text-red-500
+                                 hover:border-red-200 transition-colors disabled:opacity-50">删除</button>
+                        <span aria-live="polite"
+                          :class="['block mt-1 text-[11px]', feedbackClass(communityFeedbackOf(c.id).kind)]">
+                          {{ communityFeedbackOf(c.id).text }}
+                        </span>
+                      </td>
+                    </tr>
+
+                    <!-- 标签编辑器。词表从服务端取，前端不自己备份一份——
+                         CommunityPage.vue 的标签筛选已经是「从已加载的卡片汇总」，
+                         在前端再抄第二份就是漂移本身。 -->
+                    <tr v-if="communityEditorOpen(c.id)" :id="`community-tags-${c.id}`" class="bg-panel-2">
+                      <td colspan="6" class="px-4 py-3">
+                        <p v-if="vocabError" class="text-xs text-red-500">{{ vocabError }}</p>
+                        <p v-else-if="vocabLoading" class="text-xs text-gray-400">正在取标签词表…</p>
+                        <template v-else>
+                          <div v-for="g in vocabulary.groups" :key="g.name" class="mb-3 last:mb-0">
+                            <p class="text-[11px] text-gray-400 mb-1.5">{{ g.name }}</p>
+                            <div class="flex flex-wrap gap-1.5">
+                              <label v-for="t in g.tags" :key="t"
+                                class="text-[10px] font-pixel border px-1.5 py-0.5 rounded cursor-pointer"
+                                :class="tagSelected(c.id, t)
+                                  ? 'bg-blue-50 text-blue-600 border-blue-200'
+                                  : 'bg-panel text-gray-500 border-line'">
+                                <input type="checkbox" class="sr-only"
+                                  :checked="tagSelected(c.id, t)"
+                                  :disabled="!tagSelected(c.id, t) && selectedTagCount(c.id) >= maxTags"
+                                  @change="toggleTag(c.id, t)" />{{ t }}
+                              </label>
+                            </div>
+                          </div>
+                          <p class="text-xs text-gray-400">
+                            最多 {{ maxTags }} 个，当前选了 {{ selectedTagCount(c.id) }} 个。
+                            <span v-if="selectedTagCount(c.id) >= maxTags">已选满 —— 先取掉一个才能勾选。</span>
+                          </p>
+                          <div class="mt-2 flex items-center gap-2">
+                            <button type="button" @click="saveCommunityTags(c)"
+                              :disabled="communityBusyId !== null"
+                              class="px-3 py-1.5 rounded-lg bg-blue text-on-primary text-xs font-medium
+                                     hover:bg-blue-600 transition-colors disabled:opacity-50">
+                              {{ communityBusyId === c.id ? '保存中…' : '保存标签' }}
+                            </button>
+                            <button type="button" @click="closeCommunityEditor(c.id)"
+                              class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
+                                     hover:border-gray-300 transition-colors">取消</button>
+                          </div>
+                        </template>
+                        <p v-if="communityFeedbackOf(c.id).text" role="status" aria-live="polite"
+                          class="mt-2 text-xs" :class="feedbackClass(communityFeedbackOf(c.id).kind)">
+                          {{ communityFeedbackOf(c.id).text }}
+                        </p>
+                      </td>
+                    </tr>
+
+                    <!-- 删除二次确认。文案里明写「不删用户历史」：
+                         这份数据在删完之后看不到任何地方，只能在点之前说。 -->
+                    <tr v-if="pendingCommunityDeleteId === c.id" class="bg-red-50">
+                      <td colspan="6" class="px-4 py-3">
+                        <p class="text-xs text-red-700">
+                          确认从社区删除「{{ c.title || c.videoUrl }}」？
+                          只删社区条目，<strong class="font-medium">不删这个用户的解析历史</strong>——
+                          他在自己历史里仍然看得到。删除后紧跟地该链接的人再次解析会重新入库。
+                        </p>
+                        <div class="mt-2 flex items-center gap-2">
+                          <button type="button" @click="confirmDeleteCommunity(c)"
+                            :disabled="communityBusyId !== null"
+                            class="px-3 py-1.5 rounded-lg bg-red-600 text-on-solid text-xs
+                                   hover:bg-red-700 transition-colors disabled:opacity-50">
+                            {{ communityBusyId === c.id ? '删除中…' : '确认删除' }}
+                          </button>
+                          <button type="button" @click="cancelDeleteCommunity"
+                            class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
+                                   hover:border-gray-300 transition-colors">取消</button>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
                 </tbody>
               </table>
             </div>
@@ -428,8 +537,11 @@
 /**
  * 管理后台（工单 #14 / ADR 0010）。
  *
- * 三条边界，别越：
- *  · 写操作只有「改额度」。封禁、解封、删账号都不做（ADR 0010）。
+ * 边界，别越：
+ *  · 写操作只有三类：**改额度**（用户页）、**账号生命周期**（建号 / 管理员标记 /
+ *    删号，ADR 0012）、**社区审核**（改标签 / 删条目，ADR 0013）。封禁、解封、
+ *    改 VIP、下架社区视频仍然不做（项目范围边界）。
+ *  · 删社区条目只删 videos 那一行，不动用户的解析历史。
  *  · 视觉一律走 src/style.css 的 @theme 令牌，本组件里没有色值字面量，
  *    也没有 @theme 之外的颜色类（tests/admin-ui.test.mjs 守着这两条）。
  *  · 主题不在这里判定。data-theme 由 index.html 的内联脚本在首帧前写好，
@@ -437,16 +549,20 @@
  */
 import { ref, reactive, computed, onMounted } from 'vue'
 import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModels,
-         updateAdminModel, createAdminUser, setUserAdmin, deleteAdminUser } from '../api/admin.js'
+         updateAdminModel, createAdminUser, setUserAdmin, deleteAdminUser,
+         fetchTagVocabulary, updateCommunityTags, deleteCommunityVideo } from '../api/admin.js'
 
 const emit = defineEmits(['back'])
 
 const PAGE_SIZE = 20
 
-/** 四个页签。key 同时是状态槽位名与 panel 的 id 后缀，顺序即展示顺序。 */
+/** 三个页签。key 同时是状态槽位名与 panel 的 id 后缀，顺序即展示顺序。
+ *
+ *  原来有第四个「额度」页签，它与用户页**同一个接口、同一份数据**，区别只是
+ *  编辑控件常驻行内。用户页本来就能改额度，于是同一个动作有两个入口——
+ *  两个入口意味着改了一处忘了另一处，两边就各说各话。删掉。 */
 const TABS = [
   { key: 'users', label: '用户' },
-  { key: 'quota', label: '额度' },
   { key: 'community', label: '社区' },
   { key: 'models', label: 'AI 服务' },
 ]
@@ -454,7 +570,6 @@ const TABS = [
 /** 每个页签的空闲态文案。四份都在这里，空状态就不会只给某一页写。 */
 const EMPTY = {
   users: { text: '没有匹配的用户', hint: '换个邮箱关键词，或清空搜索看全部注册用户' },
-  quota: { text: '没有可编辑额度的用户', hint: '用户列表为空时这里没有可改的额度' },
   community: { text: '社区还是空的', hint: '第一个解析视频的人会把它放进来' },
   models: { text: 'AI 服务清单是空的', hint: '厂商与模型由服务端配置下发' },
 }
@@ -471,7 +586,6 @@ function blankView() {
  *  另一个页签的内容一起换成骨架屏。 */
 const views = reactive({
   users: blankView(),
-  quota: blankView(),
   community: blankView(),
   models: blankView(),
 })
@@ -514,6 +628,7 @@ const toCommunityItem = (r) => ({
   title: r.title,
   authorEmail: r.author_email,
   tags: Array.isArray(r.tags) ? r.tags : [],
+  status: r.status,
   createdAt: r.created_at,
 })
 
@@ -684,8 +799,19 @@ function primeDrafts(users) {
   }
 }
 
+/** 行是否展开。**同一时刻只有一行**（expandedId 是单值，不是集合）。
+ *
+ * 原来这一行是 `tab === 'quota' || expandedId === u.id`：额度页时永远为真，
+ * 于是那一页上每一行的编辑器都常驻，页面上十几行输入框一起躺着。额度页
+ * 删掉之后这里只剩单开这一条语义——展开是**逐行**的动作，不该是整页的状态。
+ */
 function editorOpen(u) {
-  return tab.value === 'quota' || expandedId.value === u.id
+  return expandedId.value === u.id
+}
+
+/** 点该行展开/收起。点谁开谁，别的一行自动收起。 */
+function toggleRow(u) {
+  expandedId.value = expandedId.value === u.id ? null : u.id
 }
 
 function openEditor(id) {
@@ -748,26 +874,6 @@ async function loadUsers() {
   }
 }
 
-/**
- * 额度页：与用户页同一个接口、同一份数据，区别只在编辑控件常驻行内。
- * 独立成一个 loader 是为了让「额度页能自己取数」这件事有断言可守——
- * 共用一个 loader 的话，这条能力断了也不会有任何测试转红。
- */
-async function loadQuota() {
-  const v = views.quota
-  v.loading = true; v.error = ''; v.forbidden = false
-  try {
-    const res = await fetchAdminUsers({ page: v.page, pageSize: PAGE_SIZE, q: '' })
-    v.items = (res.items || []).map(toUser)
-    v.total = res.total || 0
-    v.page = res.page || v.page
-    primeDrafts(v.items)
-  } catch (err) {
-    markFailure(v, err)
-  } finally {
-    v.loading = false
-  }
-}
 
 async function loadCommunity() {
   const v = views.community
@@ -799,10 +905,168 @@ async function loadModels() {
   }
 }
 
+// ── 社区审核（ADR 0013）───────────────────────────────────────────────
+//
+// 反馈不复用 feedbackOf（那个渲染在用户的展开行里），也不复用 opsFeedbackOf
+// （那个是用户主行的）。三个 state 各有位置，借用会让它们互相顶掉。
+const expandedCommunityId = ref(null)
+const communityBusyId = ref(null)
+const pendingCommunityDeleteId = ref(null)
+const vocabulary = ref({ maxTags: 3, groups: [] })
+const vocabLoading = ref(false)
+const vocabError = ref('')
+const tagDrafts = reactive({})
+const communityFeedbacks = reactive({})
+
+/** 上限由服务端给，前端不自己数。 */
+const maxTags = computed(() => vocabulary.value.maxTags || 3)
+
+function communityFeedbackOf(id) {
+  if (!communityFeedbacks[id]) communityFeedbacks[id] = { kind: '', text: '' }
+  return communityFeedbacks[id]
+}
+
+function communityEditorOpen(id) {
+  return expandedCommunityId.value === id
+}
+
+/**
+ * 词表只取一次，且在确实有人要改标签时才取。
+ *
+ * 不跟社区列表一起取：词表取失败不应该连块整页一起报错——管理员只是想看看列表。
+ */
+async function ensureVocabulary() {
+  if (vocabulary.value.groups.length || vocabLoading.value) return
+  vocabLoading.value = true
+  vocabError.value = ''
+  try {
+    vocabulary.value = await fetchTagVocabulary()
+  } catch (err) {
+    vocabError.value = `取不到标签词表，改不了标签：${messageOf(err)}`
+  } finally {
+    vocabLoading.value = false
+  }
+}
+
+/**
+ * 点行展开/收起。同一时刻只有一行。
+ *
+ * 草稿每次从**库里那个值**起头，不从上一次改到一半的那份继续：
+ * 否则取消一次再点进来，看到的是上次的临时值而不是库里的。
+ */
+function toggleCommunityRow(c) {
+  const next = expandedCommunityId.value === c.id ? null : c.id
+  expandedCommunityId.value = next
+  if (next === null) return
+  ensureVocabulary()
+  tagDrafts[c.id] = Array.isArray(c.tags) ? c.tags.slice() : []
+  communityFeedbackOf(c.id).kind = ''
+  communityFeedbackOf(c.id).text = ''
+}
+
+function closeCommunityEditor(id) {
+  if (expandedCommunityId.value === id) expandedCommunityId.value = null
+}
+
+function selectedTags(id) {
+  return tagDrafts[id] || []
+}
+
+function tagSelected(id, tag) {
+  return selectedTags(id).indexOf(tag) >= 0
+}
+
+function selectedTagCount(id) {
+  return selectedTags(id).length
+}
+
+function toggleTag(id, tag) {
+  const cur = selectedTags(id).slice()
+  const i = cur.indexOf(tag)
+  if (i >= 0) {
+    cur.splice(i, 1)
+  } else {
+    if (cur.length >= maxTags.value) return
+    cur.push(tag)
+  }
+  tagDrafts[id] = cur
+}
+
+/** 改标签。不做乐观更新：列表里的标签一律等服务端回读结果再替。 */
+async function saveCommunityTags(c) {
+  if (communityBusyId.value !== null) return
+  const picked = selectedTags(c.id)
+  if (!picked.length) {
+    communityFeedbackOf(c.id).kind = 'error'
+    communityFeedbackOf(c.id).text = '至少留一个标签——每条视频都得能归类。'
+    return
+  }
+  communityBusyId.value = c.id
+  communityFeedbackOf(c.id).kind = ''
+  communityFeedbackOf(c.id).text = ''
+  try {
+    const res = await updateCommunityTags(c.id, picked)
+    replaceCommunityItem(res.item)
+    communityFeedbackOf(c.id).kind = 'ok'
+    communityFeedbackOf(c.id).text = '标签已更新'
+  } catch (err) {
+    communityFeedbackOf(c.id).kind = 'error'
+    communityFeedbackOf(c.id).text = `标签没改成：${messageOf(err)}`
+  } finally {
+    communityBusyId.value = null
+  }
+}
+
+function replaceCommunityItem(raw) {
+  if (!raw) return
+  const fresh = toCommunityItem(raw)
+  const list = views.community.items
+  const i = list.findIndex((c) => c.id === fresh.id)
+  if (i >= 0) {
+    list.splice(i, 1, fresh)
+    tagDrafts[fresh.id] = fresh.tags.slice()
+  }
+}
+
+function askDeleteCommunity(c) {
+  pendingCommunityDeleteId.value = c.id
+  communityFeedbackOf(c.id).kind = ''
+  communityFeedbackOf(c.id).text = ''
+}
+
+function cancelDeleteCommunity() {
+  pendingCommunityDeleteId.value = null
+}
+
+/**
+ * 删条目。只删 videos 那一行，解析历史不动。
+ *
+ * 成功后不留反馈：行已经从列表里抹掉，反馈写在那行上就看不到了。
+ */
+async function confirmDeleteCommunity(c) {
+  if (communityBusyId.value !== null) return
+  communityBusyId.value = c.id
+  communityFeedbackOf(c.id).kind = ''
+  communityFeedbackOf(c.id).text = ''
+  try {
+    await deleteCommunityVideo(c.id)
+    const list = views.community.items
+    const i = list.findIndex((x) => x.id === c.id)
+    if (i >= 0) list.splice(i, 1)
+    views.community.total = Math.max(0, views.community.total - 1)
+    pendingCommunityDeleteId.value = null
+    if (expandedCommunityId.value === c.id) expandedCommunityId.value = null
+  } catch (err) {
+    communityFeedbackOf(c.id).kind = 'error'
+    communityFeedbackOf(c.id).text = `没删掉：${messageOf(err)}`
+  } finally {
+    communityBusyId.value = null
+  }
+}
+
 /** 页签 → 取数函数。首次进入才打接口，切回来用已加载的那份。 */
 const LOADERS = {
   users: loadUsers,
-  quota: loadQuota,
   community: loadCommunity,
   models: loadModels,
 }
@@ -855,11 +1119,9 @@ function toQuotaValue(text) {
 function replaceUser(raw) {
   if (!raw) return
   const fresh = toUser(raw)
-  for (const key of ['users', 'quota']) {
-    const list = views[key].items
-    const i = list.findIndex((u) => u.id === fresh.id)
-    if (i >= 0) list.splice(i, 1, fresh)
-  }
+  const list = views.users.items
+  const i = list.findIndex((u) => u.id === fresh.id)
+  if (i >= 0) list.splice(i, 1, fresh)
   drafts[fresh.id] = { parse: draftText(fresh.parseLimitOverride), chat: draftText(fresh.chatLimitOverride) }
 }
 

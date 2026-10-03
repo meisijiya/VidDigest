@@ -50,6 +50,14 @@ DB_FUNCS = {
     # ——而 POST quota 那个是会**写** users 表的。
     "list_admin_users", "admin_user_detail", "set_user_quota_override",
     "list_admin_community",
+    # 社区审核的两个**写**出口。漏掉任何一个，这道门禁就对「测试直接调它」
+    # 失明 —— 而它们写的是真实库里的社区内容：update_video_tags 改标签，
+    # delete_video_record 删行。后者尤其不能漏：一条漏取夹具的删除测试
+    # 连上的会是开发机上有数据的 app.db。
+    #
+    # 词表读出口不在这里：它不触库（数据全在 tags 模块里），硬塞进名单只会
+    # 让这份名单掺进不该有的东西，第二个守门人就懒得看了。
+    "update_video_tags", "delete_video_record",
     # 模型清单（工单 #13）：DDL、播种、三个查询口。
     "init_model_catalog", "list_model_providers", "get_model_provider",
     "platform_default_model",

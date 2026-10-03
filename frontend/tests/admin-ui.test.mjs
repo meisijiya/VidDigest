@@ -335,29 +335,32 @@ describe('轻路由 · /admin 进得来也留得住', () => {
 })
 
 // ─────────────────────────────────────────────────────────
-// 四个页签
+// 三个页签
 // ─────────────────────────────────────────────────────────
-describe('四个页签 · 各自有取数路径', () => {
-  test('TABS 恰好四个，顺序即展示顺序', () => {
+describe('三个页签 · 各自有取数路径', () => {
+  test('TABS 恰好三个，顺序即展示顺序', () => {
     const m = adminCode.match(/const TABS = \[([\s\S]*?)\n\]/)
     assert.ok(m, 'AdminPage.vue 里没有 TABS')
     const keys = [...m[1].matchAll(/key:\s*'([a-z]+)'/g)].map((x) => x[1])
-    // 比**序列**而不是查成员：四个键互不相同，逐个 includes() 查不出顺序错乱
-    assert.deepEqual(keys, ['users', 'quota', 'community', 'models'])
+    // 比**序列**而不是查成员：三个键互不相同，逐个 includes() 查不出顺序错乱
+    //
+    // 「额度」页签在本轮被删掉：它与用户页同一个接口、同一份数据，
+    // 只差在编辑控件常驻行内。同一个动作两个入口 = 改了一处忘了另一处。
+    assert.deepEqual(keys, ['users', 'community', 'models'])
+    assert.ok(!keys.includes('quota'), '「额度」页签应当被删除（写在测试里防恢复）')
   })
 
-  test('LOADERS 恰好四份，且与页签一一对应', () => {
+  test('LOADERS 恰好三份，且与页签一一对应', () => {
     const m = adminCode.match(/const LOADERS = \{([\s\S]*?)\n\}/)
     assert.ok(m, 'AdminPage.vue 里没有 LOADERS')
     const keys = [...m[1].matchAll(/^\s*([a-z]+):\s*load[A-Za-z]+,?\s*$/gm)].map((x) => x[1])
-    assert.deepEqual(keys, ['users', 'quota', 'community', 'models'],
+    assert.deepEqual(keys, ['users', 'community', 'models'],
       'LOADERS 与 TABS 不是一一对应 —— 某个页签永远取不到数')
   })
 
-  /** 逐页签独立成条：四个请求全打断时，四条一起红，不是一条顶四条。 */
+  /** 逐页签独立成条：三个请求全打断时，三条一起红，不是一条顶三条。 */
   for (const [fn, api, label] of [
     ['loadUsers', 'fetchAdminUsers', '用户'],
-    ['loadQuota', 'fetchAdminUsers', '额度'],
     ['loadCommunity', 'fetchAdminCommunity', '社区'],
     ['loadModels', 'fetchAdminModels', 'AI 服务'],
   ]) {
@@ -370,14 +373,14 @@ describe('四个页签 · 各自有取数路径', () => {
     })
   }
 
-  test('空状态四份文案都在（不是只给某一页写）', () => {
+  test('空状态三份文案都在（不是只给某一页写）', () => {
     const m = adminCode.match(/const EMPTY = \{([\s\S]*?)\n\}/)
     assert.ok(m, 'AdminPage.vue 里没有 EMPTY')
     const keys = Object.keys(
       Object.fromEntries([...m[1].matchAll(/^\s*([a-z]+):\s*\{/gm)].map((x) => [x[1], 1])),
     )
-    assert.deepEqual(keys, ['users', 'quota', 'community', 'models'],
-      '空状态文案没覆盖四个页签 —— 某一页空时会渲染成白屏')
+    assert.deepEqual(keys, ['users', 'community', 'models'],
+      '空状态文案没覆盖三个页签 —— 某一页空时会渲染成白屏')
   })
 
   test('页签是 role="tab" 的真按钮，带 aria-selected', () => {
@@ -399,20 +402,43 @@ describe('四个页签 · 各自有取数路径', () => {
     const m = adminCode.match(/const views = reactive\(\{([\s\S]*?)\n\}\)/)
     assert.ok(m, 'AdminPage.vue 里没有 views')
     const keys = [...m[1].matchAll(/^\s*([a-z]+):\s*blankView\(\),?\s*$/gm)].map((x) => x[1])
-    assert.deepEqual(keys, ['users', 'quota', 'community', 'models'],
-      'views 不是四份独立状态 —— 在「用户」页加载中会把「社区」页的内容一起换成骨架屏')
+    assert.deepEqual(keys, ['users', 'community', 'models'],
+      'views 不是三份独立状态 —— 在「用户」页加载中会把「社区」页的内容一起换成骨架屏')
   })
 
-  test('「额度」页签把编辑控件常驻行内（不是另建一份额度数据）', () => {
-    assert.match(adminTemplate, /v-if="editorOpen\(u\)"/,
-      '没有行内编辑行 —— 额度页签会退化成和用户页一模一样、却什么也改不了')
+  test('编辑区只在点当前这一行时才展开', () => {
+    assert.match(adminTemplate, /v-if="editorOpen\(u\)"/, '没有行内编辑行')
     const m = adminCode.match(/function editorOpen\(([\s\S]*?)\n\}/)
     assert.ok(m, '没有 editorOpen')
-    assert.match(m[1], /tab\.value === 'quota'/,
-      "editorOpen 不认 quota 页签 —— 到了「额度」页还要一格格点「编辑额度」，"
-      + '与工单写的「挂在用户行内编辑」不符')
-    assert.match(adminTemplate, /v-if="tab !== 'quota'"/,
-      '用户页与额度页没有区分开编辑入口')
+    // 单开：expandedId 是单值而非集合。这里若是与 tab 相关的表达式，
+    // 则“一行展开”又变成了整页的状态。
+    assert.match(m[1], /expandedId\.value === u\.id/,
+      'editorOpen 不是单开判断')
+    assert.doesNotMatch(m[1], /tab\.value/,
+      'editorOpen 还在看 tab —— 展开不应该是整页的状态')
+    assert.match(adminCode, /function toggleRow\(u\)/, '没有 toggleRow ——点行展开没有入口')
+    assert.match(adminCode, /expandedId\.value = expandedId\.value === u\.id \? null : u\.id/,
+      'toggleRow 不是点当前行展开、点其他行收起')
+  })
+
+  test('点整行可展开，但邻近的按钮不会转发点事件', () => {
+    assert.match(adminTemplate, /@click="toggleRow\(u\)"/, '行不可点')
+    // 里面的按钮必须 @click.stop：不否则点「删除」会顶掉轻点、
+    // 同时把脚本下的编辑行展开——两个动作互相打扰。
+    for (const fn of ['toggleAdmin', 'askDelete']) {
+      assert.match(adminTemplate, new RegExp(`@click\\.stop="${fn}\\(`),
+        `${fn} 没有 @click.stop ——点它会顶掉行上的展开动作`)
+    }
+  })
+
+  test('行内编辑行的 aria 与那个按钮真的对得上', () => {
+    // 只做行点击的话键盘用户完全挂地——所以那个邮箱格必须是真按钮。
+    assert.match(adminTemplate, /:aria-expanded="editorOpen\(u\) \? 'true' : 'false'"/,
+      '邮箱按钮没有 aria-expanded')
+    assert.match(adminTemplate, /:aria-controls="`quota-editor-\$\{u\.id\}`"/,
+      '邮箱按钮没有 aria-controls')
+    assert.match(adminTemplate, /:id="`quota-editor-\$\{u\.id\}`"/,
+      '编辑行没有那个 id ——aria-controls 指向不存在的目标')
   })
 
   test('用户页签有搜索与分页（契约里的 q / limit / offset）', () => {
@@ -578,11 +604,20 @@ describe('改额度 · 成功与失败都要有反馈', () => {
 // ─────────────────────────────────────────────────────────
 describe('键盘可达与 aria', () => {
   test('额度输入框每个都有 label（for 与 id 对得上）', () => {
-    const inputs = [...adminTemplate.matchAll(/<input[^>]*>/g)].map((m) => m[0])
-    assert.ok(inputs.length >= 3, `只找到 ${inputs.length} 个 input —— 搜索框与两个额度框都得在`)
-    for (const inp of inputs) {
-      assert.ok(/(^|\s):?id="/.test(inp), `input 没有 id：${inp.slice(0, 60)}`)
+    const all = [...adminTemplate.matchAll(/<input[^>]*>/g)].map((m) => m[0])
+    assert.ok(all.length >= 4, `只找到 ${all.length} 个 input —— 搜索框与两个额度框都得在`)
+    // 装在 <label>...<input></label> 里的 checkbox 不需要 id：包裹本身就是一种合法的
+    // 关联方式（新增的标签勾选框就是这个形式）。真正要求的是
+    // 「每个 input 都有可读名字」，而不是「每个 input 都有 id」。
+    const wrapped = new Set([...adminTemplate.matchAll(/<label[^>]*>[\s\S]*?<input[^>]*>[\s\S]*?<\/label>/g)]
+      .flatMap((m) => [...m[0].matchAll(/<input[^>]*>/g)].map((x) => x[0])))
+    const bare = all.filter((i) => !wrapped.has(i))
+    for (const inp of bare) {
+      assert.ok(/(^|\s):?id="/.test(inp),
+        `input 没有 id 也没被 label 包裹（读屏无法读出它是什么）：${inp.slice(0, 60)}`)
     }
+    assert.ok(wrapped.size >= 1, '装在 label 里的标签 checkbox 一个都没有'
+      + '——删掉包裹之后它就变成了没有可读名字的无名控件')
     const fors = [...adminTemplate.matchAll(/:for="`quota-[a-z]+-\$\{u\.id\}`"/g)]
     assert.equal(fors.length, 2,
       `找到 ${fors.length} 个额度输入框的 label —— 解析与追问两个上限都要能定位`)
@@ -620,20 +655,22 @@ describe('键盘可达与 aria', () => {
 })
 
 describe('后端契约 · snake_case 转换收在一处', () => {
-  test('从 ../api/admin.js 导入五个函数（不建这个文件，读它也不做断言）', () => {
+  test('从 ../api/admin.js 导入十一个函数（不建这个文件，读它也不做断言）', () => {
     // [^}]* 不是 [\s\S]*? —— 后者会从文件里第一个 import {（vue 那行）起吞到
     // 这里，名单里混进 'onMounted } from \'vue\'...' 这种垃圾。
     // [^}]* 天然锚定「最后一个 } 之前」的那条 import，同时照样能跨行。
     const m = adminCode.match(/import \{([^}]*)\} from '\.\.\/api\/admin\.js'/)
     assert.ok(m, "没有从 '../api/admin.js' 导入")
     const names = m[1].split(',').map((s) => s.trim()).filter(Boolean)
-    // 契约从五个长到八个：createAdminUser / setUserAdmin / deleteAdminUser
-    // 是 ADR 0012 账号生命周期的前端出口。**这份名单是冻结的**——
-    // 少一个说明有路径绕过了 api 层，多一个说明有新的未审接口混进来了。
+    // 契约从五个长到八个（ADR 0012 账号生命周期）再到十一个：
+    // fetchTagVocabulary / updateCommunityTags / deleteCommunityVideo 是 ADR 0013 社区审核的前端出口。
+    // **这份名单是冻结的**——少一个说明有路径绕过了 api 层，
+    // 多一个说明有新的未审接口混进来了。
     assert.deepEqual(names.sort(),
-      ['createAdminUser', 'deleteAdminUser', 'fetchAdminCommunity',
-       'fetchAdminModels', 'fetchAdminUsers', 'setUserAdmin',
-       'setUserQuota', 'updateAdminModel'],
+      ['createAdminUser', 'deleteAdminUser', 'deleteCommunityVideo',
+       'fetchAdminCommunity', 'fetchAdminModels', 'fetchAdminUsers',
+       'fetchTagVocabulary', 'setUserAdmin', 'setUserQuota',
+       'updateAdminModel', 'updateCommunityTags'],
       '导入的 API 名字与冻结的契约不一致')
   })
 
@@ -1202,7 +1239,8 @@ describe('账号生命周期 · 静态契约', () => {
   })
 
   test('行内的管理员标记是**按钮开关**，不是可自由编辑的输入框', () => {
-    assert.match(adminTemplate, /@click="toggleAdmin\(u\)"/)
+    // .stop 不是风格：行本身可点，不 stop 就会点开脚本下的编辑行。
+    assert.match(adminTemplate, /@click\.stop="toggleAdmin\(u\)"/)
     // 只断**行内**：建号表单里那个 createDraft.isAdmin 勾选框是合理的
     // （建号时就是要决定给不给管理员），把它一起禁掉是判据越界。
     const rowScoped = [...adminTemplate.matchAll(/v-model="([^"]*[Ii]sAdmin[^"]*)"/g)]
@@ -1218,5 +1256,161 @@ describe('账号生命周期 · 静态契约', () => {
       assert.match(adminTemplate, new RegExp(`id="${id}"`), `建号表单缺 ${id}`)
       assert.match(adminTemplate, new RegExp(`for="${id}"`), `${id} 没有对应的 label`)
     }
+  })
+})
+
+// ─────────────────────────────────────────────────────────
+// 社区审核（ADR 0013）
+// ─────────────────────────────────────────────────────────
+describe('社区审核 · 静态契约', () => {
+  test('社区页签不再自称只读', () => {
+    assert.doesNotMatch(adminTemplate, /只读。社区视频的删除与下架不在后台范围内/,
+      '社区页签还在自称只读 —— 它现在有改标签与删除两个写出口')
+    assert.doesNotMatch(adminCode, /社区：只读/,
+      '源码注释还在说社区是只读（可见文案改了、注释没改）')
+  })
+
+  test('列表带上状态，pending 占位与真实内容分得开', () => {
+    assert.match(adminCode, /status: r\.status,/,
+      'toCommunityItem 没有把 status 映射过来 —— 组件分不出空壳与真内容')
+    assert.match(adminTemplate, /c\.status === 'ready'/,
+      '模板没有按 status 区分渲染')
+    assert.match(adminTemplate, /占位中/, '没有「占位中」的文案')
+  })
+
+  test('点行才展开（与用户表同一套交互）', () => {
+    assert.match(adminTemplate, /@click="toggleCommunityRow\(c\)"/, '社区行不可点')
+    assert.match(adminTemplate, /@click\.stop="toggleCommunityRow\(c\)"/,
+      '标题按钮没有 @click.stop —— 点它会触发两次 toggle，等于没点')
+    const m = adminCode.match(/function communityEditorOpen\(([\s\S]*?)\n\}/)
+    assert.ok(m, '没有 communityEditorOpen')
+    assert.match(m[1], /expandedCommunityId\.value === id/,
+      'communityEditorOpen 不是单开判断')
+  })
+
+  test('删除走两步确认，不是 window.confirm', () => {
+    assert.doesNotMatch(adminTemplate, /window\.confirm/,
+      '用了 window.confirm —— 阻塞事件循环、样式无法统一、也无法断言')
+    assert.match(adminTemplate, /v-if="pendingCommunityDeleteId === c\.id"/,
+      '没有二次确认行')
+    assert.match(adminCode, /function askDeleteCommunity\(/, '没有 askDeleteCommunity')
+    assert.match(adminCode, /function confirmDeleteCommunity\(/, '没有 confirmDeleteCommunity')
+    assert.match(adminCode, /function cancelDeleteCommunity\(/, '没有 cancelDeleteCommunity')
+  })
+
+  test('**前端不自己抄一份标签词表**', () => {
+    // 这条是最容易回归的：把词表抄进 AdminPage.vue 之后，下面所有断言照样全绿，
+    // 而漂移已经发生了（同 byok.js 硬编码 7 个厂商那一次）。
+    assert.match(adminCode, /fetchTagVocabulary\(/,
+      '没有从服务端取词表 —— 前端要么硬编码了一份，要么根本没接')
+    assert.match(adminTemplate, /vocabulary\.groups/,
+      '标签编辑器没有渲染词表分组')
+    assert.match(adminTemplate, /v-for="g in vocabulary\.groups"/,
+      '标签编辑器不是按词表分组渲染的')
+    for (const tag of ['人工智能', '前端开发', '其他']) {
+      assert.ok(!adminTemplate.includes(tag),
+        `模板里硬编码了标签「${tag}」—— 词表只能有一个真值来源`)
+    }
+  })
+
+  test('上限由服务端给，前端不写死 3', () => {
+    assert.match(adminCode, /const maxTags = computed\(\(\) => vocabulary\.value\.maxTags \|\| 3\)/,
+      'maxTags 不是从服务端响应里读的 —— 前端把它写死了，词表改上限时这里会静默过期')
+    assert.match(adminTemplate, /selectedTagCount\(c\.id\) >= maxTags/,
+      '选满之后没有把其余选项禁掉')
+  })
+
+  test('确认文案说清「不删用户的解析历史」', () => {
+    // 这份数据删完就看不见了，只能在点之前说。
+    assert.match(adminTemplate, /不删这个用户的解析历史/,
+      '删除确认没有说明用户的解析历史会保留')
+    assert.match(adminTemplate, /不可撤销/, '删除确认没有标不可撤销')
+  })
+
+  test('反馈不复用用户那两套 state', () => {
+    assert.match(adminCode, /function communityFeedbackOf\(/, '没有独立的 communityFeedbackOf')
+    const m = adminCode.match(/function communityFeedbackOf\(([\s\S]*?)\n\}/)
+    assert.ok(m, '抽不出 communityFeedbackOf')
+    assert.ok(!/feedbackOf\(/.test(m[1]) && !/opsFeedbackOf\(/.test(m[1]),
+      'communityFeedbackOf 借用了用户的反馈槽 —— 两条反馈会互相顶掉')
+  })
+
+  test('草稿每次从库里的值起头，不是上次改到一半的', () => {
+    const m = adminCode.match(/function toggleCommunityRow\(([\s\S]*?)\n\}/)
+    assert.ok(m, '抽不出 toggleCommunityRow')
+    assert.match(m[1], /tagDrafts\[c\.id\] = Array\.isArray\(c\.tags\) \? c\.tags\.slice\(\) : \[\]/,
+      '草稿不是从当前行的 tags 重新播种 —— 取消一次再进来会看到上次的临时值')
+  })
+})
+
+describe('社区审核 · toggleTag 真跑', () => {
+  // 抽函数 + new Function：断的是「上限真的生效」，不是「上限这几个字出现过」。
+  // 每个函数按它**真正闭包引用**的自由变量注入。少注入一个就是 ReferenceError，
+  // 而 ReferenceError 与「断言变红」长得不一样 —— 别把「报错了」当成「测到了」。
+  function makeSandbox(maxTags) {
+    const tagDrafts = {}
+    const max = { value: maxTags }          // 顶替 computed(maxTags)
+    const bind = (name, deps) => new Function(...deps, `return (${extractFn(adminCode, name)})`)
+    const selectedTags = bind('selectedTags', ['tagDrafts'])(tagDrafts)
+    const tagSelected = bind('tagSelected', ['tagDrafts', 'selectedTags'])(tagDrafts, selectedTags)
+    const count = bind('selectedTagCount', ['tagDrafts', 'selectedTags'])(tagDrafts, selectedTags)
+    const toggle = bind('toggleTag', ['tagDrafts', 'maxTags', 'selectedTags'])(tagDrafts, max, selectedTags)
+    return {
+      tagDrafts,
+      has: (id, t) => tagSelected(id, t),
+      count: (id) => count(id),
+      toggle: (id, t) => toggle(id, t),
+    }
+  }
+
+  test('沙箱自检：自由变量真的注进去了，上限也真的接上了线', () => {
+    const sb = makeSandbox(3)
+    sb.toggle(1, '编程')
+    sb.toggle(1, '读书')
+    assert.equal(sb.count(1), 2, 'count 没数到刚刚勾的两个')
+    assert.ok(sb.has(1, '编程') && sb.has(1, '读书'))
+    // 若 maxTags 没被注入，toggleTag 里的 `maxTags.value` 要么抛错、要么
+    // 恒不成立——两种情况下「第 4 个选不上」都会假绿。这条把它钉住。
+    sb.toggle(1, '健身')
+    sb.toggle(1, '旅行')
+    assert.equal(sb.count(1), 3, '上限没接上：maxTags 根本没参与判断')
+  })
+
+  test('勾上就加上，取消就去掉', () => {
+    const sb = makeSandbox(3)
+    sb.toggle(1, '编程')
+    sb.toggle(1, '编程')
+    assert.equal(sb.count(1), 0, '同一个标签勾两次之后应当回到未选')
+    sb.toggle(1, '编程')
+    assert.ok(sb.has(1, '编程'))
+  })
+
+  test('选满 maxTags 之后再点，多出来的那个不生效', () => {
+    const sb = makeSandbox(3)
+    for (const t of ['编程', '读书', '健身']) sb.toggle(1, t)
+    assert.equal(sb.count(1), 3)
+    sb.toggle(1, '旅行')
+    assert.equal(sb.count(1), 3, '已经选满 3 个，第 4 个居然加进去了')
+    assert.ok(!sb.has(1, '旅行'), '上限没拦住：第 4 个标签被选上了')
+  })
+
+  test('取掉一个之后又能再选一个', () => {
+    // 上限是「同时最多」，不是「一共只能选三个」——去掉一个要腾出位置。
+    const sb = makeSandbox(3)
+    for (const t of ['编程', '读书', '健身']) sb.toggle(1, t)
+    sb.toggle(1, '编程')
+    assert.equal(sb.count(1), 2)
+    sb.toggle(1, '旅行')
+    assert.ok(sb.has(1, '旅行'), '腾出位置之后仍然选不上')
+  })
+
+  test('上限跟着服务端走（3 的时候拦，4 的时候放行）', () => {
+    const three = makeSandbox(3)
+    for (const t of ['a', 'b', 'c', 'd']) three.toggle(1, t)
+    assert.equal(three.count(1), 3)
+
+    const four = makeSandbox(4)
+    for (const t of ['a', 'b', 'c', 'd']) four.toggle(1, t)
+    assert.equal(four.count(1), 4, '服务端把上限提到 4 之后前端还是拦在 3')
   })
 })

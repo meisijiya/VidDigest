@@ -1,6 +1,6 @@
 """管理后台 API（工单 #12 / #13 / ADR 0010）。
 
-四个管理能力 + 一个公开清单端点：
+端点全表如下，**形状以这张表为准**：
 
 | 端点 | 鉴权 | 写操作 |
 |---|---|---|
@@ -12,7 +12,10 @@
 | `PATCH /api/admin/users/{id}` | require_admin | **写**（管理员标记，ADR 0012） |
 | `DELETE /api/admin/users/{id}` | require_admin | **写**（有内容则 409） |
 | `POST /api/admin/users/{id}/quota` | require_admin | **写** |
-| `GET /api/admin/community` | require_admin | 只读 |
+| `GET /api/admin/community` | require_admin | 只读（每项带 status） |
+| `PATCH /api/admin/community/{video_id}` | require_admin | **写**（只改标签） |
+| `DELETE /api/admin/community/{video_id}` | require_admin | **写**（只删 videos 一行） |
+| `GET /api/admin/tags/vocabulary` | require_admin | 只读 |
 
 ## 为什么 `/api/models` 是公开的
 
@@ -50,13 +53,16 @@ from database import (
     admin_user_detail,
     create_admin_user,
     delete_user,
+    delete_video_record,
     get_user_by_email,
     is_vip_active,
     list_admin_community,
     list_admin_users,
     set_user_admin,
     set_user_quota_override,
+    update_video_tags,
 )
+from tags import MAX_TAGS, VOCABULARY_GROUPS, validate_tags
 
 logger = logging.getLogger("admin_api")
 
@@ -293,8 +299,150 @@ async def admin_community(
     offset: int = Query(0, description="跳过的条数"),
     _: dict = Depends(require_admin),
 ):
-    """社区记录列表（只读）。不过滤 status——占位行也是记录。"""
+    """社区记录列表。**不过滤 status**——占位行也是记录，理由见
+    :func:`database.list_admin_community`。
+
+    每项都带 status（ready / pending），前端按它区别渲染。
+    """
     return list_admin_community(limit=limit, offset=offset)
+
+
+class CommunityUpdateRequest(BaseModel):
+    """后台改社区标签的请求体。**只认 tags 一个键。**
+
+    声明成 ``list | None`` 而不是 ``Any``：结构错（tags 不是数组）由 pydantic
+    变成 422，值域错（空、超上限、词表外）由本文件给 400——与文件头
+    「值域 400 / 结构 422」的口径一致，两种客户端错误不该混成一个码。
+
+    刻意**不**用 ``Any``：``UserAdminUpdateRequest`` 用 Any 是因为它的值域只能
+    靠一个额外校验器兜住，代价是这个字段彻底没有类型保证（见那里的注释）。
+    这里不需要付那份代价——「是不是数组」交给 pydantic 是最省事也最不会漏的
+    做法，不给它开口子的理由没有。
+
+    ``extra="forbid"`` 不是洁癖：pydantic 默认**悄悄丢掉**未声明的键，于是
+    ``{"tags": [...], "status": "pending"}`` 会只改标签然后返回 200，调用方却
+    以为下架成功了——收到 200 的前端不会再去确认一遍。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tags: list | None = None
+
+
+@router.patch("/admin/community/{video_id}")
+async def admin_update_community(
+    video_id: int,
+    payload: CommunityUpdateRequest,
+    _: dict = Depends(require_admin),
+):
+    """改一条社区视频的标签。**只改 tags 与 updated_at**（数据层有论证）。
+
+    四个 400 分支，按判定的先后排：
+
+    - 缺 tags（这个键压根没出现）→ 「没有要改的字段」：与 is_admin 的 null
+      同理，null 不是「改成空」，是「没说要改」。
+    - 空数组 → 「每条视频至少要有 1 个标签」。这是**系统不变式**：模型路径
+      永不产出空（validate_tags 会回落到「其他」），所以空数组只可能来自
+      一个手滑或一个坏调用方。
+    - 超过 ``MAX_TAGS`` 个 → 400。validate_tags 对超额是**截断**不是报错，
+      4 个词表内的标签会被悄悄砍成 3 个然后返回 200——那是容错，不是请求的
+      意思。管理员明确给了 4 个，我们要的是「多了 1 个」这个信息。
+    - 词表外值 → 400，detail 里**列出被拒掉的值**。
+
+    顺序由词表说了算（accepted 原样透传，不按请求的书写顺序）：前端展示要
+    稳定，同样的标签集合换个顺序提交，展示就会抖一下。
+
+    **为什么管理员这条路 fail-fast，而模型那路容错**：模型路径在 rejected
+    非空时回落到「其他」，因为「模型选不出来」是**模型的问题**——它只用于排查
+    日志，静默兜底正好。而管理员提交词表外值是**请求错误**：把「AI编程」静默
+    变成「其他」，等于把打错字藏起来——管理员以为自己改好了，分类页上却多出
+    一条「其他」，而真正想要的分类没设上。模型路径容错，管理员路径 fail-fast。
+    """
+    if payload.tags is None:
+        raise HTTPException(status_code=400, detail="没有要改的字段")
+    if not payload.tags:
+        raise HTTPException(
+            status_code=400, detail="标签不能为空：每条视频至少要有 1 个标签"
+        )
+    if len(payload.tags) > MAX_TAGS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"最多 {MAX_TAGS} 个标签，实得 {len(payload.tags)} 个",
+        )
+
+    accepted, rejected = validate_tags(payload.tags)
+    if rejected:
+        # 被拒掉的值必须出现在 detail 里：只说「不在词表内」的话，管理员
+        # 不知道自己错的是哪一个，只能一个个试。
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"这些标签不在固定词表内：{'、'.join(str(x) for x in rejected)}。"
+                "完整词表见 GET /api/admin/tags/vocabulary"
+            ),
+        )
+
+    # 回读而不是回显：返回的是「库里现在是什么」，形状与列表项逐字段一致。
+    item = update_video_tags(video_id, accepted)
+    if item is None:
+        # 不能静默成功——那会让管理员以为改到了某个其实不存在的地方
+        raise HTTPException(status_code=404, detail=f"视频 {video_id} 不存在")
+    return {"item": item}
+
+
+@router.delete("/admin/community/{video_id}")
+async def admin_delete_community(
+    video_id: int,
+    _: dict = Depends(require_admin),
+):
+    """删掉一条社区视频。**只删 videos 一行，用户的解析历史一行不动。**
+
+    这是用户明确要求的语义：视频从社区消失，解析过它的用户在自己的历史里
+    仍看得到自己那条记录。前提（schema 里没有任何外键指向 videos）与允许删
+    pending 占位行的代价，都写在 :func:`database.delete_video_record` 里——
+    那里有依据，这里不重复。
+
+    幂等性刻意不做：0 有两种可能（本来就不存在 / 刚被别人删了），报 404 而不是
+    静默成功，两种都不该被当成「删过了」。
+    """
+    if not delete_video_record(video_id):
+        raise HTTPException(status_code=404, detail=f"视频 {video_id} 不存在")
+    return {"deleted": video_id}
+
+
+# ── 标签词表（只读）─────────────────────────────────────────
+#
+# 为什么要有这个出口：前端不能自己抄一份词表。CommunityPage.vue 早就为社区页
+# 做过同一条反漂移决策（「标签选项由当前页的卡片汇总而来，不额外维护一份标签
+# 词表」），而后台要渲染的是**全量**勾选框——卡片汇总只给得出此刻有人在用的
+# 那几个，于是管理员没法给新视频选一个「还没人用过」的分类，词表被现有的数据
+# 悄悄反向限死。抄一份的后果更具体：后台能选出一个模型永远不会产生的标签。
+#
+# 口径与 /api/models 那个公开端点一致：公开端点解决「普通用户也要读」，
+# 这里解决「只有后台要读」，两者同源（都从 tags 拿），不同投影。
+
+
+@router.get("/admin/tags/vocabulary")
+async def admin_tag_vocabulary(_: dict = Depends(require_admin)):
+    """固定标签词表（ADR 0005）。**只读**：词表是产品规则，管理员不造词，
+    只从现有词里挑——想加词得改 ``tags.py`` 并发版。
+
+    ``maxTags`` 取 :data:`tags.MAX_TAGS` 而不是写死 3：写死就是第二个真值
+    来源，词表上限改了这里会悄悄变成错的，而前端是照着它禁用的。
+
+    ``groups`` 保留 ``VOCABULARY_GROUPS`` 的原始分组与顺序：``tags.py`` 的
+    注释写明分组「顺带说明标签的适用语境，能少一些误选」，拍平成一坨就把这个
+    信息丢了，前端只能渲染一条没有上下文的词列表。顺序本身也有语义——展平后
+    严格等于 ``TAG_VOCABULARY``，那是分类页与筛选器的稳定输出顺序，破坏它会让
+    展示抖动。
+    """
+    return {
+        "maxTags": MAX_TAGS,
+        "groups": [
+            {"name": name, "tags": list(group)}
+            for name, group in VOCABULARY_GROUPS
+        ],
+    }
 
 
 # ── 账号生命周期（ADR 0012）─────────────────────────────────

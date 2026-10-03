@@ -341,8 +341,9 @@ def test_admin_community_returns_real_rows_with_author(client_app, make_user):
     assert row["author_email"] == "plain@example.com", "作者邮箱要靠 LEFT JOIN users"
     assert row["tags"] == ["编程"], "tags 必须解析成 list，不能是 JSON 字符串"
     assert row["created_at"]
+    # status 是 ADR 0013 加的：管理员删之前得分得清这是真内容还是空占位。
     assert set(row) == {"id", "video_url", "title", "author_email", "tags",
-                        "created_at"}, f"字段集与契约不符：{sorted(row)}"
+                        "created_at", "status"}, f"字段集与契约不符：{sorted(row)}"
 
 
 def test_admin_community_keeps_placeholder_rows(client_app, make_user):
