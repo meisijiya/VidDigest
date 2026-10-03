@@ -14,11 +14,12 @@
  *
  * 端点 / 厂商 / 模型是可以公开的，页面上显示出来对用户排查问题有用。
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import {
-  PROVIDERS, getPublicState, save, updateConfig, clear, usePlatform, chooseProvider,
+  MODE_PLATFORM, getPublicState, save, updateConfig, clear, usePlatform, chooseProvider,
   validateBaseUrl,
 } from '../lib/byok.js'
+import { fetchPublicModelCatalog } from '../api/models.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -31,9 +32,38 @@ const state = ref(getPublicState())
 const apiKeyInput = ref('')
 const error = ref('')
 
+/**
+ * 厂商清单**从服务端来**（工单 #13）。本组件持有它只是为了渲染下拉，
+ * 不在任何地方再抄一份——抄的那份就是漂移。
+ */
+const catalog = ref([])
+const catalogLoading = ref(false)
+const catalogError = ref('')
+
+async function loadCatalog() {
+  catalogLoading.value = true
+  catalogError.value = ''
+  try {
+    catalog.value = await fetchPublicModelCatalog().then((r) => r.items)
+  } catch {
+    // 清空而不是留着上一次的：清单变了还拿旧的接着渲染，用户会选到一个
+    // 已经下架的厂商，保存下去服务端不认。
+    catalog.value = []
+    catalogError.value = '厂商清单没能加载出来，暂时选不了厂商。'
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
+onMounted(loadCatalog)
+
 const provider = computed({
   get: () => state.value.provider,
-  set: (id) => { state.value = chooseProvider(id); error.value = '' },
+  // 把已经拿在手里的那条记录一并交给 byok.js：那边不再有清单可查。
+  set: (id) => {
+    state.value = chooseProvider(id, catalog.value.find((p) => p.id === id))
+    error.value = ''
+  },
 })
 
 const baseUrl = computed({
@@ -47,7 +77,21 @@ const model = computed({
 })
 
 const currentHint = computed(
-  () => PROVIDERS.find((p) => p.id === state.value.provider)?.hint || '',
+  () => catalog.value.find((p) => p.id === state.value.provider)?.hint || '',
+)
+
+/**
+ * 上次选的厂商可能已经从清单里下架了。此时下拉里没有对应项，
+ * 用户看到的是一个「什么都没选中」的下拉，而保存会把他那个已下架的 id
+ * 悄悄存回去。提示与「不让存」都从这一个判断来。
+ *
+ * 清单没加载出来时不算数：这时候空清单说明的是「查不到」，不是「已下架」。
+ * `platform` 也不算数：它是模式而不是厂商，本就不必然出现在清单里。
+ */
+const missingFromCatalog = computed(
+  () => catalog.value.length > 0
+    && state.value.provider !== MODE_PLATFORM
+    && !catalog.value.some((p) => p.id === state.value.provider),
 )
 
 /** 打开时重置：上一次留下的半个 key 不该在下次打开时还挂在输入框里。 */
@@ -56,6 +100,8 @@ watch(() => props.visible, (open) => {
   state.value = getPublicState()
   apiKeyInput.value = ''
   error.value = ''
+  // 上次拉失败（比如那时后端还没起来）就趁这次再试一次
+  if (catalog.value.length === 0 && !catalogLoading.value) loadCatalog()
 })
 
 function saveAndClose() {
@@ -67,6 +113,10 @@ function saveAndClose() {
   // 会把 https:///v1 规范化成 https://v1/，前端看不到「空主机」这个形状。
   const urlError = validateBaseUrl(baseUrl.value)
   if (urlError) { error.value = urlError; return }
+  if (missingFromCatalog.value) {
+    error.value = '原来选的厂商已不在可用清单里，请重新选一个再保存。'
+    return
+  }
   if (state.value.provider === 'platform' && typed) {
     error.value = '厂商选了「平台 Key」却又填了 key。选一个具体厂商，或把 key 清空。'
     return
@@ -126,12 +176,16 @@ function clearAll() {
         <!-- 模式切换：用户要的就是这一个下拉 -->
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1.5" for="byok-mode">调用方式</label>
-          <select id="byok-mode" v-model="provider"
+          <select id="byok-mode" v-model="provider" :disabled="catalogLoading"
             class="w-full px-3 py-2 rounded-xl border border-line bg-ink/60 text-sm text-gray-800
                    focus:ring-2 focus:ring-blue-500 outline-none transition-all">
-            <option v-for="p in PROVIDERS" :key="p.id" :value="p.id">{{ p.label }}</option>
+            <option v-for="p in catalog" :key="p.id" :value="p.id">{{ p.label }}</option>
           </select>
-          <p v-if="currentHint" class="text-[11px] text-gray-400 mt-1.5">{{ currentHint }}</p>
+          <p v-if="catalogError" class="text-[11px] text-red-500 mt-1.5">{{ catalogError }}</p>
+          <p v-else-if="missingFromCatalog" class="text-[11px] text-gray-400 mt-1.5">
+            保存的厂商已不在当前清单里，请重新选一个。
+          </p>
+          <p v-else-if="currentHint" class="text-[11px] text-gray-400 mt-1.5">{{ currentHint }}</p>
         </div>
 
         <div v-if="state.provider !== 'platform'">

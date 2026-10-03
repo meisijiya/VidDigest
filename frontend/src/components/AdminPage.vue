@@ -1,0 +1,637 @@
+<template>
+  <div class="min-h-[calc(100vh-4rem)]">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+      <!-- 页头 -->
+      <div class="flex items-center gap-3 mb-6">
+        <button type="button" @click="emit('back')" aria-label="返回主站"
+          class="w-9 h-9 rounded-xl bg-panel border border-line flex items-center justify-center
+                 text-gray-500 hover:text-gray-800 hover:border-gray-300 transition-colors">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>
+          </svg>
+        </button>
+        <div>
+          <h1 class="text-xl font-bold text-gray-900">管理后台</h1>
+          <p class="text-xs text-gray-400 mt-0.5">用户额度、社区记录与 AI 服务清单。账号生命周期不在这里（ADR 0010）</p>
+        </div>
+      </div>
+
+      <!-- 非管理员：后端 403 的可读错误态。
+           前端隐藏入口只做体验，真正的边界是后端 require_admin（ADR 0010）——
+           所以这一段不是「防谁」的，是「别让人撞上白屏」的。 -->
+      <div v-if="view.forbidden" class="rounded-2xl bg-panel border border-line p-8 text-center">
+        <p class="text-sm text-red-600">没有管理员权限</p>
+        <p class="text-xs text-gray-400 mt-1">这个页面只对管理员开放。服务端已拒绝本次请求，请换一个管理员账号登录。</p>
+        <button type="button" @click="emit('back')"
+          class="mt-4 px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
+                 hover:border-gray-300 transition-colors">返回主站</button>
+      </div>
+
+      <template v-else>
+        <!-- 页签：全部是原生 button，所以 Tab 能逐个走到；
+             左右方向键额外可用，不靠它们才能操作。 -->
+        <div :id="`admin-panel-${tab}`" role="tabpanel" :aria-labelledby="`admin-tab-${tab}`"
+          :aria-busy="view.loading ? 'true' : 'false'">
+        <div class="flex flex-wrap items-center gap-2 mb-6 border-b border-line pb-3"
+          role="tablist" aria-label="管理后台页签">
+          <button v-for="t in TABS" :key="t.key" type="button" role="tab"
+            :id="`admin-tab-${t.key}`" :aria-controls="`admin-panel-${t.key}`"
+            :aria-selected="tab === t.key ? 'true' : 'false'"
+            @click="selectTab(t.key)" @keydown="onTabKeydown(t.key, $event)"
+            :class="['px-3.5 py-1.5 rounded-lg text-sm border transition-colors',
+                     tab === t.key
+                       ? 'bg-blue text-on-primary border-blue font-medium'
+                       : 'bg-panel text-gray-500 border-line hover:border-gray-300 hover:text-gray-800']">
+            {{ t.label }}
+          </button>
+        </div>
+
+        <!-- 三个状态：加载中 / 故障 / 空。放在内容**之前**——
+             否则一次 500 会被渲染成「没有数据」，用户会以为该换个关键词再搜，
+             真正的原因被吞掉了。四个页签共用这一块（每个页签有自己的一份状态）。 -->
+        <div v-if="view.loading" class="space-y-3" role="status" aria-live="polite">
+          <span class="sr-only">正在加载{{ tabLabel }}</span>
+          <div v-for="n in 5" :key="n" class="skeleton h-16 rounded-2xl"></div>
+        </div>
+
+        <div v-else-if="view.error" class="rounded-2xl bg-panel border border-line py-16 text-center" role="alert">
+          <p class="text-sm text-red-600">{{ tabLabel }}加载失败</p>
+          <p class="text-xs text-gray-400 mt-1">{{ view.error }}</p>
+          <button type="button" @click="reload"
+            class="mt-4 px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
+                   hover:border-gray-300 transition-colors">重试</button>
+        </div>
+
+        <div v-else-if="!view.items.length" class="py-16 text-center text-gray-400">
+          <p class="text-sm">{{ empty.text }}</p>
+          <p class="text-xs text-gray-400 mt-1">{{ empty.hint }}</p>
+        </div>
+
+        <template v-else>
+          <!-- ══ 用户 / 额度：同一张表。
+               「额度」页签就是把编辑控件常驻在行内的那一版（工单 #14 的
+               「挂在用户行内编辑」），所以两页共用一份表结构，
+               不必把额度维护成第二份数据。 ══ -->
+          <div v-if="tab === 'users' || tab === 'quota'">
+            <form v-if="tab === 'users'" @submit.prevent="search" class="flex flex-wrap items-center gap-2 mb-4">
+              <label for="admin-user-q" class="text-xs text-gray-500">按邮箱搜</label>
+              <input id="admin-user-q" v-model="query" type="search" placeholder="邮箱片段"
+                class="w-64 px-3 py-2 rounded-xl bg-panel border border-line text-sm text-gray-800
+                       placeholder-gray-400 focus:border-blue-200 focus:outline-none" />
+              <button type="submit" :disabled="view.loading"
+                class="px-4 py-2 rounded-xl bg-blue text-on-primary text-sm font-medium
+                       hover:bg-blue-600 transition-colors disabled:opacity-50">搜索</button>
+              <button v-if="query" type="button" @click="clearQuery"
+                class="px-3 py-2 rounded-xl text-xs text-gray-400 hover:text-gray-700
+                       hover:bg-panel transition-colors">清除</button>
+            </form>
+
+            <div class="overflow-x-auto rounded-2xl border border-line bg-panel">
+              <table class="w-full text-sm">
+                <caption class="sr-only">用户列表，可修改解析与追问的额度上限</caption>
+                <thead>
+                  <tr class="text-left text-xs text-gray-400 border-b border-line">
+                    <th scope="col" class="px-4 py-3 font-medium">邮箱</th>
+                    <th scope="col" class="px-4 py-3 font-medium">标记</th>
+                    <th scope="col" class="px-4 py-3 font-medium">解析</th>
+                    <th scope="col" class="px-4 py-3 font-medium">追问</th>
+                    <th scope="col" class="px-4 py-3 font-medium">注册时间</th>
+                    <th scope="col" class="px-4 py-3 font-medium">额度</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template v-for="u in view.items" :key="u.id">
+                    <tr class="border-b border-line last:border-b-0">
+                      <td class="px-4 py-3 font-pixel text-xs text-gray-800">{{ u.email }}</td>
+                      <td class="px-4 py-3">
+                        <span class="flex flex-wrap gap-1.5">
+                          <span v-if="u.isAdmin"
+                            class="text-[10px] font-medium bg-blue-50 text-blue-600 border border-blue-200 px-1.5 py-0.5 rounded">管理员</span>
+                          <span v-if="u.isVip"
+                            class="text-[10px] font-medium bg-amber-50 text-amber-600 border border-amber-200 px-1.5 py-0.5 rounded">VIP</span>
+                          <span v-if="!u.isAdmin && !u.isVip" class="text-[10px] text-gray-400">普通用户</span>
+                        </span>
+                      </td>
+                      <td class="px-4 py-3 text-xs font-pixel text-gray-600">
+                        {{ counter(u.parseUsed, u.parseLimit, u.parseLimitSource) }}
+                      </td>
+                      <td class="px-4 py-3 text-xs font-pixel text-gray-600">
+                        {{ counter(u.chatUsed, u.chatLimit, u.chatLimitSource) }}
+                      </td>
+                      <td class="px-4 py-3 text-xs text-gray-400">{{ u.createdAt }}</td>
+                      <td class="px-4 py-3">
+                        <button v-if="tab !== 'quota'" type="button" @click="openEditor(u.id)"
+                          class="px-2.5 py-1 rounded-lg border border-line text-xs text-gray-500
+                                 hover:border-blue-200 hover:text-blue-600 transition-colors">编辑额度</button>
+                        <span v-else class="text-xs text-gray-400">行内编辑</span>
+                      </td>
+                    </tr>
+
+                    <!-- 行内额度编辑器。额度页常驻，用户页按需展开。 -->
+                    <tr v-if="editorOpen(u)" class="bg-panel-2">
+                      <td colspan="6" class="px-4 py-3">
+                        <div class="flex flex-wrap items-end gap-3">
+                          <div>
+                            <label :for="`quota-parse-${u.id}`" class="block text-xs text-gray-500 mb-1">解析上限</label>
+                            <input :id="`quota-parse-${u.id}`" v-model="drafts[u.id].parse"
+                              type="number" min="-1" step="1" :aria-describedby="`quota-hint-${u.id}`"
+                              class="w-32 px-3 py-1.5 rounded-lg bg-panel border border-line text-sm font-pixel
+                                     text-gray-800 focus:border-blue-200 focus:outline-none" />
+                          </div>
+                          <div>
+                            <label :for="`quota-chat-${u.id}`" class="block text-xs text-gray-500 mb-1">追问上限</label>
+                            <input :id="`quota-chat-${u.id}`" v-model="drafts[u.id].chat"
+                              type="number" min="-1" step="1" :aria-describedby="`quota-hint-${u.id}`"
+                              class="w-32 px-3 py-1.5 rounded-lg bg-panel border border-line text-sm font-pixel
+                                     text-gray-800 focus:border-blue-200 focus:outline-none" />
+                          </div>
+                          <button type="button" @click="saveQuota(u)" :disabled="savingId === u.id"
+                            class="px-3 py-1.5 rounded-lg bg-blue text-on-primary text-xs font-medium
+                                   hover:bg-blue-600 transition-colors disabled:opacity-50">
+                            {{ savingId === u.id ? '保存中…' : '保存' }}
+                          </button>
+                          <button v-if="tab !== 'quota'" type="button" @click="closeEditor(u.id)"
+                            class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
+                                   hover:border-gray-300 transition-colors">取消</button>
+                        </div>
+                        <p :id="`quota-hint-${u.id}`" class="mt-2 text-xs text-gray-400">
+                          留空 = 清除覆盖、回落全局；0 = 一条都不能用；-1 = 无限。
+                          <span v-if="u.isVip">该用户是有效 VIP，走无限额度——这里的改动不会生效。</span>
+                        </p>
+                        <!-- 改额度必须有成功与失败两条反馈。不给失败反馈等于让管理员
+                             以为是自己操作错了（真实原因在服务端，日志里才有）。 -->
+                        <p v-if="feedbackOf(u.id).text" :id="`quota-fb-${u.id}`"
+                          role="status" aria-live="polite" class="mt-2 text-xs"
+                          :class="feedbackClass(feedbackOf(u.id).kind)">
+                          {{ feedbackOf(u.id).text }}
+                        </p>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ══ 社区：只读。删除与下架属于项目范围边界的「明确不做」（ADR 0010）。 ══ -->
+          <div v-else-if="tab === 'community'">
+            <p class="mb-3 text-xs text-gray-400">只读。社区视频的删除与下架不在后台范围内。</p>
+            <div class="overflow-x-auto rounded-2xl border border-line bg-panel">
+              <table class="w-full text-sm">
+                <caption class="sr-only">社区视频列表</caption>
+                <thead>
+                  <tr class="text-left text-xs text-gray-400 border-b border-line">
+                    <th scope="col" class="px-4 py-3 font-medium">标题</th>
+                    <th scope="col" class="px-4 py-3 font-medium">作者</th>
+                    <th scope="col" class="px-4 py-3 font-medium">标签</th>
+                    <th scope="col" class="px-4 py-3 font-medium">时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="c in view.items" :key="c.id" class="border-b border-line last:border-b-0">
+                    <td class="px-4 py-3">
+                      <p class="text-xs text-gray-800">{{ c.title || '未命名视频' }}</p>
+                      <p class="mt-0.5 text-[11px] font-pixel text-gray-400 truncate max-w-xs">{{ c.videoUrl }}</p>
+                    </td>
+                    <td class="px-4 py-3 text-xs font-pixel text-gray-600">{{ c.authorEmail }}</td>
+                    <td class="px-4 py-3">
+                      <span class="flex flex-wrap gap-1.5">
+                        <span v-for="t in c.tags" :key="t"
+                          class="text-[10px] font-pixel bg-blue-50 text-blue-600 border border-blue-200
+                                 px-1.5 py-0.5 rounded">{{ t }}</span>
+                        <span v-if="!c.tags.length" class="text-[10px] text-gray-400">无标签</span>
+                      </span>
+                    </td>
+                    <td class="px-4 py-3 text-xs text-gray-400">{{ c.createdAt }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ══ AI 服务：只读的厂商 / 模型清单（工单 #13 的展示侧）。 ══ -->
+          <div v-else>
+            <p class="mb-3 text-xs text-gray-400">只读。厂商与模型来自服务端配置，key 存在 .env，不经前端。</p>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div v-for="m in view.items" :key="m.id" class="rounded-2xl bg-panel border border-line p-4">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <h3 class="text-sm font-semibold text-gray-800">{{ m.label }}</h3>
+                    <p class="mt-0.5 text-[11px] font-pixel text-gray-400 truncate">{{ m.id }}</p>
+                  </div>
+                  <span class="flex-shrink-0 flex gap-1.5">
+                    <span class="text-[10px] px-1.5 py-0.5 rounded border"
+                      :class="m.enabled ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-gray-100 text-gray-500 border-line'">
+                      {{ m.enabled ? '启用中' : '已停用' }}
+                    </span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded border"
+                      :class="m.isReal ? 'bg-cyan-50 text-cyan-600 border-cyan-200' : 'bg-gray-100 text-gray-500 border-line'">
+                      {{ m.isReal ? '真实厂商' : '占位' }}
+                    </span>
+                  </span>
+                </div>
+                <p class="mt-2 text-xs text-gray-500">默认模型：<span class="font-pixel">{{ m.defaultModel }}</span></p>
+                <div class="mt-2 flex flex-wrap gap-1.5">
+                  <span v-for="one in m.models" :key="one"
+                    class="text-[10px] font-pixel bg-panel-2 text-gray-600 border border-line px-1.5 py-0.5 rounded">{{ one }}</span>
+                </div>
+                <p v-if="m.hint" class="mt-2 text-xs text-gray-400">{{ m.hint }}</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 翻页：三个分页页签共用。模型清单不分页，所以整块跳过。 -->
+          <div v-if="tab !== 'models' && view.total > PAGE_SIZE"
+            class="mt-6 flex items-center justify-between gap-3">
+            <span class="text-xs text-gray-400 font-pixel">第 {{ view.page }} / {{ totalPages }} 页 · 共 {{ view.total }} 条</span>
+            <div class="flex items-center gap-2">
+              <button type="button" @click="goPage(view.page - 1)" :disabled="view.page <= 1 || view.loading"
+                class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
+                       hover:border-gray-300 transition-colors disabled:opacity-40">上一页</button>
+              <button type="button" @click="goPage(view.page + 1)" :disabled="view.page >= totalPages || view.loading"
+                class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
+                       hover:border-gray-300 transition-colors disabled:opacity-40">下一页</button>
+            </div>
+          </div>
+        </template>
+        </div>
+      </template>
+    </div>
+  </div>
+</template>
+
+<script setup>
+/**
+ * 管理后台（工单 #14 / ADR 0010）。
+ *
+ * 三条边界，别越：
+ *  · 写操作只有「改额度」。封禁、解封、删账号都不做（ADR 0010）。
+ *  · 视觉一律走 src/style.css 的 @theme 令牌，本组件里没有色值字面量，
+ *    也没有 @theme 之外的颜色类（tests/admin-ui.test.mjs 守着这两条）。
+ *  · 主题不在这里判定。data-theme 由 index.html 的内联脚本在首帧前写好，
+ *    useTheme 只读 DOM；后台再判一次必然和那两处打架。
+ */
+import { ref, reactive, computed, onMounted } from 'vue'
+import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModels } from '../api/admin.js'
+
+const emit = defineEmits(['back'])
+
+const PAGE_SIZE = 20
+
+/** 四个页签。key 同时是状态槽位名与 panel 的 id 后缀，顺序即展示顺序。 */
+const TABS = [
+  { key: 'users', label: '用户' },
+  { key: 'quota', label: '额度' },
+  { key: 'community', label: '社区' },
+  { key: 'models', label: 'AI 服务' },
+]
+
+/** 每个页签的空闲态文案。四份都在这里，空状态就不会只给某一页写。 */
+const EMPTY = {
+  users: { text: '没有匹配的用户', hint: '换个邮箱关键词，或清空搜索看全部注册用户' },
+  quota: { text: '没有可编辑额度的用户', hint: '用户列表为空时这里没有可改的额度' },
+  community: { text: '社区还是空的', hint: '第一个解析视频的人会把它放进来' },
+  models: { text: 'AI 服务清单是空的', hint: '厂商与模型由服务端配置下发' },
+}
+
+const tab = ref('users')
+const query = ref('')
+
+function blankView() {
+  return { items: [], total: 0, page: 1, loading: true, error: '', forbidden: false, touched: false }
+}
+
+/** 每个页签一份独立状态：切走再切回来列表还在，不必重打一次接口。
+ *  拆成四份而不是一份共享的，是为了让「某个页签加载中」不会把
+ *  另一个页签的内容一起换成骨架屏。 */
+const views = reactive({
+  users: blankView(),
+  quota: blankView(),
+  community: blankView(),
+  models: blankView(),
+})
+
+const view = computed(() => views[tab.value])
+const tabLabel = computed(() => (TABS.find((t) => t.key === tab.value) || {}).label || '')
+const empty = computed(() => EMPTY[tab.value] || EMPTY.users)
+const totalPages = computed(() => Math.max(1, Math.ceil(view.value.total / PAGE_SIZE)))
+
+/**
+ * snake_case → camelCase 的**唯一**转换点。
+ *
+ * 后端契约是 snake_case（工单 #14 冻结的响应形状），而本组件是唯一渲染
+ * 它们的地方。转换若散进模板（`item.parse_limit`），模板里会同时出现
+ * 两种命名约定，半年后没人说得清哪个是服务端形状——而后端一改字段，
+ * 报错的位置会散布在整份模板里。
+ */
+const num = (v) => (typeof v === 'number' ? v : Number(v) || 0)
+
+const toUser = (r) => ({
+  id: r.id,
+  email: r.email,
+  isAdmin: !!r.is_admin,
+  isVip: !!r.is_vip,
+  vipExpireAt: r.vip_expire_at,
+  createdAt: r.created_at,
+  parseUsed: num(r.parse_used),
+  chatUsed: num(r.chat_used),
+  parseLimit: num(r.parse_limit),
+  chatLimit: num(r.chat_limit),
+  parseLimitOverride: r.parse_limit_override,
+  chatLimitOverride: r.chat_limit_override,
+  parseLimitSource: r.parse_limit_source,
+  chatLimitSource: r.chat_limit_source,
+})
+
+const toCommunityItem = (r) => ({
+  id: r.id,
+  videoUrl: r.video_url,
+  title: r.title,
+  authorEmail: r.author_email,
+  tags: Array.isArray(r.tags) ? r.tags : [],
+  createdAt: r.created_at,
+})
+
+const toModel = (r) => ({
+  id: r.id,
+  label: r.label,
+  baseUrl: r.base_url,
+  defaultModel: r.default_model,
+  models: Array.isArray(r.models) ? r.models : [],
+  hint: r.hint || '',
+  isReal: !!r.is_real,
+  enabled: !!r.enabled,
+  sortOrder: num(r.sort_order),
+})
+
+/**
+ * 额度草稿。
+ *
+ * `drafts[u.id]` 的写法是硬约束不是偷懒：Vue 的 v-model 只接受
+ * 成员表达式，`draftOf(u.id).parse` 会在编译期直接报错。所以草稿必须
+ * 在渲染之前就播种好——由 primeDrafts 在每次加载后负责。
+ */
+const drafts = reactive({})
+const expandedId = ref(null)
+const savingId = ref(null)
+const feedbacks = reactive({})
+
+function draftText(v) {
+  return v === null || v === undefined ? '' : String(v)
+}
+
+function primeDrafts(users) {
+  for (const u of users) {
+    drafts[u.id] = { parse: draftText(u.parseLimitOverride), chat: draftText(u.chatLimitOverride) }
+  }
+}
+
+function editorOpen(u) {
+  return tab.value === 'quota' || expandedId.value === u.id
+}
+
+function openEditor(id) {
+  expandedId.value = id
+}
+
+function closeEditor(id) {
+  if (expandedId.value === id) expandedId.value = null
+}
+
+function feedbackOf(id) {
+  if (!feedbacks[id]) feedbacks[id] = { kind: '', text: '' }
+  return feedbacks[id]
+}
+
+function feedbackClass(kind) {
+  if (kind === 'ok') return 'text-emerald-600'
+  if (kind === 'warn') return 'text-amber-600'
+  return 'text-red-600'
+}
+
+/** 「用了 / 上限」一行。-1 是无限；来源标签让管理员知道这值是谁给的。 */
+function counter(used, limit, source) {
+  const shown = limit === -1 ? '∞' : limit
+  return `${used} / ${shown} · ${source || 'global'}`
+}
+
+function messageOf(err) {
+  const detail = err && err.response && err.response.data && err.response.data.detail
+  if (typeof detail === 'string' && detail) return detail
+  return (err && err.message) || '请求失败'
+}
+
+/**
+ * 失败必须分两种形态，不能都退化成空列表：
+ *  · 403 = 不是管理员，整个后台都不该给他看 → 整页可读错误态
+ *  · 其它 = 这次请求挂了 → 列表清空 + 可重试，别渲染成「没有数据」
+ */
+function markFailure(v, err) {
+  const status = err && err.response && err.response.status
+  v.forbidden = status === 403
+  v.error = v.forbidden ? '' : messageOf(err)
+  v.items = []
+  v.total = 0
+}
+
+async function loadUsers() {
+  const v = views.users
+  v.loading = true; v.error = ''; v.forbidden = false
+  try {
+    const res = await fetchAdminUsers({ page: v.page, pageSize: PAGE_SIZE, q: query.value.trim() })
+    v.items = (res.items || []).map(toUser)
+    v.total = res.total || 0
+    v.page = res.page || v.page
+    primeDrafts(v.items)
+  } catch (err) {
+    markFailure(v, err)
+  } finally {
+    v.loading = false
+  }
+}
+
+/**
+ * 额度页：与用户页同一个接口、同一份数据，区别只在编辑控件常驻行内。
+ * 独立成一个 loader 是为了让「额度页能自己取数」这件事有断言可守——
+ * 共用一个 loader 的话，这条能力断了也不会有任何测试转红。
+ */
+async function loadQuota() {
+  const v = views.quota
+  v.loading = true; v.error = ''; v.forbidden = false
+  try {
+    const res = await fetchAdminUsers({ page: v.page, pageSize: PAGE_SIZE, q: '' })
+    v.items = (res.items || []).map(toUser)
+    v.total = res.total || 0
+    v.page = res.page || v.page
+    primeDrafts(v.items)
+  } catch (err) {
+    markFailure(v, err)
+  } finally {
+    v.loading = false
+  }
+}
+
+async function loadCommunity() {
+  const v = views.community
+  v.loading = true; v.error = ''; v.forbidden = false
+  try {
+    const res = await fetchAdminCommunity({ page: v.page, pageSize: PAGE_SIZE })
+    v.items = (res.items || []).map(toCommunityItem)
+    v.total = res.total || 0
+    v.page = res.page || v.page
+  } catch (err) {
+    markFailure(v, err)
+  } finally {
+    v.loading = false
+  }
+}
+
+async function loadModels() {
+  const v = views.models
+  v.loading = true; v.error = ''; v.forbidden = false
+  try {
+    const res = await fetchAdminModels()
+    v.items = (res.items || []).map(toModel)
+    v.total = v.items.length
+  } catch (err) {
+    markFailure(v, err)
+  } finally {
+    v.loading = false
+  }
+}
+
+/** 页签 → 取数函数。首次进入才打接口，切回来用已加载的那份。 */
+const LOADERS = {
+  users: loadUsers,
+  quota: loadQuota,
+  community: loadCommunity,
+  models: loadModels,
+}
+
+function selectTab(key) {
+  if (!LOADERS[key]) return
+  tab.value = key
+  const v = views[key]
+  if (!v.touched) {
+    v.touched = true
+    LOADERS[key]()
+  }
+}
+
+function reload() {
+  const v = view.value
+  v.touched = true
+  LOADERS[tab.value]()
+}
+
+function search() {
+  view.value.page = 1
+  reload()
+}
+
+function clearQuery() {
+  query.value = ''
+  search()
+}
+
+function goPage(n) {
+  const v = view.value
+  if (n < 1 || n > totalPages.value) return
+  v.page = n
+  reload()
+}
+
+/** 只允许契约里的三个取值：null 清除覆盖回落全局、0 一条都不能用、-1 无限。 */
+function toQuotaValue(text) {
+  const raw = String(text === null || text === undefined ? '' : text).trim()
+  if (raw === '') return { ok: true, value: null }
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < -1) {
+    return { ok: false, value: null, message: '额度只能是 -1（无限）、0（停用）或正整数' }
+  }
+  return { ok: true, value: n }
+}
+
+/** 用服务端回读的那份替换本地行：两个页签看到的都是同一份真实值。 */
+function replaceUser(raw) {
+  if (!raw) return
+  const fresh = toUser(raw)
+  for (const key of ['users', 'quota']) {
+    const list = views[key].items
+    const i = list.findIndex((u) => u.id === fresh.id)
+    if (i >= 0) list.splice(i, 1, fresh)
+  }
+  drafts[fresh.id] = { parse: draftText(fresh.parseLimitOverride), chat: draftText(fresh.chatLimitOverride) }
+}
+
+/**
+ * 改额度。
+ *
+ * 成功与失败都要有反馈，且**不做乐观更新**：列表里的数字一律等
+ * 服务端重读库的结果再替换（契约里 200 就带 user）。先本地改数字、
+ * 请求失败时静默回滚——管理员看到的是「改成功了」而实际没改，
+ * 这是比报错更坏的一种。
+ */
+async function saveQuota(u) {
+  if (savingId.value !== null) return
+  const draft = drafts[u.id] || { parse: '', chat: '' }
+  const parseLimit = toQuotaValue(draft.parse)
+  const chatLimit = toQuotaValue(draft.chat)
+  if (!parseLimit.ok) {
+    feedbackOf(u.id).kind = 'error'
+    feedbackOf(u.id).text = `解析上限：${parseLimit.message}`
+    return
+  }
+  if (!chatLimit.ok) {
+    feedbackOf(u.id).kind = 'error'
+    feedbackOf(u.id).text = `追问上限：${chatLimit.message}`
+    return
+  }
+
+  savingId.value = u.id
+  feedbackOf(u.id).kind = ''
+  feedbackOf(u.id).text = ''
+  try {
+    const res = await setUserQuota(u.id, { parseLimit: parseLimit.value, chatLimit: chatLimit.value })
+    replaceUser(res.user)
+    if (res.note === 'vip_not_effective') {
+      // 管理员给有效 VIP 改额度不会有任何效果（服务端在解析上限之前
+      // 就对 VIP 短路返回无限）。不说的话，管理员只会以为自己操作错了。
+      feedbackOf(u.id).kind = 'warn'
+      feedbackOf(u.id).text = res.message || '已保存，但给有效 VIP 改额度不会生效'
+    } else {
+      feedbackOf(u.id).kind = 'ok'
+      feedbackOf(u.id).text = '额度已更新'
+    }
+    // 成功**不**收起编辑行。反馈就写在这行里，收起来等于把「改成功了」
+    // 一起收走——管理员会以为自己没点上。收起只由「取消」按钮负责。
+  } catch (err) {
+    feedbackOf(u.id).kind = 'error'
+    feedbackOf(u.id).text = `额度没改成：${messageOf(err)}`
+  } finally {
+    savingId.value = null
+  }
+}
+
+/** 方向键在页签间移动。Tab 键本来就能逐个走到，这里只是多一条捷径。 */
+function onTabKeydown(key, ev) {
+  const i = TABS.findIndex((t) => t.key === key)
+  if (i < 0) return
+  let next = null
+  if (ev.key === 'ArrowRight') next = TABS[(i + 1) % TABS.length]
+  else if (ev.key === 'ArrowLeft') next = TABS[(i - 1 + TABS.length) % TABS.length]
+  else if (ev.key === 'Home') next = TABS[0]
+  else if (ev.key === 'End') next = TABS[TABS.length - 1]
+  if (!next) return
+  ev.preventDefault()
+  selectTab(next.key)
+  const el = document.getElementById(`admin-tab-${next.key}`)
+  if (el) el.focus()
+}
+
+onMounted(() => {
+  views.users.touched = true
+  loadUsers()
+})
+</script>

@@ -15,6 +15,8 @@
 3. **只断言外部可观察的结果**：HTTP 状态码、响应体、PRAGMA 输出、进程退出码。
    不测私有函数、不断言内部调用顺序。
 """
+import base64
+import json
 import os
 import sqlite3
 import subprocess
@@ -135,9 +137,30 @@ def test_tampered_signature_gets_401(probe_client, db):
     _set_admin(admin_id, 1)
     valid = auth.create_token(admin_id, "admin@example.com")
     head, payload, signature = valid.split(".")
-    flipped = ("A" if signature[-1] != "A" else "B") + signature[1:]
+    # 篡改 **payload**（抬高位）而不是签名的末位字符。
+    #
+    # 为什么不能翻末位：32 字节 HS256 编成 43 个 base64url 字符，最后一个
+    # 字符只有 4 位是有效数据（43*6=258 位 > 256 位），另外 2 位是填充。
+    # 换一个末位字符有约 1/16 的概率**解码回同一组字节** —— 也就是
+    # 「篡改」等于没篡改，签名照旧合法，于是 200 而不是 401。
+    # 实测 2000 次里出现 23 次假红（≈1.15%），而且它只在换到那两个特定字符
+    # 时才发作，看起来就是「偶发红、单独跑又全过」。
+    #
+    # 改 payload 则没有任何随机性：payload 一变，签名必然对不上。
+    # 这也正是它该守的攻击：伪造 claim（本例是把自己抬成管理员），
+    # 与上面 test_forged_signature_gets_401 守的「拿错密钥签名」是两类。
+    import base64
+
+    def _b64d(seg: str) -> bytes:
+        return base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4))
+
+    claims = json.loads(_b64d(payload))
+    claims["role"] = "admin"
+    tampered_payload = (
+        base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    )
     with client:
-        r = client.get("/admin/_probe", headers=auth_headers(f"{head}.{payload}.{flipped}"))
+        r = client.get("/admin/_probe", headers=auth_headers(f"{head}.{tampered_payload}.{signature}"))
     assert r.status_code == 401, f"篡改签名应得 401，实得 {r.status_code}：{r.text}"
 
 
@@ -357,3 +380,102 @@ def test_seed_twice_keeps_exactly_one_admin(db, make_user, monkeypatch):
 ])
 def test_parse_admin_emails(raw, expected):
     assert database._parse_admin_emails(raw) == expected
+
+
+# ── 前端的管理入口判据：/api/auth/me 必须吐 is_admin ──────
+#
+# 为什么这组断言存在：管理后台的入口可见性最终依赖这个字段，而
+# `_build_user_response` 曾经只返回 id / email / is_vip / vip_expire_at。
+# 前端于是无论怎么回查都拿不到「我是不是管理员」，「管理」入口永不出现 ——
+# 症状像渲染 bug，根因是接口少一个键。
+#
+# 正反双向：is_admin=0 时必须是 False，置 1 后必须是 True。
+# 只断「键存在」不够——恒返回 False 也满足「键存在」，而那正是原症状。
+def test_me_response_carries_is_admin(db, make_user):
+    import api_auth
+
+    # db 夹具指向 tmp_path 上的全新空库，得先造一个用户出来
+    email = "me-probe@example.com"
+    uid = make_user(email)
+
+    payload = api_auth._build_user_response(
+        {"id": uid, "email": email, "is_admin": 0,
+         "is_vip": 0, "vip_expire_at": None}
+    )
+    assert "is_admin" in payload, (
+        f"/api/auth/me 的响应里没有 is_admin，实际键集 {sorted(payload)}。"
+        "前端因此无法判断该不该显示「管理」入口。"
+    )
+    assert payload["is_admin"] is False, (
+        f"is_admin=0 的用户应得 is_admin=False，实得 {payload['is_admin']!r}"
+    )
+
+    payload = api_auth._build_user_response(
+        {"id": uid, "email": email, "is_admin": 1,
+         "is_vip": 0, "vip_expire_at": None}
+    )
+    assert payload["is_admin"] is True, (
+        f"is_admin=1 的用户应得 is_admin=True，实得 {payload['is_admin']!r}"
+    )
+
+
+def test_me_is_admin_is_a_real_boolean_not_the_raw_column():
+    """必须是 bool，不能是库里的 0/1 —— 前端要拿它做 v-if 判据。
+
+    `0` 在 JS 里 falsy 所以能用，但类型混着会让「=== true」这类判据
+    在某一侧悄悄失效；而 None（老行没这列时）同样 falsy，三种值共用
+    一个字段是迟早出事的那种设计。
+    """
+    import api_auth
+
+    for raw in (0, 1):
+        payload = api_auth._build_user_response(
+            {"id": 1, "email": "a@b.c", "is_admin": raw,
+             "is_vip": 0, "vip_expire_at": None}
+        )
+        assert isinstance(payload["is_admin"], bool), (
+            f"库里 is_admin={raw} 时响应给的是 {type(payload['is_admin']).__name__}，"
+            "不是 bool"
+        )
+
+    # 老行没有该列时也必须是 False，而不是 None 或抛 KeyError
+    payload = api_auth._build_user_response(
+        {"id": 1, "email": "a@b.c", "is_vip": 0, "vip_expire_at": None}
+    )
+    assert payload["is_admin"] is False, (
+        f"缺 is_admin 键时应回落 False，实得 {payload['is_admin']!r}"
+    )
+
+
+def test_me_endpoint_over_http_exposes_is_admin(db, make_user):
+    """走真实 HTTP 层：确认它真的进了响应体，不只是函数返回了。
+
+    刻意**不**用 `with client:` —— 那会触发 lifespan -> init_db() ->
+    重建 schema。本文件第 1 条规矩就是这个：不靠夹具把护栏重搭一遍。
+    路由本身不需要 lifespan 才能解析（鉴权发生在依赖层，见文件头）。
+    """
+    import auth as auth_mod
+    import main as main_module
+
+    email = "me-http@example.com"
+    uid = make_user(email)
+
+    client = make_client(main_module.app)
+    for db_value, expected in ((0, False), (1, True)):
+        _set_admin(uid, db_value)
+        token = auth_mod.create_token(uid, email)
+        r = client.get("/api/auth/me", headers=auth_headers(token))
+        assert r.status_code == 200, f"GET /api/auth/me -> {r.status_code}：{r.text}"
+        # 响应是包了一层的 {"success": true, "data": {...}}。
+        # 前端 api/auth.js 的 fetchMe() 正是取 res.data.data 再存进
+        # localStorage，所以断的是 data 那一层，不是平铺的顶层。
+        body = r.json()
+        assert "data" in body, f"/api/auth/me 少了 data 包装层：{body}"
+        user = body["data"]
+        assert "is_admin" in user, (
+            f"/api/auth/me 的 data 里没有 is_admin，实际 {user}。"
+            "管理入口的判据就断在这里。"
+        )
+        assert user["is_admin"] is expected, (
+            f"库里 is_admin={db_value}，响应却给 is_admin={user['is_admin']!r}"
+        )

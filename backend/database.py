@@ -62,11 +62,17 @@ def _env_int(name: str, default: int) -> int:
 DAILY_PARSE_LIMIT = _env_int("VIDDIGEST_DAILY_PARSE_LIMIT", 3)
 DAILY_CHAT_LIMIT = _env_int("VIDDIGEST_DAILY_CHAT_LIMIT", 10)
 
-#: 额度种类 → (计数字段, 日期字段, 上限常量名)
+#: 额度种类 → (计数字段, 日期字段, 上限常量名, 覆盖列名)
 #: 两个计数器在同一张 users 表上，但各占自己的列与日期字段。
+#:
+#: 第四项是工单 #12 新增的「单人覆盖列」。它必须与前三项**待在同一张表里**：
+#: 把覆盖列名单独开一张映射，就多出一处「新增额度种类时忘了在这里登记」的位置，
+#: 而那种遗漏的表现是 override 永远读不到（静默回落全局），不是报错。
 _QUOTA_KINDS = {
-    "parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT"),
-    "chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT"),
+    "parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT",
+              "parse_limit_override"),
+    "chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT",
+             "chat_limit_override"),
 }
 
 
@@ -205,6 +211,11 @@ def init_db():
                 is_vip INTEGER DEFAULT 0,
                 vip_expire_at TEXT,
                 is_admin INTEGER NOT NULL DEFAULT 0,
+                -- 单人额度上限覆盖（工单 #12）。**可空、默认 NULL**。
+                -- NULL 的语义是「回落全局上限」，**不是 0**：0 是「一条都不能用」，
+                -- 两者在库里必须分得开，否则给某个账号「不限量」会变成「完全封死」。
+                parse_limit_override INTEGER,
+                chat_limit_override INTEGER,
                 daily_summary_count INTEGER DEFAULT 0,
                 last_summary_date TEXT,
                 daily_parse_count INTEGER DEFAULT 0,
@@ -309,9 +320,19 @@ def init_db():
         """)
 
         _migrate_quota_columns(conn)
+        _migrate_quota_override_columns(conn)
         _migrate_video_card_columns(conn)
         _migrate_admin_column(conn)
         _create_video_search_index(conn)
+        # 模型清单（工单 #13 / ADR 0011）是**另一张表**，DDL 与播种都在
+        # model_catalog 里——那张表不属于 users 域，塞进来只会让两条不同的
+        # 迁移线索混在同一个文件里。
+        #
+        # 延迟 import：model_catalog 顶层要 import database（取 get_db），
+        # 模块级双向 import 会成环。与 auth.get_current_user 里的
+        # `from database import get_user_by_id` 同一套路。
+        from model_catalog import init_model_catalog
+        init_model_catalog(conn)
 
 
 def _migrate_quota_columns(conn) -> None:
@@ -329,6 +350,29 @@ def _migrate_quota_columns(conn) -> None:
         ("daily_chat_count", "ALTER TABLE users ADD COLUMN daily_chat_count INTEGER DEFAULT 0"),
         ("last_parse_date", "ALTER TABLE users ADD COLUMN last_parse_date TEXT"),
         ("last_chat_date", "ALTER TABLE users ADD COLUMN last_chat_date TEXT"),
+    ):
+        if column not in existing:
+            conn.execute(ddl)
+
+
+def _migrate_quota_override_columns(conn) -> None:
+    """给已存在的 users 表补上单人额度覆盖列（工单 #12，expand 阶段）。
+
+    为什么必须单独一步：`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作，
+    老库里不会有新列，quota_limit 一读就报 no such column。**建表语句与迁移
+    两处都必须写**，只改前者的话老库起不来、而新库看起来一切正常——
+    这类错误只在升级现场暴露。
+
+    逐列判断再 ALTER：SQLite 没有 `ADD COLUMN IF NOT EXISTS`，重复执行会抛
+    duplicate column name，所以先查列是否存在。这也让重复跑 init_db 幂等。
+
+    列**不写 NOT NULL、不写 DEFAULT**：0 与 NULL 在额度语义里是两件事
+    （一条都不能用 vs 回落全局），建表语句里同样保持可空默认 NULL。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    for column, ddl in (
+        ("parse_limit_override", "ALTER TABLE users ADD COLUMN parse_limit_override INTEGER"),
+        ("chat_limit_override", "ALTER TABLE users ADD COLUMN chat_limit_override INTEGER"),
     ):
         if column not in existing:
             conn.execute(ddl)
@@ -800,8 +844,8 @@ def is_vip_active(user) -> bool:
 # 留着只会让人以为还有第二条计费路径。这里是唯一的计费实现。
 
 
-def _quota_spec(kind: str) -> tuple[str, str, str]:
-    """取出某类额度对应的 (计数字段, 日期字段, 上限常量名)。
+def _quota_spec(kind: str) -> tuple[str, str, str, str]:
+    """取出某类额度对应的 (计数字段, 日期字段, 上限常量名, 覆盖列名)。
 
     拼错的 kind 立刻抛错：静默 fallback 会让「扣了对话额度却记到解析头上」
     这类错误一路走到用户面前才发现。
@@ -814,22 +858,64 @@ def _quota_spec(kind: str) -> tuple[str, str, str]:
     return spec
 
 
-def quota_limit(kind: str) -> int:
-    """按模块当前值取上限——而不是导入时冻结的常量。
+#: 「无限」的取值。与 ``remaining == -1`` 的既有约定同一个数：
+#: 数据层一律用 -1 表示不限量，覆盖列也用同一个数，两边不必再翻译一次。
+QUOTA_UNLIMITED = -1
 
-    刻意不写成 `from DAILY_PARSE_LIMIT`：测试会 monkeypatch 模块属性，
-    导入时冻结会让「改配置后行为随之改变」这条 AC 无法验证。
+
+def _resolve_quota_limit(kind: str, override: int | None, vip_active: bool) -> tuple[int, str]:
+    """把「覆盖值 + VIP 状态」折成一个 (上限, 来源)。
+
+    **纯函数，不触库。** 它是上限取值的唯一规则实现，
+    ``quota_limit`` 与后台用户列表两处都调它——
+    两条读出口各自算一遍的话，后台显示的额度就可能和真实判定对不上，
+    而管理员恰恰是唯一会去核对那个数字的人。
+
+    优先级：有效 VIP > 覆盖值 > 全局。
+    VIP 压过覆盖值不是疏忽，是 ``check_quota_kind`` / ``consume_quota`` /
+    ``refund_quota`` 三处都在解析上限**之前**就短路返回 -1 的既有行为
+    （工单 #12 把它写成了显式要求：改额度对有效 VIP 必须报「不生效」，
+    不能静默成功）。这里如实反映那三处的判定，后台才不会显示一个假数字。
+    """
+    if vip_active:
+        return QUOTA_UNLIMITED, "vip"
+    if override is not None:
+        return int(override), "override"
+    return globals()[_quota_spec(kind)[2]], "global"
+
+
+def quota_limit(kind: str, user_id: int | None = None) -> int:
+    """取上限。传 user_id 时该用户的覆盖值优先，**只在这一处解析**。
+
+    全局值走 ``globals()[...]`` 而不是 ``from DAILY_PARSE_LIMIT``：
+    测试会 monkeypatch 模块属性，导入时冻结会让「改配置后行为随之改变」
+    这条 AC 无法验证。
 
     公开是因为路由层要报同样的数字。import 时冻结的副本会和这里的
     remaining 打架，同一份 payload 报出 `remaining=0, limit=3`（真实上限 1）。
+
+    刻意**不**新写一个 effective_limit()：多一个入口就多一次「A 处用了
+    覆盖值、B 处忘了」的可能，而这类分裂的表现恰恰是上面那句自相矛盾的
+    payload。覆盖值的读取只在这里发生，别处要数字就带着 user_id 来调。
+
+    传了 user_id 会**多一次查询**（调用方往往已经读过同一个 users 行）。
+    这是刻意的：把已取到的行传进来会让函数多一个「行可能不是这个用户的」
+    入参，而省下的只是一次本地 SQLite 的点查——用正确性换它不划算。
     """
-    return globals()[_quota_spec(kind)[2]]
+    if user_id is None:
+        return _resolve_quota_limit(kind, None, vip_active=False)[0]
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT {_quota_spec(kind)[3]} FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    override = row[_quota_spec(kind)[3]] if row else None
+    return _resolve_quota_limit(kind, override, vip_active=False)[0]
 
 
 def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
     """判定单类额度。只读，不写库。返回 (allowed, remaining)，-1 表示无限。"""
-    count_col, date_col, _ = _quota_spec(kind)
-    limit = quota_limit(kind)
+    count_col, date_col, _, _ = _quota_spec(kind)
+    limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:
@@ -838,6 +924,18 @@ def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
             return False, 0
         if is_vip_active(user):
             return True, -1
+        # 上限为负 = 无限（工单 #12 允许把单人上限设成 -1）。
+        # 少了这一支，下面 `current >= limit` 会拿 0 >= -1 判成「已用完」，
+        # 于是「设成无限」的用户反而被彻底封死——比不设更糟。
+        if limit < 0:
+            return True, QUOTA_UNLIMITED
+        # 上限为 0 = 一条都不能用（工单 #12 的值域）。
+        # 这一支必须排在「今天还没用过 → 额度是满的」那条捷径**之前**：
+        # 那条捷径假设 limit >= 1，limit=0 时它会返回 (True, 0)，
+        # 于是「一条都不能用」变成了「可以用 0 次」——和封禁没区别，
+        # 区别只是用户以为自己被封了。
+        if limit == 0:
+            return False, 0
         # 日期不是今天，说明今天还没用过，额度是满的
         if user[date_col] != today:
             return True, limit
@@ -855,8 +953,8 @@ def check_quota(user_id: int) -> dict:
 
 def consume_quota(user_id: int, kind: str) -> int:
     """扣减一次额度，返回扣减后的 remaining。调用前须已通过 check_quota_kind。"""
-    count_col, date_col, _ = _quota_spec(kind)
-    limit = quota_limit(kind)
+    count_col, date_col, _, _ = _quota_spec(kind)
+    limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:
@@ -871,14 +969,16 @@ def consume_quota(user_id: int, kind: str) -> int:
                 f"UPDATE users SET {count_col} = 1, {date_col} = ? WHERE id = ?",
                 (today, user_id),
             )
-            return limit - 1
+            return QUOTA_UNLIMITED if limit < 0 else limit - 1
 
         current = user[count_col] or 0
         conn.execute(
             f"UPDATE users SET {count_col} = {count_col} + 1 WHERE id = ?",
             (user_id,),
         )
-        return limit - current - 1
+        # 计数照扣（后台要看今日用量），报出的 remaining 仍是 -1：
+        # 无限额度的用户不该因为扣了一次就少一个数。
+        return QUOTA_UNLIMITED if limit < 0 else limit - current - 1
 
 
 def refund_quota(user_id: int, kind: str) -> int:
@@ -889,8 +989,8 @@ def refund_quota(user_id: int, kind: str) -> int:
     绝不会把计数压到负数，也不会跨天给今天白送额度，
     更不会把并发的另一次扣减覆盖掉。
     """
-    count_col, date_col, _ = _quota_spec(kind)
-    limit = quota_limit(kind)
+    count_col, date_col, _, _ = _quota_spec(kind)
+    limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:
@@ -901,7 +1001,7 @@ def refund_quota(user_id: int, kind: str) -> int:
             return -1
         # 跨天了：扣的是昨天的，回滚会让今天的额度凭空多出来，不做。
         if user[date_col] != today:
-            return limit
+            return QUOTA_UNLIMITED if limit < 0 else limit
 
         # 单条 UPDATE 里完成减一。读-改-写两步会和并发的 consume_quota
         # 交叉：中间那次扣减会被本处的绝对值覆盖掉，等于白送额度。
@@ -913,7 +1013,187 @@ def refund_quota(user_id: int, kind: str) -> int:
         row = conn.execute(
             f"SELECT {count_col} FROM users WHERE id = ?", (user_id,)
         ).fetchone()
-        return limit - (row[count_col] or 0)
+        return QUOTA_UNLIMITED if limit < 0 else limit - (row[count_col] or 0)
+
+
+# ── 管理后台读出口（工单 #12）─────────────────────────────────
+#
+# 「读出口按谁在读枚举，不要按数据在哪张表枚举」：下面两个列表各自有一条
+# **不依赖任何旧表已有行**的读路径——空库启动时也读得到（只是空数组），
+# 管理员账号本身由 users 表给出，不会因为先有列表后有用户就看不见人。
+#
+# 刻意不塞进 api_community / api_summarize：那两个模块的读出口是**公开**的，
+# 后台的读出口是特权读出口，两者混在一处等于给公开端点开一个后门。
+
+#: 后台列表每页条数。**必须有上界**——没有上界的 limit?limit=999999 就是
+#: 一次把整张 users 表拉进内存，而这张表随时间单调增长。
+ADMIN_PAGE_SIZE_DEFAULT = 20
+ADMIN_PAGE_SIZE_MAX = 200
+
+#: offset 的上界。与 _MAX_SAFE_PAGE 同一理由：OFFSET 过大在 SQLite 里
+#: 会溢出，且没有任何一个合法的前端会翻到那么后面。
+_MAX_SAFE_OFFSET = 1_000_000_000
+
+
+def _clamp_limit_offset(limit, offset) -> tuple[int, int]:
+    """把 limit / offset 收敛到安全范围。**两个方向都要收。**
+
+    收下界：limit <= 0 会让 SQL 变成「取 0 行」，一个手滑的 limit=0
+    就会让后台看起来「没有数据」——而它其实有 999 条。归一到默认值，
+    宁可多给也不谎报空。
+    """
+    try:
+        limit = int(limit)
+        offset = int(offset)
+    except (TypeError, ValueError):
+        limit, offset = ADMIN_PAGE_SIZE_DEFAULT, 0
+    return (
+        max(1, min(limit, ADMIN_PAGE_SIZE_MAX)),
+        max(0, min(offset, _MAX_SAFE_OFFSET)),
+    )
+
+
+def _quota_used_today(row, kind: str) -> int:
+    """该用户**今天**已用掉多少条。跨天的旧计数按 0 报。
+
+    不这么做的话，后台会在第二天早上显示「已用 3 次」而用户实际满额可用——
+    管理员会据此去改额度，改的却是一个昨天的事实。
+    """
+    count_col, date_col, _, _ = _quota_spec(kind)
+    if row[date_col] != datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+        return 0
+    return row[count_col] or 0
+
+
+def _admin_user_item(row) -> dict:
+    """后台用户行。字段名与前端契约一一对应，不多不少。
+
+    limit 与 source 取自 ``_resolve_quota_limit``——与真实判定同一份规则，
+    后台显示的数字和用户实际被卡住的那个数字必然一致。
+    """
+    item = {
+        "id": row["id"],
+        "email": row["email"],
+        "is_admin": row["is_admin"],
+        "is_vip": row["is_vip"],
+        "vip_expire_at": row["vip_expire_at"],
+        "created_at": row["created_at"],
+    }
+    vip_active = is_vip_active(row)
+    for kind, (count_col, date_col, limit_name, override_col) in _QUOTA_KINDS.items():
+        limit, source = _resolve_quota_limit(kind, row[override_col], vip_active)
+        item[f"{kind}_used"] = _quota_used_today(row, kind)
+        item[f"{kind}_limit"] = limit
+        item[f"{kind}_limit_override"] = row[override_col]
+        item[f"{kind}_limit_source"] = source
+    return item
+
+
+def _like_escape(raw: str) -> str:
+    """转义 LIKE 模式里的三个特殊字符。
+
+    不转义的话，管理员搜 `%` 会匹配全表，搜 `_` 会匹配任意单字符——
+    这是**功能**上的错，不是注入（参数仍然是绑定变量），但足以让人
+    对着「搜什么都全出来」的结果排查半天。
+    """
+    return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def list_admin_users(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0,
+                     q: str = "") -> dict:
+    """后台用户列表（require_admin 保护）。返回 {items, total, limit, offset}。
+
+    排序用 id 升序而不是 created_at：created_at 有并列（同秒注册），
+    并列的行在翻页时会重复出现或凭空消失，而 offset 分页没有「同值保持原序」
+    的保证。按主键排则天然稳定。
+    """
+    limit, offset = _clamp_limit_offset(limit, offset)
+    where, params = "", ()
+    if q:
+        where = "WHERE email LIKE ? ESCAPE '\\'"
+        params = (f"%{_like_escape(q.strip())}%",)
+    with get_db() as conn:
+        total = conn.execute(f"SELECT count(*) FROM users {where}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT * FROM users {where} ORDER BY id ASC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+    return {
+        "items": [_admin_user_item(r) for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def admin_user_detail(user_id: int) -> dict | None:
+    """重读一个用户行（用于写操作后回读，确认真的落库）。
+
+    刻意是**重读**而不是回显请求值：回显等于把「我们打算写什么」当成
+    「我们写成了什么」返回，写失败时前端会显示一个不存在的额度。
+    """
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _admin_user_item(row) if row else None
+
+
+def set_user_quota_override(user_id: int, overrides: dict) -> int:
+    """写入单人额度覆盖，返回受影响的行数（0 = 用户不存在 → 404）。
+
+    ``overrides`` 形如 ``{"parse": 5, "chat": None}``：
+    值是 None 表示**清除覆盖**、回落全局。只写传进来的 key，
+    没传的 key 一个字都不动。
+
+    列名一律取自 ``_QUOTA_KINDS``，不接受外部传入——拼进 SQL 的必须是
+    白名单里的常量，不是请求里的字符串。
+    """
+    if not overrides:
+        return 0
+    assignments, params = [], []
+    for kind, value in overrides.items():
+        # 拼错的 kind 在这里抛，而不是拼出一条 no such column 的 UPDATE。
+        _, _, _, override_col = _quota_spec(kind)
+        assignments.append(f"{override_col} = ?")
+        params.append(value)
+    with get_db() as conn:
+        cursor = conn.execute(
+            f"UPDATE users SET {', '.join(assignments)} WHERE id = ?",
+            (*params, user_id),
+        )
+        return cursor.rowcount
+
+
+def list_admin_community(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0) -> dict:
+    """后台社区记录列表（require_admin 保护）。
+
+    **不过滤 status**：pending 行是占位，后台要看的是「谁占了位没解析完」，
+    这类记录恰恰只在 pending 状态里存在。项目范围边界也明确不做下架，
+    后台因此没有、也不该有「只看得见已就绪」这层过滤。
+
+    LEFT JOIN users 取作者邮箱：parsed_by 没有外键（ADR 0010——解析者注销后
+    社区内容必须留下来），所以作者可能已经不在，用 LEFT 而不是 INNER，
+    否则那些行会凭空消失，而它们恰恰是最该被看见的。
+    """
+    limit, offset = _clamp_limit_offset(limit, offset)
+    with get_db() as conn:
+        total = conn.execute("SELECT count(*) FROM videos").fetchone()[0]
+        rows = conn.execute(
+            "SELECT v.id, v.video_url, v.video_title AS title, v.tags, v.created_at, "
+            "       u.email AS author_email "
+            "FROM videos v LEFT JOIN users u ON u.id = v.parsed_by "
+            "ORDER BY v.id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            parsed = json.loads(item.get("tags") or "[]")
+        except (ValueError, TypeError):
+            parsed = []
+        item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
+        items.append(item)
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 # ── 订单操作 ──────────────────────────────────────────────

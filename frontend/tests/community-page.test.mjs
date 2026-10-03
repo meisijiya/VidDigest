@@ -34,7 +34,10 @@ function stripComments(src) {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
-    .map((l) => l.replace(/\/\/.*$/, ''))
+    // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
+        // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
+        // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
+    .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
     .join('\n')
 }
 

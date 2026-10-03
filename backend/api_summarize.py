@@ -80,6 +80,7 @@ def _quota_payload(user_id: int, primary: str = "parse") -> dict:
 
     limit 走 `quota_limit` 而不是模块常量：remaining 由数据层按调用时的
     模块值算，limit 若在 import 期冻结成另一份，同一份 payload 就会自相矛盾。
+    同样必须带上 user_id（工单 #12）：上限可以按人覆盖，不带就会报出全局值。
     """
     payload = {}
     for kind in ("parse", "chat"):
@@ -87,7 +88,7 @@ def _quota_payload(user_id: int, primary: str = "parse") -> dict:
         payload[kind] = {
             "allowed": allowed,
             "remaining": (0 if not allowed else remaining),
-            "limit": quota_limit(kind),
+            "limit": quota_limit(kind, user_id),
         }
     head = payload[primary]
     return {
@@ -133,11 +134,15 @@ class ChatRequest(BaseModel):
 
 def _check_quota_permission(user: dict | None, kind: str):
     """检查某类额度权限（只判定，不扣）。"""
-    limit = quota_limit(kind)
     label = _QUOTA_LABELS[kind]
 
     if not user:
         return False, 0, _NOT_LOGGED_IN
+
+    # 带上 user_id（工单 #12）：上限可以按人覆盖，不带就拿到全局值，
+    # 于是被限流的人会读到「每日 3 次」而真实上限是 1。
+    # 放在登录判定之后，未登录那条路径因此不触库。
+    limit = quota_limit(kind, user["id"])
 
     allowed, remaining = check_quota_kind(user["id"], kind)
     if not allowed:

@@ -12,9 +12,11 @@
       @register="showAuthModal('register')"
       @logout="handleLogout"
       :show-vip-entry="membershipEnabled"
+      :is-admin="isAdmin"
       @go-home="goHome"
       @open-history="openHistory"
       @open-community="openCommunity"
+      @open-admin="openAdmin"
     />
     <ByokDialog
       :visible="byokDialogOpen"
@@ -105,8 +107,16 @@
         @open-video="openCommunityVideo"
       />
 
+      <!-- 管理后台：轻路由（ADR 0010，同一个 Vue 应用内）。
+           必须排在 HistoryPage **之前**，因为下面那条链是
+           v-if / v-else-if / v-else——admin 插在最后会让 HistoryPage
+           永远抢不到分支，整条链塌掉。 -->
+      <AdminPage v-else-if="currentPage === 'admin'"
+        @back="goHome"
+      />
+
       <!-- 解析历史页 -->
-      <HistoryPage v-else @back="goHome" @open-record="handleOpenRecord" @error="showErrorFromPage" />
+      <HistoryPage v-else-if="currentPage === 'history'" @back="goHome" @open-record="handleOpenRecord" @error="showErrorFromPage" />
     </main>
 
     <AppFooter @go-home="goHome" />
@@ -148,6 +158,7 @@ import { MEMBERSHIP_ENABLED as membershipEnabled } from './config/features.js'
 import PlatformSection from './components/PlatformSection.vue'
 import HistoryPage from './components/HistoryPage.vue'
 import CommunityPage from './components/CommunityPage.vue'
+import AdminPage from './components/AdminPage.vue'
 import AuthModal from './components/AuthModal.vue'
 import AppFooter from './components/AppFooter.vue'
 import ByokDialog from './components/ByokDialog.vue'
@@ -158,7 +169,49 @@ const currentUser = ref(getSavedUser())
 const authModalVisible = ref(false)
 const authModalMode = ref('login')
 
-const currentPage = ref('home')
+/**
+ * 管理员判据（ADR 0010）。
+ *
+ * 两级：
+ *  1. 先用 localStorage 里那份登录用户渲染——它决定「管理」入口这一帧
+ *     显不显示，纯粹为了不闪一下。**它不是安全边界**：localStorage 里的
+ *     值任何人都能改，服务端也能随时撤权。
+ *  2. 挂载后调 /api/auth/me 回查一次（服务端是唯一权威，ADR 0010 里
+ *     角色不进 JWT、每次请求回查数据库，所以提权与撤权即时生效）。
+ *
+ * 手动敲 /admin 的非管理员照样能进到这里：入口隐藏只做体验，
+ * 真的边界是 AdminPage 里那次请求的 403。
+ */
+const isAdmin = ref(!!(currentUser.value && currentUser.value.is_admin))
+
+/**
+ * 轻路由：URL 与 currentPage 双向同步，**不引 vue-router**（ADR 0010）。
+ *
+ * 只认 /admin 一个真实路径：主页、历史、社区都留在 '/'，
+ * 因为这三个页签之间来回跳时 URL 变化对用户没有信息量，
+ * 往历史栈里塞满 '/' 只会让浏览器「后退」变得没法用。
+ */
+const PATHS = { home: '/', history: '/', community: '/', admin: '/admin' }
+
+function pageFromPath(pathname) {
+  return String(pathname || '').replace(/\/+$/, '') === '/admin' ? 'admin' : 'home'
+}
+
+function pushPage(page) {
+  const path = PATHS[page] || '/'
+  if (window.location.pathname === path) return
+  window.history.pushState({}, '', path)
+}
+
+/** 浏览器前进/后退：只认路径，不动解析态（后退回历史页不该把结果清掉） */
+function syncPageFromUrl() {
+  const next = pageFromPath(window.location.pathname)
+  if (next === currentPage.value) return
+  currentPage.value = next
+  window.scrollTo({ top: 0 })
+}
+
+const currentPage = ref(pageFromPath(typeof window === 'undefined' ? '/' : window.location.pathname))
 const loading = ref(false)
 const downloading = ref(false)
 const videoData = ref(null)
@@ -236,6 +289,7 @@ function showErrorFromPage(payload) {
  */
 function goHome() {
   currentPage.value = 'home'
+  pushPage('home')
   videoData.value = null
   currentUrl.value = ''
   historyDetail.value = null
@@ -247,6 +301,7 @@ function goHome() {
 /** 去历史页时同样清掉解析态：否则历史列表上方会压着上一个视频的结果 */
 function openHistory() {
   currentPage.value = 'history'
+  pushPage('history')
   window.scrollTo({ top: 0 })
 }
 
@@ -257,6 +312,21 @@ function openHistory() {
  */
 function openCommunity() {
   currentPage.value = 'community'
+  pushPage('community')
+  window.scrollTo({ top: 0 })
+}
+
+/**
+ * 去管理后台。URL 真的变了，于是刷新、手输地址、后退都落得回来。
+ *
+ * 这里**不**判管理员：判据已经在 isAdmin 里算过一次，而真正的判断在
+ * 服务端（ADR 0010：require_admin 每次回查数据库）。前端再拦一道只会
+ * 造出第二种口径——今天两边依据不同步时，用户看到的就是「导航里没有
+ * 管理，但手输地址能进」，反而更难解释。
+ */
+function openAdmin() {
+  currentPage.value = 'admin'
+  pushPage('admin')
   window.scrollTo({ top: 0 })
 }
 
@@ -548,8 +618,36 @@ function checkPaymentResult() {
   }
 }
 
+/**
+ * 管理员判据回查。
+ *
+ * 只在已登录时打这一发：游客本来就不可能有管理入口，而无谓的 401
+ * 会在控制台里留一条噪音。失败一律按「不是管理员」处理——宁可让入口
+ * 晚一点出现，也不要在服务端已撤权时还亮着它。
+ */
+async function refreshAdminFlag() {
+  if (!isLoggedIn()) {
+    isAdmin.value = false
+    return
+  }
+  try {
+    const fresh = await fetchMe()
+    isAdmin.value = !!fresh?.is_admin
+  } catch {
+    isAdmin.value = false
+  }
+}
+
 onMounted(() => {
   checkPaymentResult()
+  refreshAdminFlag()
+  // 轻路由的另一半：浏览器前进/后退。**必须**解绑，
+  // 组件重建一次就多挂一个监听，之后每次后退都会重复切页。
+  window.addEventListener('popstate', syncPageFromUrl)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('popstate', syncPageFromUrl)
 })
 </script>
 

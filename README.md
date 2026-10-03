@@ -112,7 +112,8 @@ npm run build                    # 生产构建 → dist/
 # ── AI 服务（必填）───────────────
 DEEPSEEK_API_KEY=sk-your-key     # 从 platform.deepseek.com 获取
 
-# ── JWT 密钥（建议改复杂）─────────
+# ── JWT 密钥（必填，无默认值）──────
+# 漏配时进程直接拒绝启动，不会用兜底值凑合。
 JWT_SECRET=your-random-secret-32chars+
 
 # ── 支付（可选）──────────────────

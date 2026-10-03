@@ -16,12 +16,39 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import {
-  PROVIDERS, getPublicState, getRequestCredential, save, updateConfig, clear,
+  getPublicState, getRequestCredential, save, updateConfig, clear,
   usePlatform, chooseProvider, validateBaseUrl, normalizeBaseUrl, subscribe,
 } from '../src/lib/byok.js'
 import { summarizeVideo, chatWithVideo } from '../src/api/summarize.js'
 
 const SENTINEL = 'sk-byok-central-ZZUNIQUEZZ'
+
+/**
+ * 两条**清单记录**的样本。
+ *
+ * 工单 #13 之后厂商清单归服务端（`api/models.js` 拉），byok.js 不再查表，
+ * 所以这里必须把记录本身喂给 `chooseProvider(id, provider)`。
+ * 清单本身的字段与端点归 `model-catalog.test.mjs` 守，这里只管
+ * 「拿到一条记录之后 byok.js 怎么处理」。
+ */
+const OLLAMA = {
+  id: 'ollama',
+  label: 'Ollama（本地）',
+  baseUrl: 'http://localhost:11434/v1',
+  defaultModel: 'qwen2.5:7b',
+  models: [],
+  hint: '',
+  isReal: 1,
+}
+const DEEPSEEK = {
+  id: 'deepseek',
+  label: 'DeepSeek',
+  baseUrl: 'https://api.deepseek.com',
+  defaultModel: 'deepseek-chat',
+  models: [],
+  hint: '',
+  isReal: 1,
+}
 
 function read(...parts) {
   return readFileSync(new URL(...parts, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -32,7 +59,10 @@ function stripComments(src) {
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
-    .map((l) => l.replace(/\/\/.*$/, ''))
+    // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
+        // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
+        // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
+    .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
     .join('\n')
 }
 
@@ -162,7 +192,7 @@ describe('lib/byok 的出口纪律', () => {
     // 组件拿它当 state 存下，state.provider 就成了 undefined——
     // 而 provider 正是「用平台还是用自带」那个开关。它一丢，
     // 用户选好厂商填好 key 点保存，却静默地存成了平台模式。
-    const returned = chooseProvider('ollama')
+    const returned = chooseProvider('ollama', OLLAMA)
     assert.deepEqual(
       Object.keys(returned).sort(),
       Object.keys(getPublicState()).sort(),
@@ -172,10 +202,20 @@ describe('lib/byok 的出口纪律', () => {
     assert.equal(returned.baseUrl, 'http://localhost:11434/v1')
   })
 
+  test('记录缺了也不静默换成别的厂商', () => {
+    // 以前这里查不到就回落成 PROVIDERS[0]（平台）。现在没有表可查了：
+    // 换成静默回落，用户以为选中了 ollama，存下去的却是平台模式——
+    // 而 provider 正是「用谁的额度」那个开关。
+    const s = chooseProvider('ollama')
+    assert.equal(s.provider, 'ollama', '查不到记录就把用户的厂商选择改掉了')
+    assert.equal(s.baseUrl, '', '该留空的没留空')
+    assert.equal(s.model, '')
+  })
+
   test('选厂商之后保存，provider 不会退回平台', () => {
     // 端到端一遍弹窗的调用序列：选厂商 → 填端点 → 存。
-    chooseProvider('ollama')
-    const s = chooseProvider('ollama')
+    chooseProvider('ollama', OLLAMA)
+    const s = chooseProvider('ollama', OLLAMA)
     save({ apiKey: SENTINEL, provider: s.provider, baseUrl: s.baseUrl, model: s.model })
     const after = getPublicState()
     assert.equal(after.provider, 'ollama')
@@ -186,7 +226,7 @@ describe('lib/byok 的出口纪律', () => {
 
 describe('一条状态，两个使用方式', () => {
   test('选了自带厂商但没填 key —— 这是两件事，不能混', () => {
-    chooseProvider('deepseek')
+    chooseProvider('deepseek', DEEPSEEK)
     const s = getPublicState()
     assert.equal(s.mode, 'byok', '用户明明选了自带，界面却说在用平台')
     assert.equal(s.hasKey, false)
@@ -194,7 +234,7 @@ describe('一条状态，两个使用方式', () => {
   })
 
   test('填了 key 之后才真的可用', () => {
-    chooseProvider('deepseek')
+    chooseProvider('deepseek', DEEPSEEK)
     save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' })
     assert.equal(getPublicState().hasKey, true)
     assert.equal(getRequestCredential().apiKey, SENTINEL)
@@ -208,7 +248,7 @@ describe('一条状态，两个使用方式', () => {
   })
 
   test('切回平台保留端点设置', () => {
-    chooseProvider('ollama')
+    chooseProvider('ollama', OLLAMA)
     save({ apiKey: SENTINEL, provider: 'ollama', baseUrl: 'http://localhost:11434/v1', model: 'q' })
     usePlatform()
     const s = getPublicState()
@@ -321,19 +361,6 @@ describe('端点归一与预检', () => {
   test('空端点不报错（留空 = 用服务端默认）', () => {
     assert.equal(validateBaseUrl(''), null)
     assert.equal(validateBaseUrl(null), null)
-  })
-
-  test('预设表里每个厂商都自带一个可用端点（自定义除外）', () => {
-    for (const p of PROVIDERS) {
-      if (p.id === 'custom' || p.id === 'platform') continue
-      assert.ok(p.baseUrl, `${p.label} 没有默认端点`)
-      assert.equal(validateBaseUrl(p.baseUrl), null, `${p.label} 的默认端点过不了自己的预检`)
-    }
-  })
-
-  test('预设表里有本地推理这一档（http 的主要用武之地）', () => {
-    const local = PROVIDERS.find((p) => p.baseUrl.startsWith('http://'))
-    assert.ok(local, '没有 http 端点的厂商：自建服务用户只能手打地址')
   })
 })
 

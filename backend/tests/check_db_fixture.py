@@ -41,6 +41,14 @@ DB_FUNCS = {
     # 管理后台地基（工单 #11）：seed_admin_emails_from_env 会写 users 表。
     # 漏掉它，这道门禁就对「播种测试会不会连上真实 app.db」失明。
     "seed_admin_emails_from_env",
+    # 管理后台（工单 #12）：四个读出口 + 唯一的写出口。
+    # 漏掉任何一个，这道门禁就对「那条路径会不会连上真实 app.db」失明
+    # ——而 POST quota 那个是会**写** users 表的。
+    "list_admin_users", "admin_user_detail", "set_user_quota_override",
+    "list_admin_community",
+    # 模型清单（工单 #13）：DDL、播种、三个查询口。
+    "init_model_catalog", "list_model_providers", "get_model_provider",
+    "platform_default_model",
 }
 
 #: 取了这些参数就算拿到了 db 夹具（client_app 内部依赖 db）
