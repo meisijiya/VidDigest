@@ -261,14 +261,19 @@ describe('主色按钮 · 文字色必须够对比度', () => {
  * 也改成了蓝橙青。用户看过后要求「图标改回这个配色，其他内容按新的来」。
  *
  * 为什么这件事必须有测试守着，而不是靠注释：
- *  - Logo 是**品牌标记**，不是界面装饰。它在浏览器标签、书签、PWA 图标上
+ *  - Logo 的**色块**是品牌标记，不是界面装饰。它在浏览器标签、书签、PWA 图标上
  *    出现的地方**不读 CSS 变量、也不跟随 data-theme**。如果方块跟着主题变，
  *    明亮主题下页内是蓝橙方块、标签页上还是紫粉青 —— 两处对不上。
+ *  - Logo 的**底板与描边是装饰**，所以跟随主题。2026-10-03 用户明确要求
+ *    「可以跟随暗/明亮模式的变化而改变底部颜色」：一枚深蓝方块浮在白底上，
+ *    看起来像没做完。favicon 的底板则必须深色 —— 它待在浏览器 chrome 里，
+ *    那里的底本来就该深，与页面主题无关。
+ *  - 所以刻意是「色块两边一致、底板两边不要求一致」。
  *  - 「顺手把 Logo 也改成新配色」这个动作已经发生过一次。它当时让全部
  *    用例保持绿色（没有任何断言检查 Logo 的具体颜色），所以静默通过。
  *  - 这类豁免的失效方式永远是「有人觉得它不一致」，而不是「报错」。
  */
-describe('品牌标记 · 唯一豁免主题令牌的地方', () => {
+describe('品牌标记 · 色块豁免主题，底板跟随主题', () => {
   const logo = read('../src/components/PixelLogo.vue')
   const logoMarkup = stripComments(logo)
   const favicon = read('../public/favicon.svg')
@@ -276,51 +281,78 @@ describe('品牌标记 · 唯一豁免主题令牌的地方', () => {
 
   /** 品牌原色：紫 → 紫 → 粉 → 紫 → 青 → 青 */
   const BRAND_BLOCKS = ['#7C3AED', '#A855F7', '#EC4899', '#A855F7', '#06B6D4', '#06B6D4']
-  const BRAND_PLATE = '#161F36'
-  const BRAND_BORDER = '#263152'
+  // favicon 底板当前是 #161F36，但**刻意不写死这个值**：不变式是「够深的字面量」，
+  // 换一个同样深的品牌蓝不该要改测试。判据见下面那条 favicon 底板用例。
 
-  test('Logo 不引用任何主题变量（否则它会跟着 data-theme 变色）', () => {
-    const vars = [...logoMarkup.matchAll(/var\(--color-[a-z0-9-]+\)/g)].map((m) => m[0])
-    assert.equal(vars.length, 0,
-      `Logo 里出现了主题变量 ${vars.join(', ')} —— 切到明亮主题时这枚 logo 会变色，`
-      + '而浏览器标签上的 favicon 不会，两处对不上。品牌标记是固定色，见 ADR 0008。')
+  const lum = (hex) => {
+    const c = [1, 3, 5].map((i) => {
+      const v = parseInt(hex.slice(i, i + 2), 16) / 255
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+    })
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+  }
+
+  test('6 个方块是写死的字面量，不引用任何主题变量', () => {
+    const rects = [...logoMarkup.matchAll(/<rect[^>]*class="animate-pixel-blink[^"]*"[^>]*>/g)].map((m) => m[0])
+    assert.equal(rects.length, 6, `只找到 ${rects.length} 个带闪动 class 的方块 rect`)
+    const offenders = rects.filter((r) => /var\(--color-/.test(r))
+    assert.equal(offenders.length, 0,
+      `方块里出现了主题变量：\n    ${offenders.join('\n    ')}\n`
+      + '  —— 切到明亮主题时这 6 个方块会变色，而浏览器标签上的 favicon 不会。'
+      + '同一枚 logo 两处对不上。底板可以跟随主题，方块不行，见 ADR 0008。')
   })
 
-  test('Logo 的 6 个方块仍是品牌原色（紫/紫/粉/紫/青/青）', () => {
-    const fills = [...logoMarkup.matchAll(/<rect[^>]*\sfill="(#[0-9A-Fa-f]{6})"/g)].map((m) => m[1])
-    // 第 1 个 rect 是底板，最后 6 个才是方块
-    const blocks = fills.slice(1)
+  test('6 个方块仍是品牌原色（紫/紫/粉/紫/青/青）', () => {
+    // 底板写的是 var()，不匹配 fill="#..."，所以这里拿到的正好是 6 个方块
+    const blocks = [...logoMarkup.matchAll(/<rect[^>]*\sfill="(#[0-9A-Fa-f]{6})"/g)].map((m) => m[1])
     assert.deepEqual(blocks, BRAND_BLOCKS,
       `Logo 方块变成了 [${blocks.join(' ')}]，与品牌原色 [${BRAND_BLOCKS.join(' ')}] 不符。`
       + '改配色前先读 ADR 0008 的「品牌标记豁免」。')
   })
 
-  test('Logo 底板与描边仍是品牌原色', () => {
-    assert.match(logoMarkup, new RegExp(`fill="${BRAND_PLATE}"`),
-      `Logo 底板不是 ${BRAND_PLATE} —— 它会跟着主题翻成浅色，`
-      + '而 favicon 底板永远是深色，同一枚 logo 两种底')
-    assert.match(logoMarkup, new RegExp(`stroke="${BRAND_BORDER}"`),
-      `Logo 描边不是 ${BRAND_BORDER} —— 底板与页面同色时就没有轮廓了`)
+  test('底板与描边跟随主题（这一条是被要求过的，别"顺手"改回写死）', () => {
+    assert.match(logoMarkup, /<rect[^>]*\sfill="var\(--color-panel-2\)"/,
+      'Logo 底板没有走主题令牌 —— 明亮主题下会是一枚深蓝方块浮在白底上，'
+      + '看起来像没做完。这是 2026-10-03 明确要求的：底板跟随明暗主题。')
+    assert.match(logoMarkup, /<rect[^>]*\sstroke="var\(--color-line\)"/,
+      'Logo 描边没有走主题令牌 —— 底板与页面同色时就没有轮廓了')
   })
 
-  test('favicon 与 Logo 底板一致（原先是 #0F1729 vs #161F36，两枚不同的深蓝）', () => {
-    assert.ok(favicon.includes(`fill="${BRAND_PLATE}"`),
-      `favicon.svg 底板不是 ${BRAND_PLATE} —— 页内和标签页上是两枚不同的 logo。`
-      + '改 favicon 时请同步改 PixelLogo.vue。')
+  test('favicon 的 6 个方块与组件逐个一致（底板不要求一致，另有一条单独查）', () => {
     // 比**顺序**而不是比成员。#06B6D4 与 #A855F7 各出现两次，用
     // includes() 逐个查的话，少掉一个方块另一个还在，断言照样绿 ——
     // 变异实测过：删掉末尾那个青块，成员检查完全无感。
     const fills = [...favicon.matchAll(/<rect[^>]*\sfill="(#[0-9A-Fa-f]{6})"/g)].map((m) => m[1])
-    assert.deepEqual(fills, [BRAND_PLATE, ...BRAND_BLOCKS],
+    // [0] 是底板，底板的判据在下一条，这里只管方块
+    assert.deepEqual(fills.slice(1), BRAND_BLOCKS,
       `favicon.svg 的方块序列变成了 [${fills.join(' ')}]，`
-      + `与 [${BRAND_PLATE} ${BRAND_BLOCKS.join(' ')}] 不符 —— 页内和标签页上的 logo 对不上。`
+      + `与 [${BRAND_BLOCKS.join(' ')}] 不符 —— 页内和标签页上的 logo 对不上。`
       + '注意是两个青块两个紫块，只查"有没有出现过"是查不出少了一个的。')
   })
 
-  test('Windows 磁贴底色跟着 logo 底板走', () => {
-    assert.match(browserconfig, new RegExp(`<TileColor>${BRAND_PLATE}</TileColor>`),
-      `browserconfig.xml 的 TileColor 不是 ${BRAND_PLATE} —— `
-      + '磁贴上的 logo 会坐在一块和品牌无关的底色上')
+  test('favicon 底板是深色字面量（它在浏览器 chrome 里，不该跟随页面主题）', () => {
+    // 刻意**不**断言「等于某个具体 hex」：那样换成另一个同样深的品牌蓝就要改测试，
+    // 而换成浅色时又会被上面那条「不等于某 hex」先命中、根本走不到亮度检查 ——
+    // 那会让亮度断言变成死代码（实测：把底板改浅，它一次都没跑）。
+    // 真正的不变式是两条：它是字面量（不是 var()），且它够深。
+    assert.doesNotMatch(favicon, /var\(--color-/,
+      'favicon.svg 引用了 CSS 变量 —— favicon 不读 :root 变量，'
+      + '引用它的效果是这块矩形变成黑色或直接不渲染。')
+    const fills = [...favicon.matchAll(/<rect[^>]*\sfill="([^"]*)"/g)].map((m) => m[1])
+    const plate = fills[0]
+    assert.match(plate || '', /^#[0-9A-Fa-f]{6}$/,
+      `favicon.svg 底板是 ${plate}，不是 6 位 hex 字面量`)
+    assert.ok(lum(plate) < 0.05,
+      `favicon 底板 ${plate} 不够深 —— 标签页上 logo 与底色分不开。`
+      + 'favicon 待在浏览器 chrome 里，那里的底本来就该深，与页面主题无关。')
+  })
+
+  test('Windows 磁贴底色是深色（磁贴在浏览器 chrome 里，同 favicon）', () => {
+    const m = /<TileColor>(#[0-9A-Fa-f]{6})<\/TileColor>/.exec(browserconfig)
+    assert.ok(m, 'browserconfig.xml 里没有 TileColor')
+    assert.ok(lum(m[1]) < 0.08,
+      `TileColor ${m[1]} 太浅 —— 磁贴底上那枚深色 logo 会糊成一片。`
+      + '磁贴在浏览器 chrome 里，不该跟着页面主题翻。')
   })
 })
 
