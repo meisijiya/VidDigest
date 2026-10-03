@@ -1324,6 +1324,44 @@ def complete_video(
         return cursor.rowcount
 
 
+def regenerate_video(
+    video_url: str,
+    user_id: int | None,
+    summary_md: str = "",
+    mindmap_md: str = "",
+    tags: list | None = None,
+    subtitle_text: str = "",
+) -> int:
+    """作者本人改写**自己那份**已完成的总结，返回更新的行数（ADR 0007）。
+
+    与 complete_video 是两条独立的语句，不是同一句的两个开关：
+
+    - ``WHERE status = 'ready'``：只改已完成的内容，不碰别人正在解析的占位。
+      覆盖不经过占位——重新解析的那几十秒里旧内容仍然有效，改回 pending
+      会让所有复用者突然看到空白。
+    - ``AND parsed_by IS ?``：写权限的判定落在这里，而不是调用方的 if 里。
+      用 ``IS`` 而不是 ``=``：parsed_by 可为 NULL（建表早期未登录的记录），
+      ``=`` 在 NULL 上永不成立，而 ``IS`` 才能正确表达「相等或两边都是 NULL」。
+
+    返回 0 有两种含义，调用方必须区分：这一行不存在 / 不是 ready（被并发释放或
+    从未完成），或者它属于别人。两种都不该被静默当成成功。
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(list(tags) if tags else [], ensure_ascii=False)
+    with get_db() as conn:
+        cursor = conn.execute(
+            """UPDATE videos
+               SET summary_md = ?, mindmap_md = ?, tags = ?,
+                   subtitle_text = ?, updated_at = ?
+               WHERE video_url = ? AND status = ? AND parsed_by IS ?""",
+            (
+                summary_md, mindmap_md, payload,
+                subtitle_text, now, video_url, VIDEO_STATUS_READY, user_id,
+            ),
+        )
+        return cursor.rowcount
+
+
 def release_video(video_url: str) -> int:
     """占位者失败时把位置还回去，返回删掉的行数。
 

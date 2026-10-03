@@ -63,7 +63,9 @@
         <h3 class="text-base font-semibold text-gray-800 mb-1.5">AI 智能解析</h3>
         <p class="text-sm text-gray-500 max-w-sm leading-relaxed">解析视频字幕，生成总结摘要、思维导图，并支持针对视频内容的 AI 问答</p>
         <p class="text-xs text-gray-500 mt-1.5 mb-6">仅下载视频的话，无需启动此功能</p>
-        <button @click="startSummarize"
+        <!-- 显式括号是必须的：写成 @click="startSummarize" 会把 MouseEvent
+             当成 overwrite 传进去，于是「开始 AI 解析」会静默地变成一次覆盖。 -->
+        <button @click="startSummarize()"
           class="px-6 py-2.5 rounded-xl bg-violet text-white text-sm font-medium
                  hover:bg-blue-600 transition-all duration-200 active:scale-95
                  flex items-center gap-2">
@@ -310,7 +312,17 @@ const props = defineProps({
    * （by-url 查社区视频表）驱动，不能由「点过了解析」这种本地状态推断。
    */
   hasCommunityResult: { type: Boolean, default: false },
+  /**
+   * 一次性信号：这一次挂载是用户点了「重新解析」，不是自动复用。
+   *
+   * 做成 prop 而不是命令式调用（ref / expose），是因为父组件重建本组件的
+   * 唯一手段就是换 :key，而 watch 是 immediate 的——信号必须活到挂载那一刻。
+   * 父组件点完就把它置回 false，所以它只对**这一次**挂载生效。
+   */
+  regenerateRequested: { type: Boolean, default: false },
 })
+
+const emit = defineEmits(['ownership', 'regenerating'])
 
 const activeTab = ref('summary')
 const tabs = [
@@ -527,6 +539,9 @@ watch(activeTab, (tab) => {
  *
  * 为假时**不**自动发起：那时是真要调模型、要扣每日额度，
  * 保持用户手动点「开始 AI 解析」。少看一次内容好过额度被白扣。
+ *
+ * regenerateRequested 为真时也自动发起，但那次请求带 overwrite——
+ * 用户明确要求改写自己那一份，替他再点一次「开始」没有意义。
  */
 watch(() => props.videoUrl, async (newUrl) => {
   // 换视频时先中止上一个视频的流
@@ -544,15 +559,22 @@ watch(() => props.videoUrl, async (newUrl) => {
   chatHistoryList.value = []
   showChatHistory.value = false
 
-  if (newUrl && props.hasCommunityResult) {
-    startSummarize()
+  if (newUrl && (props.hasCommunityResult || props.regenerateRequested)) {
+    startSummarize(props.regenerateRequested)
   }
 }, { immediate: true })
 
-function startSummarize() {
+/**
+ * @param {boolean} overwrite 是否覆盖社区里已有那一份（ADR 0007）。
+ *   为真时服务端只认首次解析者本人，不是本人的请求会直接回错误事件。
+ */
+function startSummarize(overwrite = false) {
   if (!props.videoUrl || started.value) return
   started.value = true
   loading.value = true
+  // 父组件的按钮要跟着转：覆盖期间没有「正在解析中」那层占位提示可看，
+  // 唯一的进度信号就是横幅上那个按钮本身。
+  emit('regenerating', true)
   summaryMd.value = ''
   mindmapMd.value = ''
   subtitleData.value = null
@@ -566,6 +588,8 @@ function startSummarize() {
   let failed = false
   let stopped = false
   summaryStream = summarizeVideo(props.videoUrl, 'zh', {
+    // 复用回放会先发这一条：它决定父组件的「重新解析」是能点还是只能看。
+    onOwnership: (data) => emit('ownership', data),
     onSubtitle: (data) => {
       subtitleData.value = data
     },
@@ -594,6 +618,7 @@ function startSummarize() {
       // 断流 / 异常 / 主动取消都会走到这里（onDone 保证恰好一次）
       loading.value = false
       summaryStream = null
+      emit('regenerating', false)
       // 必须在上面的 chatHistoryList 清空**之后**回填：
       // startSummarize 开头把列表清空了，早于它调就会白填一次。
       hydrateChatHistory()
@@ -604,7 +629,7 @@ function startSummarize() {
         refreshQuota()
       }
     },
-  })
+  }, { overwrite })
 }
 
 /**

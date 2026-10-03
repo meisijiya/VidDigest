@@ -68,8 +68,12 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
       summaryVue.indexOf('function startSummarize'),
     )
     assert.notEqual(w.length, 0, '没找到 videoUrl 的 watch')
+    // 两个入口都自动发起：社区已有结果（零成本复用），以及用户点了
+    // 「重新解析」（他明确要求重跑，替他再点一次「开始」没有意义）。
+    // 两个都为假时保持手动——那时是真要扣额度。
     assert.match(
-      w, /if \(newUrl && props\.hasCommunityResult\)[\s\S]*startSummarize\(\)/,
+      w,
+      /if \(newUrl && \(props\.hasCommunityResult \|\| props\.regenerateRequested\)\)[\s\S]*startSummarize\(props\.regenerateRequested\)/,
       'hasCommunityResult 为真时没有自动发起',
     )
   })
@@ -79,9 +83,19 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
       appVue, /:has-community-result="|hasCommunityResult/,
       'App.vue 没把开关传给 VideoSummary',
     )
-    // 关键：这个开关的值必须来自 by-url（查社区视频表）。
-    // 用「点过了解析」这种本地状态去推断，会在结果其实不存在时扣额度。
-    assert.match(appVue, /fromCache\.value = !!\(await fetchHistoryByUrl/)
+    // 关键：这个开关的值必须来自 by-url（查**社区视频表**）。
+    // 用「点过了解析」这种本地状态去推断，会在结果其实不存在时扣额度；
+    // 反过来用**个人解析历史**去推断，陌生人打开社区视频时会被判成
+    // 「社区里没有」——他于是看不到复用提示，「重新解析」按钮永不出现。
+    // 这条断言以前写的是 fetchHistoryByUrl，与测试名自相矛盾，全绿了很久。
+    assert.match(
+      appVue, /fromCache\.value = !!found\?\.exists/,
+      'fromCache 没有来自社区视频表的 by-url 查询',
+    )
+    assert.doesNotMatch(
+      appVue, /fetchHistoryByUrl/,
+      '仍在用个人解析历史判断社区里有没有这一份',
+    )
   })
 
   test('从历史页打开时会去查社区（原来压根没查， 自动展示永远不触发）', () => {
@@ -91,7 +105,7 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
     )
     assert.notEqual(fn.length, 0, '没找到 handleOpenRecord')
     assert.match(
-      fn, /fetchHistoryByUrl/,
+      fn, /fetchCommunityByUrl/,
       'handleOpenRecord 没有查社区 —— fromCache 恒为 false，自动展示在历史页这条路上永远不触发',
     )
   })

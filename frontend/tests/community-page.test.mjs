@@ -326,7 +326,13 @@ describe('App.vue 接线', () => {
   })
 
   test('by-url 只被用来置提示标志', () => {
-    assert.match(handleParse, /fetchHistoryByUrl\(key\)/)
+    // 查的是**社区视频表**（fetchCommunityByUrl），不是个人解析历史。
+    // 后者对「我解析过没有」成立，对「社区里有没有」不成立：
+    // 陌生人打开社区视频时会被判成没有，于是复用提示与重新解析按钮
+    // 都永远不出现。
+    assert.match(handleParse, /fetchCommunityByUrl\(key\)/)
+    assert.doesNotMatch(handleParse, /fetchHistoryByUrl/,
+      '仍在用个人解析历史判断社区里有没有这一份')
     assert.match(handleParse, /fromCache\.value\s*=/)
   })
 

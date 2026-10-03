@@ -31,7 +31,9 @@ from auth import get_current_user
 from database import (
     COMMUNITY_PAGE_SIZE_DEFAULT,
     COMMUNITY_PAGE_SIZE_MAX,
+    VIDEO_STATUS_READY,
     get_community_video,
+    get_video_by_url,
     list_community_videos,
     publish_video_card,
     search_community_videos,
@@ -76,6 +78,33 @@ async def community_videos(
     数据的不同方式，不是特权。
     """
     return list_community_videos(page=page, page_size=page_size, tag=tag)
+
+
+# ── 需登录：这条视频社区里有没有 ───────────────────────────
+#
+# ⚠️ 必须声明在 /videos/{video_id} **之前**。FastAPI 按声明顺序匹配，
+# "{video_id}" 声明在前的话，"by-url" 会被它吃掉并按 int 解析 → 422，
+# 症状是「这个端点怎么调都是参数不合法」，与鉴权、与数据都无关。
+@router.get("/videos/by-url")
+async def community_video_by_url(
+    url: str = Query(..., description="视频链接，需与解析时规范化后完全一致"),
+    user: dict = Depends(get_current_user),
+):
+    """社区视频表里有没有这一份。只答存在性与写权限，不回内容。
+
+    存在的理由是「按谁在读」而不是「按数据在哪张表」：前端要靠它决定
+    自动拉取还是等用户点「开始 AI 解析」，而用户点开一条**别人**解析的
+    视频时，他自己的解析历史里当然没有这一条——拿个人历史去判，
+    陌生人永远看不到复用提示，「重新解析」按钮也就永远不出现。
+    """
+    row = get_video_by_url(url)
+    ready = row is not None and row.get("status") == VIDEO_STATUS_READY
+    return {
+        "exists": ready,
+        # 写权限与内容在两处：这里给「能不能改」，内容由 /api/summarize 的
+        # 复用回放给。两处同源（都读 videos.parsed_by），不各算一次。
+        "can_regenerate": ready and row.get("parsed_by") == user["id"],
+    }
 
 
 # ── 需登录：详情 ──────────────────────────────────────────────

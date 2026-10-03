@@ -108,6 +108,7 @@ function streamSse(path, payload, { route, onError, onCancel, onDone }) {
 }
 
 const SUMMARY_ROUTES = {
+  ownership: 'onOwnership',
   subtitle: 'onSubtitle',
   summary: 'onSummary',
   mindmap: 'onMindmap',
@@ -122,8 +123,16 @@ const CHAT_ROUTES = {
   error: 'onError',
 }
 
-export function summarizeVideo(url, language, callbacks) {
-  return streamSse('/api/summarize', { url, language }, {
+/**
+ * 拉一次总结（SSE）。
+ *
+ * `options.overwrite` 为真时请求覆盖社区里已有的那一份（ADR 0007）。
+ * 权限由服务端判：不是首次解析者就回一条 error 事件，这里不预判——
+ * 前端手上没有「这份是谁解析的」这个事实（它由 ownership 事件给出），
+ * 预判只会让按钮变成一个自己也不知道对不对的开关。
+ */
+export function summarizeVideo(url, language, callbacks, options = {}) {
+  return streamSse('/api/summarize', { url, language, overwrite: !!options.overwrite }, {
     route: (event, data) => callbacks[SUMMARY_ROUTES[event]]?.(data),
     onError: callbacks.onError,
     onCancel: callbacks.onCancel,

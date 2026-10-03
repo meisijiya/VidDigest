@@ -201,7 +201,13 @@ class TestSecondParseReusesInsteadOfParsing:
         assert payload_of(events, "subtitle")[0]["full_text"] == row["subtitle_text"]
 
     def test_event_sequence_is_identical_to_a_fresh_parse(self, db, make_user, monkeypatch):
-        """复用走同一套事件名，前端不必为「复用」写第二套分支。"""
+        """复用走同一套事件名，前端不必为「复用」写第二套分支。
+
+        两处刻意的不一致，理由都写在 _replay_events 的 docstring 里：
+        多了 ownership（ADR 0007，回答「这份是不是你自己写的」），
+        以及 summary 整段一次下发而不是逐 token——它不是正在生成的。
+        除这两条之外事件名一致。
+        """
         s, _ = wire(monkeypatch)
         uid = make_user()
 
@@ -210,8 +216,13 @@ class TestSecondParseReusesInsteadOfParsing:
 
         assert kinds_of(first) == ["subtitle", "quota", "summary", "summary",
                                    "mindmap", "tags", "done"]
-        assert kinds_of(second) == ["subtitle", "quota", "summary",
+        assert kinds_of(second) == ["ownership", "subtitle", "quota", "summary",
                                     "mindmap", "tags", "done"]
+        # 去掉 ownership 之后，事件名集合（不是序列：summary 的条数本就不同）
+        # 必须与首次解析完全相同，多出或少掉任何一个都是前端要补的分支
+        assert set(kinds_of(second)[1:]) == set(kinds_of(first)), (
+            kinds_of(second), kinds_of(first)
+        )
 
     def test_quota_event_reports_my_own_unchanged_balance(self, db, make_user, monkeypatch):
         """复用者的额度事件必须是他自己的余额——他没被扣，数字就不该动。
@@ -689,7 +700,8 @@ class TestConcurrentSameUrl:
         assert kinds_of(first) == ["subtitle", "quota", "summary", "summary",
                                    "mindmap", "tags", "done"], first
         # 后到的是复用者：拿到完成后的那一份，不是半成品
-        assert kinds_of(second) == ["subtitle", "quota", "summary",
+        # （前置 ownership：告诉前端这个人能不能覆盖它，ADR 0007）
+        assert kinds_of(second) == ["ownership", "subtitle", "quota", "summary",
                                     "mindmap", "tags", "done"], second
         assert payload_of(second, "summary") == [row["summary_md"]], second
         assert payload_of(second, "mindmap") == [{"markdown": row["mindmap_md"]}]

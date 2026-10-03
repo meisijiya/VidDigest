@@ -34,14 +34,17 @@
                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
               </svg>
               <span>社区里已有这一份总结，直接复用，不用重复解析也不扣次数</span>
-              <button @click="reparse" :disabled="reparseLoading"
+              <button @click="reparse"
+                :disabled="reparseLoading || canRegenerate !== true"
+                :title="canRegenerate === true ? '用新的提示词重新生成并覆盖这一份' : '只有首次解析这个视频的人才能重新解析'"
                 class="ml-auto px-3 py-1 rounded-lg bg-panel border border-teal-200 text-teal-300 font-medium
                        hover:bg-teal-500 hover:text-ink hover:border-teal-500 disabled:opacity-50
+                       disabled:hover:bg-panel disabled:hover:text-teal-300 disabled:hover:border-teal-200
                        transition-all duration-200 active:scale-95 flex items-center gap-1.5">
                 <svg :class="['w-3.5 h-3.5', reparseLoading && 'animate-spin']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
                 </svg>
-                {{ reparseLoading ? '重新解析中...' : '重新解析' }}
+                {{ reparseButtonText }}
               </button>
             </div>
             <div class="flex flex-col lg:flex-row gap-6 lg:gap-8">
@@ -62,6 +65,9 @@
                   :key="summaryKey"
                   :user="currentUser"
                   :hasCommunityResult="fromCache"
+                  :regenerateRequested="regenerateRequested"
+                  @ownership="onOwnership"
+                  @regenerating="reparseLoading = $event"
                 />
               </div>
             </div>
@@ -112,13 +118,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { parseVideo, downloadViaServer } from './api/video.js'
 import { getSavedUser, fetchMe, logout as logoutApi, isLoggedIn } from './api/auth.js'
 import { fetchQuota } from './api/summarize.js'
 import { createCheckoutSession } from './api/payment.js'
-import { fetchHistoryByUrl, saveHistory } from './api/history.js'
-import { publishCommunityCard } from './api/community.js'
+import { saveHistory } from './api/history.js'
+import { publishCommunityCard, fetchCommunityByUrl } from './api/community.js'
 
 import AppHeader from './components/AppHeader.vue'
 import HeroSection from './components/HeroSection.vue'
@@ -151,6 +157,15 @@ const demoMode = ref(true)
 const historyDetail = ref(null)
 const fromCache = ref(false)
 const reparseLoading = ref(false)
+/**
+ * 这份社区总结是不是当前用户自己解析出来的（ADR 0007）。
+ * 三态而不是两态：null = 还没问过服务端。复用回放会先发 ownership 事件，
+ * 在那之前把按钮直接判成「不可点」是安全的；判成 false 则会在事件到达前
+ * 闪一句「这是别人的」，而它可能正是自己的。
+ */
+const canRegenerate = ref(null)
+/** 一次性信号：下一次 VideoSummary 挂载时按「重新解析」发起，而不是复用。 */
+const regenerateRequested = ref(false)
 const errorModal = ref({ visible: false, title: '', message: '', hint: '' })
 
 /** 顶栏额度面板的数据源。悬停时才拉，避免每次渲染都打一次接口。 */
@@ -293,22 +308,30 @@ async function handleParse(url) {
   videoData.value = null
   historyDetail.value = null
   fromCache.value = false
+  // 换视频就把「重新解析」这个一次性信号收回。必须在这里收而不是在
+  // reparse() 里就地置回：同一 tick 内改回去的话，组件重渲染时读到的
+  // 已经是被收走的值，信号在它出生前就蒸发了。
+  regenerateRequested.value = false
+  canRegenerate.value = null
   summaryKey.value++
   const key = canonicalUrl(check.url)
   currentUrl.value = key
   try {
     // 问一句「社区里有没有这一份」，只用于提示，不用于取内容。
     //
-    // 原来这里是命中就**直接返回**：不解析、不请求 AI，拿个人历史里的
-    // summary_md 渲染。那条路径会永久绕过社区视频表——社区里明明只有
-    // 一份总结，有过个人历史的人看到的却是另一份（工单 #7 顺带修）。
-    // 现在它只决定要不要显示「社区已有」这条提示；内容一律由
-    // VideoSummary 请求 /api/summarize 拿，那条路读的就是社区视频表。
+    // 这里问的是**社区视频表**（服务端事实），不是「我解析过没有」。
+    // 原来用的是个人解析历史，于是陌生人打开一条别人解析的视频时
+    // 必然被判成「社区里没有」——他看不到复用提示，
+    // 「重新解析」按钮也就永远不会出现。内容一律由 VideoSummary 请求
+    // /api/summarize 拿，那条路读的就是社区视频表。
     if (isLoggedIn()) {
       try {
-        fromCache.value = !!(await fetchHistoryByUrl(key))
+        const found = await fetchCommunityByUrl(key)
+        fromCache.value = !!found?.exists
+        canRegenerate.value = found?.exists ? !!found.can_regenerate : null
       } catch {
         fromCache.value = false
+        canRegenerate.value = null
       }
     }
     // 视频源信息（标题/封面/时长/格式）仍走 /api/parse：它不消耗额度，
@@ -360,30 +383,43 @@ function openCommunityVideo(item) {
   handleParse(item.video_url)
 }
 
-/** 重新解析：强制走完整解析流程（社区那份仍然复用，不重复调模型） */
-async function reparse() {
+/**
+ * 重新解析：让作者本人改写自己那一份（ADR 0007）。
+ *
+ * 这里原来调的是 /api/parse——而那条路**不调模型**，只取视频元信息。
+ * 于是点完什么都没重跑，总结仍旧从社区视频表原样回放：
+ * 一个转圈的图标加一次完全相同的结果，这就是「这个功能失效」的全部真相。
+ *
+ * 现在它只做一件事：把「按覆盖发起」这个信号交给 VideoSummary。
+ * 真正的重跑、扣额度、落库都在 /api/summarize 的 overwrite 分支里。
+ *
+ * 不清空 videoData / fromCache：横幅和按钮要留在原位转圈，
+ * 整个结果区塌下去再长出来只会让用户以为页面挂了。
+ */
+function reparse() {
   if (!currentUrl.value || reparseLoading.value) return
+  if (canRegenerate.value !== true) return
   reparseLoading.value = true
-  videoData.value = null
-  historyDetail.value = null
-  fromCache.value = false
+  regenerateRequested.value = true
   summaryKey.value++
-  try {
-    const res = await parseVideo(currentUrl.value)
-    if (res.success) {
-      videoData.value = res.data
-      demoMode.value = false
-      persistParseRecord(currentUrl.value, res.data)
-      publishCard(currentUrl.value, res.data)
-    } else {
-      showError({ message: res.error || '未知错误' })
-    }
-  } catch (err) {
-    showError(err)
-  } finally {
-    reparseLoading.value = false
-  }
 }
+
+/** VideoSummary 报来的写权限。服务端说了算，不在前端猜。 */
+function onOwnership(data) {
+  canRegenerate.value = !!data?.can_regenerate
+}
+
+/**
+ * 按钮上的字。三态对应三种事实，缺一不可：
+ * null（还没问过服务端）说「查一下」而不是「不能点」——后者会把
+ * 「尚未知道」渲染成「已被拒绝」，而这两件事的用户含义完全不同。
+ */
+const reparseButtonText = computed(() => {
+  if (reparseLoading.value) return '重新解析中...'
+  if (canRegenerate.value === true) return '重新解析'
+  if (canRegenerate.value === false) return '不是你的总结'
+  return '重新解析'
+})
 
 /** 从历史页点击记录：回填视频源，并带上个人问答历史 */
 async function handleOpenRecord(detail) {
@@ -408,10 +444,15 @@ async function handleOpenRecord(detail) {
   // 查失败一律当作「没有」，退回手动触发——宁可多点一次，
   // 也不能在结果其实不存在时自动发起并扣掉额度。
   fromCache.value = false
+  canRegenerate.value = null
+  regenerateRequested.value = false
   try {
-    fromCache.value = !!(await fetchHistoryByUrl(detail.video_url))
+    const found = await fetchCommunityByUrl(detail.video_url)
+    fromCache.value = !!found?.exists
+    canRegenerate.value = found?.exists ? !!found.can_regenerate : null
   } catch {
     fromCache.value = false
+    canRegenerate.value = null
   }
   summaryKey.value++
   window.scrollTo({ top: 0 })

@@ -175,8 +175,11 @@ describe('路由表', () => {
     )
   }
 
-  test('SUMMARY_ROUTES：六个既有映射未改，只多出 tags 一条', () => {
+  test('SUMMARY_ROUTES：六个既有映射未改，只多出 tags 与 ownership 两条', () => {
+    // ownership 是 ADR 0007 加的：复用回放会先发它，告诉前端这份
+    // 是不是当前用户自己解析的（「重新解析」按钮能不能点）。
     assert.deepEqual(readRoutes('SUMMARY_ROUTES'), {
+      ownership: 'onOwnership',
       subtitle: 'onSubtitle',
       summary: 'onSummary',
       mindmap: 'onMindmap',
@@ -252,7 +255,8 @@ describe('VideoSummary 标签渲染接线', () => {
   test('换视频与重新解析都会清空标签，不残留上一个视频的标签', () => {
     const wAt = source.indexOf('watch(() => props.videoUrl')
     const watcher = source.slice(wAt, source.indexOf('\n})', wAt))
-    const sAt = source.indexOf('function startSummarize()')
+    const sAt = source.indexOf('function startSummarize(')
+    assert.notEqual(sAt, -1, '没找到 startSummarize')
     const startFn = source.slice(sAt, source.indexOf('\n}\n', sAt) + 2)
     assert.match(watcher, /videoTags\.value = \[\]/, '换视频未清空标签')
     assert.match(startFn, /videoTags\.value = \[\]/, '重新解析未清空标签')

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections.abc import AsyncIterable
 
@@ -21,6 +22,7 @@ from database import (
     get_video_by_url,
     quota_limit,
     refund_quota,
+    regenerate_video,
     release_video,
     reserve_video,
 )
@@ -50,6 +52,11 @@ _BYOK_FAILURE_MESSAGE = "凭据无效或调用失败，请检查后重试"
 #: 第 4 轮时第 1 轮就该掉出去了（票面 AC3）。「刚才那个」这类指代
 #: 跨 3 轮以内还接得上；再多只是烧 token，还会把真正相关的那句挤出去。
 CHAT_CONTEXT_TURNS = 3
+
+#: 后来者想覆盖别人那一份时的拒绝文案（ADR 0007）。
+#: 提出来是因为「重新解析」按钮对所有人可见，不给后来者一句明确的话，
+#: 看到的就仍然是「点了没反应」——那正是本次要修的那个症状。
+_NOT_OWNER = "这份总结是别人解析的，只有首次解析它的人才能重新解析"
 
 
 @router.get("/quota")
@@ -94,6 +101,10 @@ def _quota_payload(user_id: int, primary: str = "parse") -> dict:
 class SummarizeRequest(BaseModel):
     url: str
     language: str = "zh"
+    #: 重新解析：改写社区里已有的那一份（ADR 0007）。
+    #: 只在 parsed_by 是本人时生效；否则服务端直接拒绝，不调模型不扣额度。
+    #: 默认 False——绝大多数请求只是来看一眼或首次解析。
+    overwrite: bool = False
 
 
 class ChatRequest(BaseModel):
@@ -238,6 +249,46 @@ async def _claim_video(video_url: str, user_id: int):
         await asyncio.sleep(min(VIDEO_POLL_INTERVAL_SECONDS, remaining))
 
 
+# ── 覆盖自己那一份（ADR 0007）──────────────────────────────
+#
+# 覆盖**不占位**：重新解析的那几十秒里旧内容仍然对所有人有效，
+# 把它改回 pending 会让复用者突然看到空白。代价是同一个作者可以并发发起
+# 两次覆盖、两次都调模型、两次都扣额度。下面这个进程内闸门挡掉后一次。
+#
+# 用 threading.Lock 而不是 asyncio.Lock：后者在 3.10 之后绑定了创建它的
+# 事件循环，同一个进程里跑第二个 loop（测试的每次 asyncio.run 就是）会抛
+# "bound to a different event loop"。这里只保护一个 set 的读写，持有时间
+# 是微秒级，同步锁不会成为瓶颈。
+_REGENERATE_INFLIGHT: set[str] = set()
+_REGENERATE_GUARD = threading.Lock()
+
+
+async def _begin_regenerate(video_url: str, user_id: int):
+    """判定这次请求能不能覆盖，返回 (outcome, row)。
+
+    - "regenerate" 可以覆盖，旧内容保持原样直到新结果算完
+    - "forbidden" 这一行属于别人，直接拒绝（不调模型、不扣额度）
+    - "busy"     同一个链接已有一次覆盖在跑，再点一次只会白烧一遍额度
+    - "skip"     这一行还没 ready，压根没有可覆盖的东西，按首次解析走
+    """
+    row = get_video_by_url(video_url)
+    if row is None or row.get("status") != "ready":
+        return "skip", row
+    if row.get("parsed_by") != user_id:
+        return "forbidden", row
+    with _REGENERATE_GUARD:
+        if video_url in _REGENERATE_INFLIGHT:
+            return "busy", row
+        _REGENERATE_INFLIGHT.add(video_url)
+    return "regenerate", row
+
+
+def _end_regenerate(video_url: str) -> None:
+    """放掉覆盖闸门。必须与 _begin_regenerate 成对，且放在 finally 里。"""
+    with _REGENERATE_GUARD:
+        _REGENERATE_INFLIGHT.discard(video_url)
+
+
 def _replay_events(user: dict, video: dict) -> list[ServerSentEvent]:
     """把社区里已有的那一份结果原样回放给后来的用户。
 
@@ -249,8 +300,18 @@ def _replay_events(user: dict, video: dict) -> list[ServerSentEvent]:
     2. segments 为空。社区视频表存的是字幕全文（后续追问要拿它作上下文），
        没有分段信息；full_text 是完整的。
     额度事件报的是**这个用户自己**的余额：他没被扣，数字就不该动。
+
+    ownership 事件是这个用户对这份内容的写权限（ADR 0007）。它必须在**回放
+    之前**发：前端要靠它决定「重新解析」按钮是给一句能点的话、还是一句
+    「这是别人的」——事后再补，用户已经看到一个点了没反应的按钮。
     """
     return [
+        ServerSentEvent(
+            raw_data=json.dumps({
+                "can_regenerate": video.get("parsed_by") == user["id"],
+            }, ensure_ascii=False),
+            event="ownership",
+        ),
         ServerSentEvent(
             raw_data=json.dumps({
                 "has_subtitle": True,
@@ -288,7 +349,7 @@ async def summarize_video(
 ) -> AsyncIterable[ServerSentEvent]:
     """
     AI 视频总结（SSE 流式）
-    事件顺序：subtitle → quota → summary(流式token) → mindmap → tags → done
+    事件顺序：ownership? → subtitle → quota → summary(流式token) → mindmap → tags → done
 
     一次解析产出三件事（总结 / 思维导图 / 标签），共用同一份字幕上下文，
     也只调一次模型、只扣一次额度。
@@ -296,49 +357,68 @@ async def summarize_video(
     同一个链接全站只解析一次（社区视频表，见 ADR 0001）：后来者直接拿到
     首次解析者的那一份结果，不调模型也不扣额度。两个用户同时进来时，
     只有抢到占位的那一个会调模型。
+
+    ``overwrite=True`` 是唯一的例外（ADR 0007）：首次解析者本人可以改写
+    自己那一份，走的是**不占位**的独立路径，不影响其他人的复用。
     """
-    # 未登录先拒：占位期间别人只能干等，而这次请求注定要被拒，
-    # 没有任何理由让它先去占一个位置。
-    if not user:
-        yield ServerSentEvent(
-            raw_data=json.dumps({
-                "message": _NOT_LOGGED_IN,
-                "need_login": True,
-                "need_vip": False,
-            }, ensure_ascii=False),
-            event="error",
-        )
-        return
 
-    # 社区里已有的结果：既不扣额度也不调模型，因此**不受额度限制**——
-    # 复用的成本是零，额度不该拦住「看别人已经解析好的东西」。
-    claim, existing = await _claim_video(req.url, user["id"])
-    if claim == "reuse":
-        for event in _replay_events(user, existing):
-            yield event
-        return
-    if claim == "busy":
-        yield ServerSentEvent(
-            raw_data=json.dumps({
-                "message": "这个视频正在解析中，请稍后再试",
-            }, ensure_ascii=False),
-            event="error",
-        )
-        return
-
-    # 到这里我们是占位者，可以调模型了。额度仍可能不够——
-    # 占位必须还回去，否则这个链接会被一个注定失败的请求永久卡住。
-    allowed, remaining, message = _check_quota_permission(user, "parse")
-    if not allowed:
-        release_video(req.url)
+    async def fail(message: str, need_vip: bool = False, need_login: bool = False):
+        """回一条错误事件。抽出来是因为这个端点的拒绝有四五个出口，
+        每次都手写一遍 json.dumps 只会让某一处漏掉某个字段。"""
         yield ServerSentEvent(
             raw_data=json.dumps({
                 "message": message,
-                "need_login": False,
-                "need_vip": True,
+                "need_login": need_login,
+                "need_vip": need_vip,
             }, ensure_ascii=False),
             event="error",
         )
+
+    # 未登录先拒：占位期间别人只能干等，而这次请求注定要被拒，
+    # 没有任何理由让它先去占一个位置。
+    if not user:
+        async for event in fail(_NOT_LOGGED_IN, need_login=True):
+            yield event
+        return
+
+    # 覆盖自己的那一份（ADR 0007）。判定放在**抢占位之前**：
+    # 覆盖路径根本没有占位可言，先抢位再判断会凭空造出一行 pending。
+    regenerate = False
+    if req.overwrite:
+        outcome, _ = await _begin_regenerate(req.url, user["id"])
+        if outcome == "forbidden":
+            async for event in fail(_NOT_OWNER):
+                yield event
+            return
+        if outcome == "busy":
+            async for event in fail("这份总结正在重新解析中，请稍后再试"):
+                yield event
+            return
+        # "skip"：社区里没有可覆盖的成品，按首次解析正常走
+        regenerate = outcome == "regenerate"
+
+    # 社区里已有的结果：既不扣额度也不调模型，因此**不受额度限制**——
+    # 复用的成本是零，额度不该拦住「看别人已经解析好的东西」。
+    if not regenerate:
+        claim, existing = await _claim_video(req.url, user["id"])
+        if claim == "reuse":
+            for event in _replay_events(user, existing):
+                yield event
+            return
+        if claim == "busy":
+            async for event in fail("这个视频正在解析中，请稍后再试"):
+                yield event
+            return
+
+    # 到这里我们可以调模型了（占位者，或覆盖自己那一份的作者）。
+    # 额度仍可能不够——占位必须还回去，否则这个链接会被一个注定失败的
+    # 请求永久卡住。覆盖路径没有占位可还。
+    allowed, remaining, message = _check_quota_permission(user, "parse")
+    if not allowed:
+        if not regenerate:
+            release_video(req.url)
+        async for event in fail(message, need_vip=True):
+            yield event
         return
 
     # 额度是否已扣。扣了之后没走完流程就要还回去。
@@ -420,7 +500,24 @@ async def summarize_video(
         # 「此后不再回滚额度」必须是同一刻的两件事，否则两者之间断流
         # 会留下「有结果却退了款」的矛盾状态。
         # 存的是**校验后**的标签——落库内容必须与用户当时看到的完全一致。
-        if complete_video(
+        if regenerate:
+            # 覆盖的 WHERE 里带 parsed_by：判定在 SQL 里，不在调用方。
+            # 返回 0 说明这行此刻不属于他（被并发改过、或本来就是别人的）。
+            # 此时**不**把 published 置真——用户什么都没拿到，
+            # 额度必须由 finally 退回去。
+            if regenerate_video(
+                req.url,
+                user["id"],
+                summary_md="".join(summary_parts),
+                mindmap_md=mindmap_md,
+                tags=tags_payload,
+                subtitle_text=full_text,
+            ) == 0:
+                logger.warning("社区视频 %r 已不属于 %r，未能覆盖", req.url, user["id"])
+                async for event in fail("重新解析没能写回社区，这份总结已被别人改动"):
+                    yield event
+                return
+        elif complete_video(
             req.url,
             summary_md="".join(summary_parts),
             mindmap_md=mindmap_md,
@@ -447,8 +544,14 @@ async def summarize_video(
     finally:
         # 结果没能落进社区表就把位置还回去。只删 pending 行，
         # 已经 ready 的社区内容永远不会被这一步碰到。
-        if not published:
+        # 覆盖路径没有占位，也**不能**在这里 release：那一行是别人的成果
+        # （或作者自己的旧成果），删掉它等于用一次失败的覆盖抹掉社区内容。
+        if not published and not regenerate:
             release_video(req.url)
+        # 覆盖闸门必须无条件放掉，异常路径也不能漏——漏一次，
+        # 这个链接此后就再也覆盖不了了（而内容明明还在）。
+        if regenerate:
+            _end_regenerate(req.url)
         # 唯一回滚点：except 分支和「客户端中途断开」共用它，不会重复退款。
         # 断流时抛的是 GeneratorExit / CancelledError，两者都继承 BaseException
         # 而非 Exception，上面的 except 抓不到——实测额度就停在扣减后的值。
