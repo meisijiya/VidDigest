@@ -93,20 +93,20 @@
     <div v-if="!compact" class="absolute bottom-0 left-0 right-0 pointer-events-none" aria-hidden="true">
       <svg class="w-full h-14 sm:h-20 overflow-hidden" viewBox="0 0 1440 80" preserveAspectRatio="none">
         <defs>
-          <!-- 扫光带：userSpaceOnUse 各自锚在自己的顶线上，
-               translateX 走完 120 就正好扫过整条线。
-               只给凸起生成（凹没有顶线可扫），与浮动共用 s.delay：
-               第 i 段被扫到的时刻正好是它自己浮到最高的那一下。 -->
+          <!-- 顶线本身就是一条渐变带：两端羽化到全透明，中间实色。
+               渐变用的是**这一段自己的颜色**，不是白色 —— 白色高光画在这
+               上面的话，看上去就又变成「一条常驻实线 + 一个光点在跑」，
+               而那条实线全程可见，正是要去掉的那个形态。
+               只给凸起生成（凹没有顶线）。 -->
           <linearGradient
-            v-for="s in wallSteps.filter(w => w.line)" :key="`grad-${s.id}`"
-            :id="`wall-shine-${s.id}`"
+            v-for="s in wallSteps.filter(w => w.line)" :key="`line-${s.id}`"
+            :id="`wall-line-${s.id}`"
             gradientUnits="userSpaceOnUse"
-            :x1="s.x - 12" :x2="s.x + 18" y1="0" y2="0"
-            class="wall-shine"
-            :style="{ animationDelay: s.delay + 's' }">
-            <stop offset="0%" stop-color="#fff" stop-opacity="0"/>
-            <stop offset="50%" stop-color="#fff" stop-opacity="0.9"/>
-            <stop offset="100%" stop-color="#fff" stop-opacity="0"/>
+            :x1="s.x" :x2="s.x + 120" y1="0" y2="0">
+            <stop offset="0%" :stop-color="s.line" stop-opacity="0"/>
+            <stop offset="25%" :stop-color="s.line" stop-opacity="1"/>
+            <stop offset="75%" :stop-color="s.line" stop-opacity="1"/>
+            <stop offset="100%" :stop-color="s.line" stop-opacity="0"/>
           </linearGradient>
         </defs>
 
@@ -117,11 +117,14 @@
             <!-- 向下多伸 20 个单位，落在 viewBox 之外被 svg 裁掉：
                  底边因此始终是齐的，凸起浮起来时底下不会露出缝。 -->
             <rect :x="s.x" :y="s.y" width="120" :height="100 - s.y" fill="#161F36"/>
-            <!-- 顶线与它的扫光层只在凸起上：凹（两垛之间的缺口）不画线。
-                 必须和块同处一个 <g>，分开写线一浮动就脱节。 -->
+            <!-- 顶线：只有凸起有。整条线就是上面那个渐变，没有额外的实心底，
+                 必须和块同处一个 <g>，分开写线一浮动就脱节。
+                 相位与凸起的起伏共用 s.delay：这段浮到最高的刻，正好亮到最盛。 -->
             <template v-if="s.line">
-              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>
-              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="`url(#wall-shine-${s.id})`"/>
+              <rect :x="s.x" :y="s.y" width="120" height="3"
+                    :fill="`url(#wall-line-${s.id})`"
+                    class="wall-line"
+                    :style="{ animationDelay: s.delay + 's' }"/>
             </template>
           </g>
         </g>
@@ -249,14 +252,16 @@ function handleParse() {
   50%      { transform: translateY(-5px); }
 }
 
-/* ── 城墙：顶线扫光 ──────────────────────────────────────
-   CSS 的 transform 落在 <linearGradient> 上等价于 gradientTransform，
-   移动的是渐变带本身，那条 3px 的线不用动。走满 120 就扫完一整条。 */
-.wall-shine {
-  animation: wall-shine 2.4s linear infinite;
+/* ── 城墙：顶线渐变显现 ─────────────────────────────────
+   线条本体已经是「两端羽化 + opacity 呼吸」的一条渐变带，
+   所以这里**不写位移**：写 translateX 就是在一条线上推一个光点，
+   观感退回到「线全程可见 + 另有东西在动」。
+   相位与 .wall-step 的起伏共用 s.delay，一个动作。 */
+.wall-line {
+  animation: wall-line 2.4s ease-in-out infinite;
 }
-@keyframes wall-shine {
-  from { transform: translateX(0); }
-  to   { transform: translateX(120px); }
+@keyframes wall-line {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 1; }
 }
 </style>

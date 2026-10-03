@@ -289,18 +289,17 @@ describe('城墙 · 底边固定，凸起上下浮', () => {
       'wall-step 的 <g> 上没有 animationDelay 绑定 —— 每段 delay 都白算了')
   })
 
-  test('块和它顶上的彩色线在同一个 <g> 里（分开写线，一浮动线就脱节）', () => {
+  test('块和它顶上的渐变线在同一个 <g> 里（分开写线，一浮动线就脱节）', () => {
     // 切片止于第一个 </g>，所以「顶线还在不在这个 <g> 里」直接数 rect 就够：
-    // 三个（块 / 彩色线 / 扫光层）。写成 <g v-if> 包一层就变成 1 个。
+    // 两个（块 / 顶线）。写成 <g v-if> 包一层就变成 1 个。
     const g = heroVue.match(/<g v-for="s in wallSteps"[\s\S]*?<\/g>/)
     assert.ok(g, '找不到城墙的 <g>')
     const rects = g[0].match(/<rect/g) || []
-    assert.equal(rects.length, 3,
-      `块的 <g> 里只有 ${rects.length} 个 rect —— 顶线或扫光层跑到 <g> 外面去了，一浮动就脱节`)
+    assert.equal(rects.length, 2,
+      `块的 <g> 里只有 ${rects.length} 个 rect —— 顶线跑到 <g> 外面去了，一浮动就脱节`)
     assert.match(g[0], /<template v-if="s\.line">/,
       '顶线没有挂在「只有凸起才画」的条件上 —— 凹也会被画上一道线')
-    assert.match(g[0], /:fill="s\.line"/, '块的 <g> 里找不到彩色顶线')
-    assert.match(g[0], /url\(#/, '顶线的扫光层不在块的 <g> 里')
+    assert.match(g[0], /url\(#/, '顶线不是渐变填充')
   })
 })
 
@@ -434,9 +433,9 @@ describe('城墙 · 底边固定，浮起来不露缝', () => {
 
 
 // ─────────────────────────────────────────────────────────
-// 城墙：顶线从左到右扫光
+// 城墙：顶线渐变显现
 // ─────────────────────────────────────────────────────────
-describe('城墙 · 顶线从左到右扫光', () => {
+describe('城墙 · 顶线渐变显现', () => {
   test('凸 / 凹 严格交替（两个凸挨着就没有「垛口」可言了）', () => {
     const base = wallBase()
     for (let i = 1; i < base.length; i++) {
@@ -481,6 +480,14 @@ describe('城墙 · 顶线从左到右扫光', () => {
       + '带子滑到循环接缝时这两座会紧挨着同色')
   })
 
+  test('凸起线条颜色一个都不重复（不只是相邻不同）', () => {
+    const lines = wallBase().filter((s) => s.line).map((s) => s.line)
+    const dup = lines.filter((c, i) => lines.indexOf(c) !== i)
+    assert.equal(dup.length, 0,
+      `颜色重复了：${[...new Set(dup)].join(' ')} —— 同一种颜色出现两次以上，`
+      + '哪怕不相邻，城墙也读不出「每座垛口一个自己的色」')
+  })
+
   test('每个凸起的颜色都取自 @theme（跟 UI 统一，不是随手挑的）', () => {
     const theme = themeHexes()
     assert.ok(theme.size > 20, `@theme 里只解析出 ${theme.size} 个色值，正则多半没对上`)
@@ -502,66 +509,94 @@ describe('城墙 · 顶线从左到右扫光', () => {
     }
   })
 
-  test('扫光只给凸起生成（凹没有顶线可扫）', () => {
+  test('渐变只给凸起生成（凹没有顶线）', () => {
     const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)
     assert.ok(defs, '没有 <defs>')
     assert.match(defs[0], /v-for="s in wallSteps\.filter\(w => w\.line\)"/,
-      '渐变的 v-for 没有按 line 过滤 —— 会给凹也生成一条扫光带，'
-      + '而凹上没有线可扫，这条渐变引用不到任何可见图形')
+      '渐变的 v-for 没有按 line 过滤 —— 会给凹也生成一条渐变，'
+      + '而凹的 line 是空的，这条渐变渲出来是空的')
   })
 
-  test('扫光与浮动共用同一份相位（高光跟着浪一起走）', () => {
-    const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)
-    assert.match(defs[0], /:style="\{ animationDelay: s\.delay \+ 's' \}"/,
-      '扫光渐变没有绑 s.delay —— 高光和起伏各走各的，看起来是两件不相干的事')
-    assert.doesNotMatch(heroVueRaw, /shineDelay/,
-      '数据里又有 shineDelay 了 —— 扫光一旦有独立延迟，'
-      + '第 i 段被扫到的时刻就和它自己浮到最高的时刻对不上了')
+  test('顶线与凸起的起伏共用同一份相位（这段亮到最盛时正好浮到最高）', () => {
+    const g = heroVue.match(/<g v-for="s in wallSteps"[\s\S]*?<\/g>/)
+    assert.match(g[0], /class="wall-line"\s*\n\s*:style="\{ animationDelay: s\.delay \+ 's' \}"/,
+      '顶线 rect 上没有 animationDelay 绑定 —— 亮起来的时刻和浮起来的时刻对不上')
+    assert.doesNotMatch(heroVueRaw, /shineDelay|lineDelay/,
+      '数据里又有独立的延迟字段了 —— 亮与浮一旦分成两套延迟，就对不上拍了')
   })
 
-  test('wall-shine 动画是横向位移（扫光是从左到右，不是上下）', () => {
-    const body = keyframeBody('wall-shine')
-    assert.match(body, /translateX\(/, 'wall-shine 没有 translateX，扫光方向不对')
-    assert.doesNotMatch(body, /translateY\(/, 'wall-shine 里混进了 translateY —— 扫光会变成上下')
+  test('顶线本身是渐变：两端羽化，不是一条硬边实色', () => {
+    const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)[0]
+    assert.match(defs, /:stop-color="s\.line"/,
+      '渐变用的不是这一段自己的颜色 —— 会渲成一条白带，而不是「这段的线」')
+    const stops = defs.match(/<stop\b[^>]*\/>/g) || []
+    assert.ok(stops.length >= 2, `渐变里只有 ${stops.length} 个 stop`)
+    assert.match(stops[0], /offset="0%"/, '第一个 stop 不在 0%')
+    assert.match(stops[0], /stop-opacity="0"/,
+      '渐变起点不透明 —— 顶线是硬边，不是渐变显现')
+    assert.match(stops[stops.length - 1], /offset="100%"/, '最后一个 stop 不在 100%')
+    assert.match(stops[stops.length - 1], /stop-opacity="0"/,
+      '渐变终点不透明 —— 顶线右端是硬边，不是渐变显现')
   })
 
-  test('扫光跑满一整条线的宽度（位移量 = 线宽）', () => {
-    const m = keyframeBody('wall-shine').match(/to\s*\{[^}]*translateX\((-?[\d.]+)px\)/)
-    assert.ok(m, 'wall-shine 里找不到终点位移')
-    const { width } = blockSpec()
-    assert.equal(Math.abs(Number(m[1])), width,
-      `扫光位移 ${m[1]}px ≠ 线宽 ${width}px —— 要么扫不到头，要么扫两遍`)
+  test('顶线靠 opacity 呼吸显现，不是靠位移', () => {
+    // 这条是这个形态的核心：只要线里出现 translate，观感就退回
+    // 「一条线全程可见 + 有个东西在它上面动」—— 正是要去掉的那个。
+    const body = keyframeBody('wall-line')
+    assert.match(body, /opacity/, 'wall-line 里没有 opacity —— 线条不会渐变地亮灭')
+    // 只查「出现过 opacity」是不够的：把它写成全程 opacity: 1 也能过，
+    // 而那正是「线一直全亮」。所以要查两件事 —— 值**变过**，且**暗过**。
+    const vals = [...new Set([...body.matchAll(/opacity:\s*([\d.]+)/g)].map((m) => m[1]))]
+    assert.ok(vals.length >= 2,
+      `wall-line 的 opacity 全程同一个值（${vals.join(' ')}）—— 线条不呼吸，一直亮着`)
+    assert.ok(vals.some((v) => Number(v) < 1),
+      `wall-line 的 opacity 最低只到 ${vals.join(' ')} —— 线全程不透明，没有「渐变显现」`)
+    assert.doesNotMatch(body, /translate[XY]\(/,
+      'wall-line 里出现了位移 —— 那是「线全程亮着 + 一个光点在上面跑」')
+    assert.match(cssRule('.wall-line'),
+      /animation:\s*wall-line\s+[\d.]+s\s+[\w-]+\s+infinite/,
+      '.wall-line 上没有「周期 + 缓动 + 无限循环」的 animation')
   })
 
-  test('渐变带和引用它的 rect 绑在同一个 id 上（对不上 = 静默失效）', () => {
-    // 不硬编码 'wall-shine' 前缀：那样只要前缀一变，正则就整个失配，
+  test('没有常驻的实色底线条（线全程可见就等于回到旧形态）', () => {
+    const g = heroVue.match(/<g v-for="s in wallSteps"[\s\S]*?<\/g>/)[0]
+    assert.doesNotMatch(g, /:fill="s\.line"/,
+      '又加回了一条 :fill="s.line" 的实心线 —— 线条会全程可见，'
+      + '那正是「线条完全显现」这个形态')
+    assert.doesNotMatch(g, /stop-color="#fff"/,
+      '渐变里混进了白色高光 —— 白带画在实线上就是「光点在动」')
+  })
+
+  test('渐变和引用它的 rect 绑在同一个 id 上（对不上 = 静默失效）', () => {
+    // 不硬编码 'wall-line' 前缀：那样只要前缀一变，正则就整个失配，
     // 「两者相等」这个真正要守的判断反而永远轮不到触发。
     const idFull = heroVue.match(/:id="(`[^`]*`)"/)
     const urlRef = heroVue.match(/url\(#([^)]*)\)/)
     assert.ok(idFull, '渐变没有用模板生成动态 id')
-    assert.ok(urlRef, '扫光 rect 没有 url(#…) 引用')
+    assert.ok(urlRef, '顶线 rect 没有 url(#…) 引用')
 
     assert.equal(idFull[1].slice(1, -1), urlRef[1],
-      `渐变 id 是 ${idFull[1]}、rect 引用的是 #${urlRef[1]} —— 对不上时扫光层渲染成空，**且不报任何错**`)
+      `渐变 id 是 ${idFull[1]}、rect 引用的是 #${urlRef[1]} —— 对不上时顶线渲染成空，**且不报任何错**`)
   })
 
-  test('扫光渐变挂在 <defs> 里（挂到 DOM 里会直接显示成一条白带）', () => {
+  test('渐变挂在 <defs> 里（挂到 DOM 里会直接显示成一条色带）', () => {
     const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)
     assert.ok(defs, '没有 <defs>')
-    assert.match(defs[0], /<linearGradient/, '扫光渐变不在 <defs> 内 —— 它会作为可见图形画出来')
+    assert.match(defs[0], /<linearGradient/, '渐变不在 <defs> 内 —— 它会作为可见图形画出来')
   })
 
-  test('扫光渐变按凸起生成，没有漏段', () => {
-    const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)
-    assert.match(defs[0], /v-for="s in wallSteps\.filter\(w => w\.line\)"/,
-      '渐变没有按凸起遍历 —— 只画了几条的话，城墙只有几段在扫光')
+  test('渐变横跨整条线（x1→x2 是一段的宽度）', () => {
+    const m = heroVue.match(/:x1="s\.x" :x2="s\.x \+ (\d+)"/)
+    assert.ok(m, '渐变的横向范围没有按 s.x 铺开')
+    assert.equal(Number(m[1]), blockSpec().width,
+      `渐变铺了 ${m[1]}，线宽是 ${blockSpec().width} —— 线两端会有一截没吃到渐变`)
   })
 
-  test('浮动与扫光同周期（不同步 = 看着很乱）', () => {
+  test('起伏与顶线同周期（不同步 = 看着很乱）', () => {
     const bob = Number(cssRule('.wall-step').match(/wall-bob\s+([\d.]+)s/)[1])
-    const shine = Number(cssRule('.wall-shine').match(/wall-shine\s+([\d.]+)s/)[1])
-    assert.equal(bob, shine,
-      `浮动 ${bob}s、扫光 ${shine}s 周期不同 —— 两个动画会周期性错拍，看着像卡带`)
+    const line = Number(cssRule('.wall-line').match(/wall-line\s+([\d.]+)s/)[1])
+    assert.equal(bob, line,
+      `起伏 ${bob}s、顶线 ${line}s 周期不同 —— 两个动画会周期性错拍，看着像卡带`)
   })
 })
 

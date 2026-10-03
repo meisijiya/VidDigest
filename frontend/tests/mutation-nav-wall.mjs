@@ -127,15 +127,19 @@ const MUTANTS = [
     file: HERO,
     pairs: [[L(
       '            <template v-if="s.line">',
-      '              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>',
-      '              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="`url(#wall-shine-${s.id})`"/>',
+      '              <rect :x="s.x" :y="s.y" width="120" height="3"',
+      '                    :fill="`url(#wall-line-${s.id})`"',
+      '                    class="wall-line"',
+      "                    :style=\"{ animationDelay: s.delay + 's' }\"/>",
       '            </template>',
       '          </g>',
     ), L(
       '          </g>',
       '          <template v-if="s.line">',
-      '            <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>',
-      '            <rect :x="s.x" :y="s.y" width="120" height="3" :fill="`url(#wall-shine-${s.id})`"/>',
+      '            <rect :x="s.x" :y="s.y" width="120" height="3"',
+      '                  :fill="`url(#wall-line-${s.id})`"',
+      '                  class="wall-line"',
+      "                  :style=\"{ animationDelay: s.delay + 's' }\"/>",
       '          </template>',
     )]],
     expect: /只有 1 个 rect|没有挂在「只有凸起才画」/,
@@ -242,40 +246,88 @@ const MUTANTS = [
     expect: /overflow-hidden|没有 viewBox/,
   },
 
-  // ── 城墙：扫光 ────────────────────────────────────────
+  // ── 城墙：顶线渐变显现 ──────────────────────────────────
   {
-    name: 'W21 扫光横向改成纵向（不是从左到右）',
+    name: 'W21 顶线里出现位移（退回「线全程亮着 + 一个光点在上面跑」）',
     file: HERO,
     pairs: [[L(
-      '@keyframes wall-shine {',
-      '  from { transform: translateX(0); }',
-      '  to   { transform: translateX(120px); }',
+      '@keyframes wall-line {',
+      '  0%, 100% { opacity: 0.25; }',
+      '  50%      { opacity: 1; }',
       '}',
     ), L(
-      '@keyframes wall-shine {',
-      '  from { transform: translateY(0); }',
-      '  to   { transform: translateY(120px); }',
+      '@keyframes wall-line {',
+      '  0%, 100% { opacity: 0.25; transform: translateX(0); }',
+      '  50%      { opacity: 1; transform: translateX(120px); }',
       '}',
     )]],
-    expect: /扫光会变成上下|扫光方向不对/,
+    expect: /出现了位移/,
   },
   {
-    name: 'W22 扫光位移 120 -> 60（扫不到线头）',
+    name: 'W22 渐变两端不羽化（顶线变成硬边实色，不是渐变显现）',
     file: HERO,
-    pairs: [[L('@keyframes wall-shine {', '  from { transform: translateX(0); }',
-      '  to   { transform: translateX(120px); }', '}'),
-      L('@keyframes wall-shine {', '  from { transform: translateX(0); }',
-        '  to   { transform: translateX(60px); }', '}')]],
-    expect: /扫不到头/,
+    pairs: [[
+      '<stop offset="0%" :stop-color="s.line" stop-opacity="0"/>',
+      '<stop offset="0%" :stop-color="s.line" stop-opacity="1"/>',
+    ], [
+      '<stop offset="100%" :stop-color="s.line" stop-opacity="0"/>',
+      '<stop offset="100%" :stop-color="s.line" stop-opacity="1"/>',
+    ]],
+    expect: /不透明|硬边/,
   },
   {
-    name: 'W23 渐变 id 与 rect 的 url 引用对不上（扫光层静默渲染成空）',
+    name: 'W22b 渐变改用白色（又变成一条白高光带压在别的线上面）',
     file: HERO,
-    pairs: [[':id="`wall-shine-${s.id}`"', ':id="`wall-shine-g-${s.id}`"']],
-    expect: /对不上时扫光层渲染成空|扫光 rect 没有 url/,
+    pairs: [[':stop-color="s.line"', 'stop-color="#fff"']],
+    expect: /不是这一段自己的颜色|混进了白色高光/,
   },
   {
-    name: 'W24 扫光渐变被移出 <defs>（直接当可见图形画出来）',
+    name: 'W22c 又加回一条常驻实色底线（线全程可见，正是要去掉的形态）',
+    file: HERO,
+    // 一对多行替换：from / to 各自是一整段，不是两个 pair。
+    pairs: [[L(
+      '            <template v-if="s.line">',
+      '              <rect :x="s.x" :y="s.y" width="120" height="3"',
+    ), L(
+      '            <template v-if="s.line">',
+      '              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>',
+      '              <rect :x="s.x" :y="s.y" width="120" height="3"',
+    )]],
+    expect: /只有 3 个 rect|又加回了一条 :fill="s.line"/,
+  },
+  {
+    name: 'W22d 顶线不呼吸（opacity 动画没了，线一直是全亮）',
+    file: HERO,
+    pairs: [[L(
+      '@keyframes wall-line {',
+      '  0%, 100% { opacity: 0.25; }',
+      '  50%      { opacity: 1; }',
+      '}',
+    ), L(
+      '@keyframes wall-line {',
+      '  from { opacity: 1; }',
+      '  to   { opacity: 1; }',
+      '}',
+    )]],
+    expect: /没有 opacity|不呼吸|没有「渐变显现」/,
+  },
+  {
+    name: 'W22e 顶线不绑 s.delay（亮起来的时刻和浮起来的时刻对不上）',
+    file: HERO,
+    pairs: [[
+      "                    :style=\"{ animationDelay: s.delay + 's' }\"/>",
+      '                    style=""/>',
+    ]],
+    expect: /没有 animationDelay 绑定/,
+  },
+  {
+    name: 'W23 渐变 id 与 rect 的 url 引用对不上（顶线静默渲染成空）',
+    file: HERO,
+    pairs: [[':id="`wall-line-${s.id}`"', ':id="`wall-line-g-${s.id}`"']],
+    expect: /对不上时顶线渲染成空|顶线 rect 没有 url/,
+  },
+  {
+    name: 'W24 渐变被移出 <defs>（直接当可见图形画出来）',
     file: HERO,
     pairs: [['        <defs>\n', ''], ['        </defs>\n', '']],
     expect: /没有 <defs>|不在 <defs> 内/,
@@ -305,22 +357,30 @@ const MUTANTS = [
     expect: /没有 violet|没有 purple|没有 pink|没有 cyan|色谱断了/,
   },
   {
-    name: 'W26d 扫光渐变不再按凸起过滤（给凹也生成一条没人用的扫光带）',
+    name: 'W26d 渐变不再按凸起过滤（给凹也生成一条没人用的渐变）',
     file: HERO,
     pairs: [['v-for="s in wallSteps.filter(w => w.line)"', 'v-for="s in wallSteps"']],
     expect: /没有按凸起遍历|没有按 line 过滤/,
   },
   {
-    name: 'W26e 扫光又有了独立延迟（高光和起伏对不上拍）',
+    name: 'W26e 顶线又有了独立延迟（亮与浮分成两套，对不上拍）',
     file: HERO,
     pairs: [['delay: i * WALL_STEP_DELAY })),',
-      'delay: i * WALL_STEP_DELAY, shineDelay: i * WALL_STEP_DELAY })),']],
-    expect: /又有 shineDelay/,
+      'delay: i * WALL_STEP_DELAY, lineDelay: i * WALL_STEP_DELAY })),']],
+    expect: /又有独立的延迟字段/,
   },
   {
-    name: 'W27 浮动与扫光不同周期（两个动画周期性错拍，像卡带）',
+    name: 'W26f 凸起颜色出现非相邻重复（相邻那条查不出来，得靠全局去重）',
+    // 目标：让第 1 个和第 4 个凸起同色 —— 中间隔着两座，
+    // 「相邻不同」那条查不到，只有「一个都不重复」那条能抓。
     file: HERO,
-    pairs: [['animation: wall-shine 2.4s linear infinite', 'animation: wall-shine 3.1s linear infinite']],
+    pairs: [["line: '#ec4899' },", "line: '#7c3aed' },"]],
+    expect: /颜色重复了/,
+  },
+  {
+    name: 'W27 起伏与顶线不同周期（两个动画周期性错拍，像卡带）',
+    file: HERO,
+    pairs: [['animation: wall-line 2.4s ease-in-out infinite', 'animation: wall-line 3.1s ease-in-out infinite']],
     expect: /看着像卡带/,
   },
   {
