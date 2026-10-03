@@ -40,6 +40,67 @@ class TestVocabularyItself:
         assert tags.MAX_TAGS == 3
 
 
+class TestThePromptDoesNotInviteTheFallback:
+    """提示词这一层：模型不是没得选，是被给了不选的许可。
+
+    实测（社区里 4 条视频 3 条落进「其他」）：其中「游戏促销」与
+    「劳动仲裁」本该有的标签一直在词表里，所以根因不在词表，在
+    「确实没有合适的就选其他」这句话把兜底出口修成了默认出口。
+    这两条守的是那扇门不会被人顺手加回来。
+    """
+
+    def test_no_hands_off_phrase_says_use_the_fallback(self):
+        import prompt_template
+
+        text = prompt_template.load_template("summarize_full").template
+        for phrase in ("没有合适", "没有匹配的", "不匹配"):
+            assert phrase not in text, (
+                f"提示词里又出现了「{phrase}…就选其他」这类兜底出口，"
+                "它会让本该有明确标签的视频全落进「其他」"
+            )
+
+    def test_the_fallback_is_still_reachable_by_a_real_remainder(self):
+        """收紧出口不等于封死出口：词表真的盖不住时仍要能落「其他」。
+
+        连这条都没有的话，模型遇到真的无关题材就只能硬凑一个，
+        那比落「其他」更坏——错误标签会把视频带进错误的筛选结果。
+        """
+        import prompt_template
+
+        text = prompt_template.load_template("summarize_full").template
+        assert "不属于上面任何一类" in text, "兜底的适用条件被删掉了"
+        assert "拿不准就选最接近的那一类" in text, (
+            "没有给「拿不准」时的替代动作，模型会直接跳到「其他」"
+        )
+
+    def test_every_tag_shown_in_the_examples_is_inside_the_vocabulary(self):
+        """示例里的标签必须真的在词表内，否则示例本身在教模型自创。
+
+        示例的权重远高于规则说明——一条写着词表外标签的示例，
+        比整段「不要自创近义词」更能说服模型去自创。
+        """
+        import re
+
+        import prompt_template
+
+        text = prompt_template.load_template("summarize_full").template
+        block = text.split("判断示例")[1] if "判断示例" in text else ""
+        assert block, "标签示例整段没了 —— 那正是压制兜底的唯一手段"
+
+        shown = re.findall(r"→\s*([^\n]+)", block)
+        assert len(shown) >= 4, f"示例只剩 {len(shown)} 条，起不到示范作用"
+
+        allowed = set(tags.TAG_VOCABULARY)
+        for line in shown:
+            for word in re.split(r"[、,，\s]+", line.strip()):
+                if not word:
+                    continue
+                assert word in allowed, (
+                    f"示例里出现了词表外的标签「{word}」，"
+                    f"示例会教模型自创。词表：{sorted(allowed)}"
+                )
+
+
 class TestOutOfVocabularyIsDropped:
     def test_invented_tags_are_not_accepted(self):
         accepted, rejected = tags.validate_tags(["编程", "AI 编程", "编程教学"])
