@@ -57,6 +57,10 @@ DB_FUNCS = {
     # 漏掉它，这道门禁就对「测试直接调它」失明 —— 而那条测试会连上
     # 真实 app.db 并改 model_providers。
     "update_model_provider",
+    # 账号生命周期（ADR 0012）：三个都是**写** users 表的，
+    # 漏掉任何一个，这道门禁就对「测试直接调它」失明 ——
+    # 而 delete_user 还会连带删 chat_messages。
+    "create_admin_user", "set_user_admin", "delete_user",
 }
 
 #: 取了这些参数就算拿到了 db 夹具（client_app 内部依赖 db）

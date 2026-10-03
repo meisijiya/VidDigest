@@ -134,7 +134,7 @@ export async function fetchAdminCommunity({ page = 1, pageSize = 20 } = {}) {
 }
 
 /**
- * 调整某个用户的解析 / 对话额度。**需管理员。本文件唯一的写操作。**
+ * 调整某个用户的解析 / 对话额度。**需管理员。**
  *
  * 字段名必须翻成 snake_case（`parse_limit` / `chat_limit`）才与服务端
  * `QuotaUpdateRequest` 对上——发 camelCase 的话 pydantic 会当成「两个字段
@@ -202,4 +202,59 @@ export async function updateAdminModel(providerId, patch = {}) {
     item: toAdminModelItem(res.data.item),
     platformDefault: res.data.platform_default || null,
   }
+}
+
+/**
+ * 后台建号（ADR 0012）。**需管理员。**
+ *
+ * `email` / `password` 原样发（它们本来就是 snake_case 同形），`is_admin`
+ * 显式翻成布尔——后端声明的是 `bool`，发 0/1 虽然也能过，但让「这个字段
+ * 是不是开关」这件事在契约上只有一个答案。
+ *
+ * @returns {Promise<{user: object}>} `user` 是**回读**结果，不是请求值的回显。
+ */
+export async function createAdminUser({ email, password, isAdmin = false } = {}) {
+  const res = await client().post('/api/admin/users', {
+    email,
+    password,
+    is_admin: !!isAdmin,
+  })
+  if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
+    throw new Error('建号响应形状不对')
+  }
+  return { user: res.data.user }
+}
+
+/**
+ * 改管理员标记（ADR 0012）。**需管理员。**
+ *
+ * **只发 is_admin 一个键**：后端 `UserAdminUpdateRequest` 是 extra="forbid"，
+ * 多带一个键会整个 422（其中包括 is_vip——VIP 不在后台可改范围）。
+ *
+ * @returns {Promise<{user: object}>}
+ */
+export async function setUserAdmin(userId, isAdmin) {
+  const res = await client().patch(`/api/admin/users/${userId}`, {
+    is_admin: !!isAdmin,
+  })
+  if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
+    throw new Error('权限调整响应形状不对')
+  }
+  return { user: res.data.user }
+}
+
+/**
+ * 删号（ADR 0012）。**需管理员。**
+ *
+ * 名下有订单或解析历史时后端回 **409**，body 形如
+ * `{ detail, blockers: { orders: 2, parse_history: 5 } }`。
+ * 本函数把 blockers 原样带出去（不塞进 message）：前端要的是数字，
+ * 「还剩几行要处理」不能靠从中文里正则抠。
+ *
+ * @returns {Promise<{deleted: number}>}
+ * @throws {Error} 附带 `.status` 与 `.blockers`（409 时）
+ */
+export async function deleteAdminUser(userId) {
+  const res = await client().delete(`/api/admin/users/${userId}`)
+  return { deleted: res.data?.deleted ?? userId }
 }

@@ -1163,6 +1163,133 @@ def set_user_quota_override(user_id: int, overrides: dict) -> int:
         return cursor.rowcount
 
 
+class UserConflict(Exception):
+    """删除 / 改权限被前置条件挡下。路由层翻成 409。
+
+    刻意**不**继承 ValueError：ValueError 说的是「你传的值不对」，
+    而这里说的是「这个人现在动不了」——两者的补救动作完全不同，
+    混成一个 400 会让前端把「先处理订单」显示成「参数写错了」。
+    """
+
+    def __init__(self, detail: str, blockers: dict | None = None):
+        super().__init__(detail)
+        self.detail = detail
+        #: 表名 → 行数。给前端做「还剩几行要处理」，不给人看。
+        self.blockers = blockers or {}
+
+
+#: 删用户前必须为空的表 → 给管理员看的中文名。
+#:
+#: orders 与 parse_history 都带 ``REFERENCES users(id)`` 且**没有 ON DELETE**，
+#: SQLite 在 foreign_keys=ON 下按 RESTRICT 处理：不先清掉这些行，
+#: DELETE 会直接抛 ForeignKeyError —— 500，且错误信息对管理员毫无指导性。
+#: 这里先查一次，把数据库约束翻译成一句能照着做的话。
+_USER_DELETE_BLOCKERS = {
+    "orders": "订单",
+    "parse_history": "解析历史",
+}
+
+
+def _user_admin_count(conn) -> int:
+    return conn.execute("SELECT count(*) FROM users WHERE is_admin = 1").fetchone()[0]
+
+
+def set_user_admin(user_id: int, is_admin: bool, *, acting_id: int | None = None) -> int:
+    """改管理员标记。返回 1 = 成功，0 = 用户不存在（路由层翻 404）。
+
+    **不**碰 VIP：会员判定留在 ``is_vip_active`` 那一条路径上，
+    由订单支付写入。后台改它会同时踩到「新增测试不得锁会员行为」这条纪律。
+
+    两道自锁保护，失效后果都不可逆：
+      · 不能撤销**自己**的权限 —— 那这次操作就成了最后一步，
+        单管理员部署下再没有人能把它改回来（只能进库改）。
+      · 不能把**最后一个**管理员降级 —— 同上，只是隔了一层。
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT is_admin FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return 0
+        if acting_id is not None and user_id == acting_id and not is_admin:
+            raise UserConflict("不能撤销自己的管理员权限——那样就没有人能把它改回来了")
+        if row["is_admin"] and not is_admin and _user_admin_count(conn) <= 1:
+            raise UserConflict("系统里只剩这一个管理员，不能降级")
+        conn.execute(
+            "UPDATE users SET is_admin = ?, updated_at = datetime('now') WHERE id = ?",
+            (1 if is_admin else 0, user_id),
+        )
+        return 1
+
+
+def create_admin_user(email: str, password_hash: str, is_admin: bool = False) -> dict:
+    """后台建号。
+
+    **不写任何额度覆盖**：新号一律回落全局上限，与公开注册完全一致。
+    要单独放宽走额度那条路（``set_user_quota_override``），
+    在这里偷偷给一份初值会让「这个号为什么和别人不一样」变成查不到的历史。
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            "INSERT INTO users (email, password_hash, is_admin) VALUES (?, ?, ?)",
+            (email, password_hash, 1 if is_admin else 0),
+        )
+        return {
+            "id": cursor.lastrowid,
+            "email": email,
+            "is_admin": 1 if is_admin else 0,
+        }
+
+
+def delete_user(user_id: int, *, acting_id: int | None = None) -> None:
+    """删掉一个用户。**名下有内容就拒绝**，绝不静默级联（ADR 0012）。
+
+    拒绝而不是级联的理由：订单是支付凭证，解析历史是用户自己的数据。
+    级联换来的是「后台一个按钮点下去」，付出的是「删错了没法恢复」——
+    两边不对称，所以宁可让人多走一步。冲突时抛 ``UserConflict``。
+
+    ``videos`` **不**在阻断名单里：``parsed_by`` 本来就是弱引用，
+    既有设计写明「解析者注销后社区内容必须留下来」（ADR 0010），
+    社区列表用 LEFT JOIN 取作者，解析者没了照样读得出。
+
+    ``chat_messages`` 没有外键，但必须跟着删：同一段注释也写了
+    「会话记录应随该用户一起消失，而不是变成孤儿行」。
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT is_admin FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return
+        if acting_id is not None and user_id == acting_id:
+            raise UserConflict("不能删除自己正在用的账号")
+        # 这条在端点路径下**不可达**：actor 与 target 不同时 actor 也是管理员，
+        # 于是管理员至少两个，「最后一个」的条件永远不成立；actor == target
+        # 时上面已经拦住了。留着是纵深防御——自删守卫哪天放宽，这里兜住。
+        if row["is_admin"] and _user_admin_count(conn) <= 1:
+            raise UserConflict("系统里只剩这一个管理员，不能删除")
+
+        counts = {
+            table: conn.execute(
+                f"SELECT count(*) FROM {table} WHERE user_id = ?", (user_id,)
+            ).fetchone()[0]
+            for table in _USER_DELETE_BLOCKERS
+        }
+        blocking = {t: n for t, n in counts.items() if n}
+        if blocking:
+            parts = "、".join(
+                f"{_USER_DELETE_BLOCKERS[t]} {n} 条" for t, n in blocking.items()
+            )
+            raise UserConflict(
+                f"这个账号名下还有{parts}，先处理掉再删。"
+                "后台不替你级联删除——删错了没法恢复。",
+                blockers=blocking,
+            )
+
+        conn.execute("DELETE FROM chat_messages WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
 def list_admin_community(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0) -> dict:
     """后台社区记录列表（require_admin 保护）。
 

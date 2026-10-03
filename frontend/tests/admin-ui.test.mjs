@@ -109,13 +109,18 @@ const NON_COLOR = {
  */
 function classTokens(src) {
   const out = []
-  for (const m of src.matchAll(/class="([^"]*)"/g)) out.push(m[1])
+  // 负向后顾：`:class="` 里也含 `class="`，不加它会把整个 Vue 表达式
+  // 当成静态类整段吞进来。
+  for (const m of src.matchAll(/(?<![:\w-])class="([^"]*)"/g)) out.push(m[1])
   for (const m of src.matchAll(/:class="([^"]*)"/g)) {
     for (const s of m[1].matchAll(/'([^']*)'/g)) out.push(s[1])
   }
   return out.join(' ').split(/\s+/).filter(Boolean).map((t) => {
-    const s = t.replace(/["'`]/g, '')
-    return !s.includes('[') && s.endsWith(']') ? s.slice(0, -1) : s
+    let s = t.replace(/["'`]/g, '')
+    // 收尾的 `]` 削掉；以 `[` 开头的是任意值（text-[10px]），要留着
+    if (!s.includes('[') && s.endsWith(']')) s = s.slice(0, -1)
+    // 数组元素之间的逗号会粘在 token 尾巴上
+    return s.replace(/,+$/, '')
   }).filter(Boolean)
 }
 
@@ -622,11 +627,12 @@ describe('后端契约 · snake_case 转换收在一处', () => {
     const m = adminCode.match(/import \{([^}]*)\} from '\.\.\/api\/admin\.js'/)
     assert.ok(m, "没有从 '../api/admin.js' 导入")
     const names = m[1].split(',').map((s) => s.trim()).filter(Boolean)
-    // 契约从四个长到五个：多出来的 updateAdminModel 是 ADR 0010
-    // 「模型清单可改」的前端出口。**这份名单是冻结的**——
+    // 契约从五个长到八个：createAdminUser / setUserAdmin / deleteAdminUser
+    // 是 ADR 0012 账号生命周期的前端出口。**这份名单是冻结的**——
     // 少一个说明有路径绕过了 api 层，多一个说明有新的未审接口混进来了。
     assert.deepEqual(names.sort(),
-      ['fetchAdminCommunity', 'fetchAdminModels', 'fetchAdminUsers',
+      ['createAdminUser', 'deleteAdminUser', 'fetchAdminCommunity',
+       'fetchAdminModels', 'fetchAdminUsers', 'setUserAdmin',
        'setUserQuota', 'updateAdminModel'],
       '导入的 API 名字与冻结的契约不一致')
   })
@@ -912,5 +918,305 @@ describe('saveModel 真跑 · 发出去的 payload', () => {
     seedDraft(box, REAL_ROW)
     await box.saveModel(REAL_ROW)
     assert.equal(box.calls.length, 0, '正在保存时再点必须直接返回')
+  })
+})
+// ── 账号生命周期 · 抽函数真跑（ADR 0012）────────────────────
+/**
+ * toUser 的替身。它在组件里是真实存在的，但本文件从来没求值过它
+ * （只 includes 过名字），所以这里自己实现一份。
+ *
+ * **必须**照抄 `!!r.is_admin` 这一步：「回读替换」那条断言要靠它——
+ * 服务端回的是 0/1，替身若原样透传，那条断言就变成了在测替身自己。
+ *
+ * 替身只保留这几个用例关心的字段；本组测试的被测对象是
+ * saveNewUser / toggleAdmin / confirmDelete，不是 toUser 本身。
+ */
+const toUserStub = (r) => ({
+  id: r.id,
+  email: r.email,
+  isAdmin: !!r.is_admin,
+  isVip: !!r.is_vip,
+})
+
+const USER_FN_BODY = [
+  extractFn(adminCode, 'saveNewUser'),
+  extractFn(adminCode, 'toggleAdmin'),
+  extractFn(adminCode, 'askDelete'),
+  extractFn(adminCode, 'cancelDelete'),
+  extractFn(adminCode, 'confirmDelete'),
+].join('\n')
+
+/**
+ * 沙箱。view 用普通对象 { value: { items, total } } 冒充 computed——
+ * 组件里那几处写的是 view.value.xxx，这个形状能对上。
+ *
+ * opsFeedbacks / createDraft / createFeedback 必须是**同一份**对象贯穿
+ * 「工厂入参」与断言侧：各造一份的话种子写进函数看不见的地方，
+ * 所有用例都因为 d={} 早退，而「全绿」和「判据在咬」看起来一模一样。
+ *
+ * `api` 参数用来注入会抛错的 API：失败分支与 409 分支必须真的跑一遍，
+ * 不能靠「反正成功路径绿了」推断失败路径也绿。
+ */
+function makeUserSandbox({ items = [], total = 0, api = {} } = {}) {
+  const calls = []
+  const opsFeedbacks = {}
+  const createDraft = { email: '', password: '', isAdmin: false }
+  const createFeedback = { kind: '', text: '' }
+  const pendingDeleteId = { value: null }
+  const view = { value: { items, total } }
+
+  const defaultApi = {
+    async createAdminUser(payload) {
+      calls.push({ op: 'create', payload })
+      return { user: { id: 99, email: payload.email, is_admin: payload.is_admin ? 1 : 0 } }
+    },
+    async setUserAdmin(id, flag) {
+      calls.push({ op: 'admin', id, flag })
+      return { user: { id, is_admin: flag ? 1 : 0 } }
+    },
+    async deleteAdminUser(id) {
+      calls.push({ op: 'delete', id })
+      return { deleted: id }
+    },
+  }
+  const impl = { ...defaultApi, ...api }
+
+  const factory = new Function(
+    'createOpen', 'creating', 'busyUserId', 'pendingDeleteId',
+    'createDraft', 'createFeedback', 'opsFeedbacks', 'view',
+    'opsFeedbackOf', 'createAdminUser', 'setUserAdmin', 'deleteAdminUser',
+    'replaceUser', 'toUser', 'messageOf',
+    `${USER_FN_BODY}\nreturn { saveNewUser, toggleAdmin, askDelete, cancelDelete, confirmDelete }`,
+  )
+  const fns = factory(
+    { value: false }, { value: false }, { value: null }, pendingDeleteId,
+    createDraft, createFeedback, opsFeedbacks, view,
+    (id) => {
+      if (!opsFeedbacks[id]) opsFeedbacks[id] = { kind: '', text: '' }
+      return opsFeedbacks[id]
+    },
+    impl.createAdminUser, impl.setUserAdmin, impl.deleteAdminUser,
+    (raw) => {
+      // replaceUser 的替身：只做「把回读结果换成 camelCase 那一行」
+      const fresh = toUser(raw)
+      const i = view.value.items.findIndex((x) => x.id === fresh.id)
+      if (i >= 0) view.value.items.splice(i, 1, fresh)
+    },
+    toUserStub,
+    (e) => String((e && e.response && e.response.data && e.response.data.detail)
+      || (e && e.message) || e),
+  )
+  return { ...fns, calls, opsFeedbacks, createDraft, createFeedback, view, pendingDeleteId }
+}
+
+function userRow(id, over = {}) {
+  return {
+    id, email: `u${id}@example.com`, isAdmin: false, isVip: false,
+    parseUsed: 0, chatUsed: 0, parseLimit: 3, chatLimit: 10,
+    parseLimitOverride: null, chatLimitOverride: null, createdAt: '2026-01-01',
+    ...over,
+  }
+}
+
+/** 造一个带 blockers 的 409 错误对象，形状与 axios 收到的一致。 */
+function conflictErr(detail, blockers) {
+  return { response: { data: { detail, blockers } } }
+}
+
+describe('账号生命周期 · 建号（ADR 0012）', () => {
+  test('沙箱自检：view 与草稿是同一个对象', async () => {
+    const box = makeUserSandbox()
+    box.createDraft.email = 'a@example.com'
+    box.createDraft.password = 's3cret-pass'
+    await box.saveNewUser()
+    assert.equal(box.calls.length, 1, '沙箱没接上，后面所有用例都会假绿')
+  })
+
+  test('成功：新号进列表、按 id 排序、total 加一', async () => {
+    const box = makeUserSandbox({ items: [userRow(1), userRow(5)], total: 2 })
+    box.createDraft.email = '  new@example.com  '
+    box.createDraft.password = 's3cret-pass'
+    await box.saveNewUser()
+    assert.equal(box.calls.length, 1)
+    assert.equal(box.calls[0].payload.email, 'new@example.com', '邮箱要 trim 后再发')
+    // 刻意**不**断言「按 id 排序」：新号 id 由 autoincrement 产生、恒为最大，
+    // push 本身就落在升序末尾。为它写一条断言只会制造「已覆盖」的错觉——
+    // 实测那条断言在拿掉 sort 之后照样全绿。
+    assert.equal(box.view.value.items.length, 3)
+    assert.equal(box.view.value.items[2].id, 99, '新号应追加到末尾')
+    assert.equal(box.view.value.items[2].email, 'new@example.com')
+    assert.equal(box.view.value.total, 3)
+    // 表单要清空，否则再点一次就是拿同一个邮箱重复建号
+    assert.equal(box.createDraft.email, '')
+    assert.equal(box.createDraft.password, '')
+  })
+
+  test('勾了管理员发 true，没勾发 false', async () => {
+    const box = makeUserSandbox()
+    box.createDraft.email = 'boss@example.com'
+    box.createDraft.password = 's3cret-pass'
+    box.createDraft.isAdmin = true
+    await box.saveNewUser()
+    assert.equal(box.calls[0].payload.isAdmin, true)
+  })
+
+  test('空邮箱与短口令在本地就挡下，不发请求', async () => {
+    const box = makeUserSandbox()
+    box.createDraft.email = '   '
+    box.createDraft.password = 's3cret-pass'
+    await box.saveNewUser()
+    assert.equal(box.calls.length, 0, '空邮箱不该发请求')
+    assert.equal(box.createFeedback.kind, 'error')
+
+    const box2 = makeUserSandbox()
+    box2.createDraft.email = 'a@example.com'
+    box2.createDraft.password = '12345'
+    await box2.saveNewUser()
+    assert.equal(box2.calls.length, 0, '短口令不该发请求')
+    assert.equal(box2.createFeedback.kind, 'error')
+  })
+
+  test('建号失败：给出错误，列表与 total 一个都不动', async () => {
+    const box = makeUserSandbox({
+      items: [userRow(1)], total: 1,
+      api: { async createAdminUser() { throw conflictErr('该邮箱已注册', {}) } },
+    })
+    box.createDraft.email = 'dupe@example.com'
+    box.createDraft.password = 's3cret-pass'
+    await box.saveNewUser()
+    assert.equal(box.createFeedback.kind, 'error')
+    assert.match(box.createFeedback.text, /该邮箱已注册/)
+    assert.equal(box.view.value.items.length, 1, '失败不该往列表里塞行')
+    assert.equal(box.view.value.total, 1)
+    assert.equal(box.createDraft.email, 'dupe@example.com',
+      '失败时表单要留着，让管理员改完再提交')
+  })
+})
+
+describe('账号生命周期 · 管理员标记（ADR 0012）', () => {
+  test('普通用户 → 发 true；管理员 → 发 false', async () => {
+    const box = makeUserSandbox({ items: [userRow(1)], total: 1 })
+    await box.toggleAdmin(box.view.value.items[0])
+    assert.equal(box.calls[0].op, 'admin')
+    assert.equal(box.calls[0].flag, true, '普通用户要提权，发 true')
+
+    const box2 = makeUserSandbox({ items: [userRow(2, { isAdmin: true })], total: 1 })
+    await box2.toggleAdmin(box2.view.value.items[0])
+    assert.equal(box2.calls[0].flag, false, '管理员要撤权，发 false')
+  })
+
+  test('成功用**回读**替换本地行，不做乐观更新', async () => {
+    const box = makeUserSandbox({
+      items: [userRow(1)], total: 1,
+      // 回读说「其实没提成」——本地行必须跟着回读走
+      api: { async setUserAdmin() { return { user: { id: 1, is_admin: 0 } } } },
+    })
+    await box.toggleAdmin(box.view.value.items[0])
+    assert.equal(box.view.value.items[0].isAdmin, false,
+      '本地行必须被回读结果替换，而不是调用方传进去的 flag')
+  })
+
+  test('409（撤自己）：反馈是 error，行不变', async () => {
+    const box = makeUserSandbox({
+      items: [userRow(1, { isAdmin: true })], total: 1,
+      api: {
+        async setUserAdmin() {
+          throw conflictErr('不能撤销自己的管理员权限——那样就没有人能把它改回来了', {})
+        },
+      },
+    })
+    await box.toggleAdmin(box.view.value.items[0])
+    assert.equal(box.opsFeedbacks[1].kind, 'error')
+    assert.match(box.opsFeedbacks[1].text, /不能撤销自己/)
+    assert.equal(box.view.value.items[0].isAdmin, true, '被拒之后权限不能变')
+  })
+})
+
+describe('账号生命周期 · 删除（ADR 0012）', () => {
+  test('成功：行从列表移除、total 减一', async () => {
+    const box = makeUserSandbox({ items: [userRow(1), userRow(2)], total: 2 })
+    await box.confirmDelete(box.view.value.items[0])
+    assert.equal(box.calls[0].op, 'delete')
+    assert.deepEqual(box.view.value.items.map((x) => x.id), [2])
+    assert.equal(box.view.value.total, 1)
+  })
+
+  test('409：行留下、total 不变、反馈里带**数字**', async () => {
+    const box = makeUserSandbox({
+      items: [userRow(1)], total: 1,
+      api: {
+        async deleteAdminUser() {
+          // detail 里**故意不带数字**：它只说「还有内容」。
+          // 于是断言里的「订单 2 条」只可能来自 blockers 的渲染——
+          // 而服务端那句话本身已经含数字时，这条断言会被它白送。
+          throw conflictErr('这个账号名下还有内容，先处理掉再删。',
+            { orders: 2, parse_history: 5 })
+        },
+      },
+    })
+    await box.confirmDelete(box.view.value.items[0])
+    assert.equal(box.view.value.items.length, 1, '被拒之后不该把人从列表里抹掉')
+    assert.equal(box.view.value.total, 1, '被拒之后 total 不该减')
+    const fb = box.opsFeedbacks[1]
+    assert.equal(fb.kind, 'error')
+    // 数字必须来自 blockers 字段，不是从中文里抠出来的
+    assert.match(fb.text, /订单 2 条/)
+    assert.match(fb.text, /解析历史 5 条/)
+  })
+
+  test('删除是**两步**：askDelete 只开确认，不发请求', async () => {
+    const box = makeUserSandbox({ items: [userRow(1)], total: 1 })
+    box.askDelete(box.view.value.items[0])
+    assert.equal(box.calls.length, 0, '点「删除」不该立刻发请求')
+    assert.equal(box.pendingDeleteId.value, 1, '应当进入待确认状态')
+    box.cancelDelete()
+    assert.equal(box.pendingDeleteId.value, null, '取消要回到没有待确认的状态')
+  })
+})
+
+describe('账号生命周期 · 静态契约', () => {
+  test('模板里不用 window.confirm（它阻塞事件循环且无法断言）', () => {
+    assert.doesNotMatch(adminTemplate, /window\.confirm/,
+      '删除确认必须是内联二次确认，不是 window.confirm')
+  })
+
+  test('删除确认行存在，两个按钮都接上了各自的处理器', () => {
+    assert.match(adminTemplate, /v-if="pendingDeleteId === u\.id"/,
+      '没有内联二次确认行')
+    assert.match(adminTemplate, /@click="confirmDelete\(u\)"/)
+    assert.match(adminTemplate, /@click="cancelDelete"/)
+  })
+
+  test('两条反馈都接进 aria-live（成功与失败都要被读屏读到）', () => {
+    const live = [...adminTemplate.matchAll(/aria-live="polite"/g)]
+    assert.ok(live.length >= 2,
+      `只找到 ${live.length} 处 aria-live —— 建号反馈与行内操作反馈各要一处`)
+  })
+
+  test('模板里从不写 is_vip —— VIP 不在后台可改范围', () => {
+    const hits = [...adminTemplate.matchAll(/is_vip|vip_expire_at|vipExpireAt/g)].map((m) => m[0])
+    assert.deepEqual(hits, [],
+      `模板里出现了 VIP 字段：${hits.join(' ')}\n`
+      + '  —— VIP 只能由订单支付写入，后台写它会同时踩到'
+      + '「新增测试不得锁会员行为」这条纪律。')
+  })
+
+  test('行内的管理员标记是**按钮开关**，不是可自由编辑的输入框', () => {
+    assert.match(adminTemplate, /@click="toggleAdmin\(u\)"/)
+    // 只断**行内**：建号表单里那个 createDraft.isAdmin 勾选框是合理的
+    // （建号时就是要决定给不给管理员），把它一起禁掉是判据越界。
+    const rowScoped = [...adminTemplate.matchAll(/v-model="([^"]*[Ii]sAdmin[^"]*)"/g)]
+      .map((m) => m[1])
+      .filter((expr) => !/createDraft/.test(expr))
+    assert.deepEqual(rowScoped, [],
+      `行内出现了可编辑的管理员标记输入框：${rowScoped.join(' ')}`
+      + '——它是一次开关动作，不是可以随手改成任意值的字段。')
+  })
+
+  test('新建表单的每个输入都有 label（可达性判据要求 input 有 id）', () => {
+    for (const id of ['admin-new-email', 'admin-new-password', 'admin-new-isadmin']) {
+      assert.match(adminTemplate, new RegExp(`id="${id}"`), `建号表单缺 ${id}`)
+      assert.match(adminTemplate, new RegExp(`for="${id}"`), `${id} 没有对应的 label`)
+    }
   })
 })

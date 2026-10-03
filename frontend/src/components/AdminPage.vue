@@ -13,7 +13,7 @@
         </button>
         <div>
           <h1 class="text-xl font-bold text-gray-900">管理后台</h1>
-          <p class="text-xs text-gray-400 mt-0.5">用户额度、社区记录与 AI 服务清单。账号生命周期不在这里（ADR 0010）</p>
+          <p class="text-xs text-gray-400 mt-0.5">用户额度、社区记录与 AI 服务清单。账号增删与管理员标记也在这里（ADR 0012）</p>
         </div>
       </div>
 
@@ -87,6 +87,56 @@
                        hover:bg-panel transition-colors">清除</button>
             </form>
 
+            <!-- ══ 建号（ADR 0012）。只挂在用户页：额度页是「改」的那一版，
+                 放两个入口会让同一个动作有两个地方能点。 ══ -->
+            <div v-if="tab === 'users'" class="mb-4">
+              <button type="button" @click="toggleCreate"
+                :aria-expanded="createOpen ? 'true' : 'false'"
+                aria-controls="admin-create-user"
+                class="px-3 py-2 rounded-xl border border-line text-xs text-gray-500
+                       hover:border-blue-200 hover:text-blue-600 transition-colors">
+                {{ createOpen ? '收起新建' : '新建用户' }}
+              </button>
+
+              <form v-if="createOpen" id="admin-create-user" class="mt-3 flex flex-wrap items-end gap-3"
+                @submit.prevent="saveNewUser">
+                <div>
+                  <label for="admin-new-email" class="block text-xs text-gray-500 mb-1">邮箱</label>
+                  <input id="admin-new-email" v-model="createDraft.email" type="email" required
+                    autocomplete="off"
+                    class="w-64 px-3 py-2 rounded-xl bg-panel border border-line text-sm text-gray-800
+                           placeholder-gray-400 focus:border-blue-200 focus:outline-none" />
+                </div>
+                <div>
+                  <label for="admin-new-password" class="block text-xs text-gray-500 mb-1">初始密码</label>
+                  <input id="admin-new-password" v-model="createDraft.password" type="password"
+                    required minlength="6" autocomplete="new-password"
+                    :aria-describedby="`admin-new-password-hint-${''}`"
+                    class="w-48 px-3 py-2 rounded-xl bg-panel border border-line text-sm text-gray-800
+                           focus:border-blue-200 focus:outline-none" />
+                  <p id="admin-new-password-hint-" class="mt-1 text-[11px] text-gray-400">
+                    至少 6 位。由你转交给对方——项目当前没有改密入口。
+                  </p>
+                </div>
+                <div class="flex items-center gap-1.5 text-xs text-gray-600 pb-2">
+                  <input id="admin-new-isadmin" v-model="createDraft.isAdmin" type="checkbox"
+                    class="accent-blue" />
+                  <label for="admin-new-isadmin">直接给管理员权限</label>
+                </div>
+                <button type="submit" :disabled="creating"
+                  class="px-4 py-2 rounded-xl bg-blue text-on-primary text-sm font-medium
+                         hover:bg-blue-600 transition-colors disabled:opacity-50">
+                  {{ creating ? '创建中…' : '创建' }}
+                </button>
+              </form>
+              <!-- 反馈在表单**外面**：成功时 createOpen 会被置 false，
+                   放在表单里等于把「已创建 X」这条确认一起收走，
+                   管理员会以为自己没点上（与额度编辑器同一条纪律）。 -->
+              <span aria-live="polite" :class="['block mt-2 text-xs', feedbackClass(createFeedback.kind)]">
+                {{ createFeedback.text }}
+              </span>
+            </div>
+
             <div class="overflow-x-auto rounded-2xl border border-line bg-panel">
               <table class="w-full text-sm">
                 <caption class="sr-only">用户列表，可修改解析与追问的额度上限</caption>
@@ -98,6 +148,7 @@
                     <th scope="col" class="px-4 py-3 font-medium">追问</th>
                     <th scope="col" class="px-4 py-3 font-medium">注册时间</th>
                     <th scope="col" class="px-4 py-3 font-medium">额度</th>
+                    <th scope="col" class="px-4 py-3 font-medium">账号</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -126,11 +177,50 @@
                                  hover:border-blue-200 hover:text-blue-600 transition-colors">编辑额度</button>
                         <span v-else class="text-xs text-gray-400">行内编辑</span>
                       </td>
+                      <td class="px-4 py-3">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                          <button type="button" @click="toggleAdmin(u)" :disabled="busyUserId !== null"
+                            class="px-2.5 py-1 rounded-lg border border-line text-xs text-gray-500
+                                   hover:border-blue-200 hover:text-blue-600 transition-colors
+                                   disabled:opacity-50">
+                            {{ u.isAdmin ? '取消管理员' : '设为管理员' }}
+                          </button>
+                          <button v-if="pendingDeleteId !== u.id" type="button" @click="askDelete(u)"
+                            :disabled="busyUserId !== null"
+                            class="px-2.5 py-1 rounded-lg border border-line text-xs text-red-500
+                                   hover:border-red-200 transition-colors disabled:opacity-50">删除</button>
+                        </div>
+                        <span aria-live="polite"
+                          :class="['block mt-1 text-[11px]', feedbackClass(opsFeedbackOf(u.id).kind)]">
+                          {{ opsFeedbackOf(u.id).text }}
+                        </span>
+                      </td>
+                    </tr>
+
+                    <!-- 删除二次确认。两步而不是 window.confirm：
+                         同一个可测状态机，样式统一，也不会把用户卡在模态框里。 -->
+                    <tr v-if="pendingDeleteId === u.id" class="bg-red-50">
+                      <td colspan="7" class="px-4 py-3">
+                        <p class="text-xs text-red-700">
+                          确认删除 {{ u.email }}？名下有订单或解析历史时会被服务端拒绝（409），
+                          社区视频不受影响。此操作不可撤销。
+                        </p>
+                        <div class="mt-2 flex items-center gap-2">
+                          <button type="button" @click="confirmDelete(u)" :disabled="busyUserId !== null"
+                            class="px-3 py-1.5 rounded-lg bg-red-600 text-on-solid text-xs
+                                   hover:bg-red-700 transition-colors disabled:opacity-50">
+                            {{ busyUserId === u.id ? '删除中…' : '确认删除' }}
+                          </button>
+                          <button type="button" @click="cancelDelete"
+                            class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
+                                   hover:border-gray-300 transition-colors">取消</button>
+                        </div>
+                      </td>
                     </tr>
 
                     <!-- 行内额度编辑器。额度页常驻，用户页按需展开。 -->
                     <tr v-if="editorOpen(u)" class="bg-panel-2">
-                      <td colspan="6" class="px-4 py-3">
+                      <td colspan="7" class="px-4 py-3">
                         <div class="flex flex-wrap items-end gap-3">
                           <div>
                             <label :for="`quota-parse-${u.id}`" class="block text-xs text-gray-500 mb-1">解析上限</label>
@@ -346,7 +436,7 @@
  */
 import { ref, reactive, computed, onMounted } from 'vue'
 import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModels,
-         updateAdminModel } from '../api/admin.js'
+         updateAdminModel, createAdminUser, setUserAdmin, deleteAdminUser } from '../api/admin.js'
 
 const emit = defineEmits(['back'])
 
@@ -818,6 +908,128 @@ async function saveQuota(u) {
     feedbackOf(u.id).text = `额度没改成：${messageOf(err)}`
   } finally {
     savingId.value = null
+  }
+}
+
+// ── 账号生命周期（ADR 0012）────────────────────────────────
+//
+// 反馈**不复用** feedbackOf：额度编辑器的反馈渲染在展开行里，
+// 账号操作的反馈渲染在主行里。同一个 state 会让两条反馈互相顶掉。
+const createOpen = ref(false)
+const creating = ref(false)
+const busyUserId = ref(null)
+const pendingDeleteId = ref(null)
+const createDraft = reactive({ email: '', password: '', isAdmin: false })
+const createFeedback = reactive({ kind: '', text: '' })
+const opsFeedbacks = reactive({})
+
+function opsFeedbackOf(id) {
+  if (!opsFeedbacks[id]) opsFeedbacks[id] = { kind: '', text: '' }
+  return opsFeedbacks[id]
+}
+
+function toggleCreate() {
+  createOpen.value = !createOpen.value
+  createFeedback.kind = ''
+  createFeedback.text = ''
+}
+
+/** 建号。空邮箱 / 短口令在**本地**就挡掉，不去跑一趟网络。 */
+async function saveNewUser() {
+  if (creating.value) return
+  const email = createDraft.email.trim()
+  const password = createDraft.password
+  if (!email) {
+    createFeedback.kind = 'error'
+    createFeedback.text = '邮箱不能为空'
+    return
+  }
+  if (password.length < 6) {
+    createFeedback.kind = 'error'
+    createFeedback.text = '初始密码至少 6 位'
+    return
+  }
+  creating.value = true
+  createFeedback.kind = ''
+  createFeedback.text = ''
+  try {
+    const res = await createAdminUser({ email, password, isAdmin: createDraft.isAdmin })
+    const fresh = toUser(res.user)
+    // 列表按 id 升序，新号在末尾。直接 push 再排序，别指望后端重排。
+    view.value.items.push(fresh)
+    view.value.total += 1
+    createDraft.email = ''
+    createDraft.password = ''
+    createDraft.isAdmin = false
+    createOpen.value = false
+    createFeedback.kind = 'ok'
+    createFeedback.text = `已创建 ${fresh.email}。初始密码由你转交，用户当前无法自行改密。`
+  } catch (err) {
+    createFeedback.kind = 'error'
+    createFeedback.text = `没建成：${messageOf(err)}`
+  } finally {
+    creating.value = false
+  }
+}
+
+/** 提权 / 撤权。成功后用**回读**替换本地行，不做乐观更新。 */
+async function toggleAdmin(u) {
+  if (busyUserId.value !== null) return
+  busyUserId.value = u.id
+  opsFeedbackOf(u.id).kind = ''
+  opsFeedbackOf(u.id).text = ''
+  try {
+    const res = await setUserAdmin(u.id, !u.isAdmin)
+    replaceUser(res.user)
+    opsFeedbackOf(u.id).kind = 'ok'
+    opsFeedbackOf(u.id).text = res.user.is_admin
+      ? `${u.email} 现在是管理员`
+      : `已撤销 ${u.email} 的管理员权限`
+  } catch (err) {
+    opsFeedbackOf(u.id).kind = 'error'
+    opsFeedbackOf(u.id).text = `没改成功：${messageOf(err)}`
+  } finally {
+    busyUserId.value = null
+  }
+}
+
+/**
+ * 删除走**两步**，不用 window.confirm。
+ *
+ * confirm() 阻塞整个事件循环、样式无法统一、在自动化里也没法断言；
+ * 内联二次确认既是同一个可测的状态机，也不会在误点时把用户卡住。
+ */
+function askDelete(u) {
+  pendingDeleteId.value = u.id
+  opsFeedbackOf(u.id).kind = ''
+  opsFeedbackOf(u.id).text = ''
+}
+
+function cancelDelete() {
+  pendingDeleteId.value = null
+}
+
+async function confirmDelete(u) {
+  if (busyUserId.value !== null) return
+  busyUserId.value = u.id
+  opsFeedbackOf(u.id).kind = ''
+  opsFeedbackOf(u.id).text = ''
+  try {
+    await deleteAdminUser(u.id)
+    const i = view.value.items.findIndex((x) => x.id === u.id)
+    if (i >= 0) view.value.items.splice(i, 1)
+    view.value.total = Math.max(0, view.value.total - 1)
+    pendingDeleteId.value = null
+  } catch (err) {
+    // 409 = 名下还有内容。blockers 是**数字**，别从中文里正则抠。
+    const blockers = err && err.response && err.response.data && err.response.data.blockers
+    const extra = blockers && Object.keys(blockers).length
+      ? `（订单 ${blockers.orders || 0} 条、解析历史 ${blockers.parse_history || 0} 条）`
+      : ''
+    opsFeedbackOf(u.id).kind = 'error'
+    opsFeedbackOf(u.id).text = `没删掉：${messageOf(err)}${extra}`
+  } finally {
+    busyUserId.value = null
   }
 }
 

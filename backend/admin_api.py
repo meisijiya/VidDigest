@@ -8,6 +8,9 @@
 | `GET /api/admin/models` | require_admin | 只读 |
 | `PATCH /api/admin/models/{id}` | require_admin | **写**（改已有行，不新增） |
 | `GET /api/admin/users` | require_admin | 只读 |
+| `POST /api/admin/users` | require_admin | **写**（建号） |
+| `PATCH /api/admin/users/{id}` | require_admin | **写**（管理员标记，ADR 0012） |
+| `DELETE /api/admin/users/{id}` | require_admin | **写**（有内容则 409） |
 | `POST /api/admin/users/{id}/quota` | require_admin | **写** |
 | `GET /api/admin/community` | require_admin | 只读 |
 
@@ -35,17 +38,23 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 import model_catalog
-from auth import require_admin
+from auth import hash_password, require_admin, validate_email, validate_password
 from database import (
     ADMIN_PAGE_SIZE_DEFAULT,
     QUOTA_UNLIMITED,
+    UserConflict,
     admin_user_detail,
+    create_admin_user,
+    delete_user,
+    get_user_by_email,
     is_vip_active,
     list_admin_community,
     list_admin_users,
+    set_user_admin,
     set_user_quota_override,
 )
 
@@ -228,9 +237,10 @@ async def admin_set_quota(
     payload: QuotaUpdateRequest,
     _: dict = Depends(require_admin),
 ):
-    """改某个用户的解析/对话额度。**本文件唯一的写操作。**
+    """改某个用户的解析/对话额度。
 
-    明确不做（项目范围边界）：封禁、解封、删账号、下架社区视频。
+    明确不做（项目范围边界）：封禁/解封、下架社区视频、改 VIP。
+    账号的增删与管理员标记在下面另外三个端点（ADR 0012）；
     这里只动两列额度，且随时可以用 null 改回去。
     """
     # 404 先判：用户不存在时**不能**静默成功。
@@ -285,3 +295,124 @@ async def admin_community(
 ):
     """社区记录列表（只读）。不过滤 status——占位行也是记录。"""
     return list_admin_community(limit=limit, offset=offset)
+
+
+# ── 账号生命周期（ADR 0012）─────────────────────────────────
+#
+# ADR 0010 原本把「删账号」列进「明确不做」，理由是 videos.parsed_by
+# 是弱引用、后台不该靠删人来顺带清理社区数据。这条理由**仍然成立**——
+# 下面 delete_user 确实一行 videos 都不碰。变的是另一件事：管理员需要一个
+# 处理测试账号、误注册账号与离职账号的出口，而这个出口不必、也不该以
+# 「顺带清掉别人看得见的社区内容」为代价。
+
+
+class UserCreateRequest(BaseModel):
+    """后台建号。email / password 就是 str，错类型让 pydantic 直接 422，
+    比收下再转成 400 报错省事。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str
+    password: str
+    is_admin: bool = False
+
+
+class UserAdminUpdateRequest(BaseModel):
+    """改管理员标记。**只认 is_admin 一个键**——VIP 不在这里
+    （项目范围边界：会员判定留在代码里不动，新增测试不得锁会员行为）。
+
+    ``is_admin`` 声明成 ``Any`` 是本文件的既有约定：声明成 ``bool`` 的话非法值
+    会由 pydantic 变成 422，而额度与厂商两个端点的契约要的是 400。代价是这个
+    字段不再有任何类型保证，所以**必须**由下面的 _as_admin_flag 把关——
+    少了它，``{"is_admin": []}`` 会走 ``bool([])`` 静默变成「撤权」，
+    ``{"is_admin": {}}`` 同理（bool({}) 也是 False），而调用方一个错都收不到。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_admin: Any = None
+
+
+def _as_admin_flag(raw: Any) -> bool:
+    """把请求里的 is_admin 收敛成 bool，非法值抛 400。
+
+    刻意**不**收字符串：``bool("false")`` 是 True，一个想撤权的调用方传
+    "false" 会拿到提权，且 200。这种输入只有打错字才会出现，但打错字的
+    后果不该是「静默反向」。
+    """
+    if not isinstance(raw, bool):
+        raise HTTPException(status_code=400, detail="is_admin 必须是 true 或 false")
+    return raw
+
+
+def _conflict(exc: UserConflict) -> JSONResponse:
+    """把 blockers 挂到 409 的响应体上。
+
+    FastAPI 的 HTTPException 没有自定义 body 的口子，所以走 JSONResponse
+    手工拼——这比把行数编码进 detail 字符串强：前端要的是数字，
+    不是从中文里正则抠数字。blockers 为空时就是普通的 409。
+    """
+    return JSONResponse(
+        status_code=409,
+        content={"detail": exc.detail, "blockers": exc.blockers},
+    )
+
+
+@router.post("/admin/users")
+async def admin_create_user(
+    payload: UserCreateRequest,
+    _: dict = Depends(require_admin),
+):
+    """建号。初始密码由管理员指定，创建后由管理员自行转交。"""
+    # 与公开注册**同一套**校验：各写各的会出现「同一个邮箱后台能建、
+    # 公开注册说格式不对」，而这种分歧只会在用户投诉时才暴露。
+    if not validate_email(payload.email):
+        raise HTTPException(status_code=400, detail="邮箱格式不正确")
+    err = validate_password(payload.password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    if get_user_by_email(payload.email):
+        raise HTTPException(status_code=400, detail="该邮箱已注册")
+
+    created = create_admin_user(
+        payload.email, hash_password(payload.password), bool(payload.is_admin))
+
+    # 回读：前端要显示的是库里那一行（含额度回落后的真实上限），
+    # 不是我们打算写进去的东西。
+    return {"user": admin_user_detail(created["id"])}
+
+
+@router.patch("/admin/users/{user_id}")
+async def admin_set_user_admin(
+    user_id: int,
+    payload: UserAdminUpdateRequest,
+    admin: dict = Depends(require_admin),
+):
+    """改管理员标记。提权与撤权下一次请求即生效（不塞进 JWT，ADR 0010）。"""
+    if payload.is_admin is None:
+        raise HTTPException(status_code=400, detail="没有要改的字段")
+    flag = _as_admin_flag(payload.is_admin)
+    try:
+        changed = set_user_admin(user_id, flag, acting_id=admin["id"])
+    except UserConflict as exc:
+        return _conflict(exc)
+    if not changed:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    user = admin_user_detail(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"user": user}
+
+
+@router.delete("/admin/users/{user_id}")
+async def admin_delete_user(
+    user_id: int,
+    admin: dict = Depends(require_admin),
+):
+    """删号。**名下有订单或解析历史就 409**，不做静默级联（ADR 0012）。"""
+    try:
+        delete_user(user_id, acting_id=admin["id"])
+    except UserConflict as exc:
+        # return 不是 raise：_conflict 返回的是 JSONResponse，不是异常。
+        return _conflict(exc)
+    return {"deleted": user_id}
