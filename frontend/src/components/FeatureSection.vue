@@ -2,7 +2,7 @@
   <section ref="sectionRef" class="py-20 sm:py-24 relative overflow-hidden">
     <!-- 背景装饰：散落像素点 -->
     <div class="absolute inset-0 pointer-events-none" aria-hidden="true">
-      <span class="absolute top-1/4 right-[8%] w-2 h-2 rounded-[2px] bg-violet/20 animate-pixel-blink"></span>
+      <span class="absolute top-1/4 right-[8%] w-2 h-2 rounded-[2px] bg-blue/20 animate-pixel-blink"></span>
       <span class="absolute bottom-1/4 left-[6%] w-2.5 h-2.5 rounded-[2px] bg-cyan/20 animate-pixel-blink delay-3"></span>
     </div>
 
@@ -63,12 +63,12 @@ import IconHeart from './icons/IconHeart.vue'
 import IconUsers from './icons/IconUsers.vue'
 
 const features = [
-  { icon: IconVideo, title: '多平台下载', desc: '支持 YouTube、B站、抖音等 1800+ 平台视频解析下载', iconBg: 'bg-blue-50 group-hover:bg-blue-100', iconColor: 'text-blue-400', barColor: 'bg-violet' },
+  { icon: IconVideo, title: '多平台下载', desc: '支持 YouTube、B站、抖音等 1800+ 平台视频解析下载', iconBg: 'bg-blue-50 group-hover:bg-blue-100', iconColor: 'text-blue-400', barColor: 'bg-blue' },
   { icon: IconZap, title: 'AI 总结', desc: 'LLM 智能分析视频内容，一键生成深度摘要', iconBg: 'bg-amber-50 group-hover:bg-amber-100', iconColor: 'text-amber-600', barColor: 'bg-amber-600' },
   { icon: IconUsers, title: '社区共享', desc: '同一个链接全站只解析一次，总结进入公共区共享', iconBg: 'bg-cyan-50 group-hover:bg-cyan-100', iconColor: 'text-cyan-400', barColor: 'bg-cyan-400' },
   { icon: IconMapPin, title: '思维导图', desc: '自动提取知识结构，生成可视化思维导图', iconBg: 'bg-emerald-50 group-hover:bg-emerald-100', iconColor: 'text-emerald-600', barColor: 'bg-emerald-600' },
-  { icon: IconFileText, title: '字幕导出', desc: 'SRT/VTT/TXT 多格式字幕下载，支持离线语音转写', iconBg: 'bg-indigo-50 group-hover:bg-indigo-100', iconColor: 'text-indigo-400', barColor: 'bg-purple' },
-  { icon: IconHeart, title: '免费试用', desc: '每账号每日 3 次免费 AI 总结额度，0 点重置', iconBg: 'bg-coral-50 group-hover:bg-coral-100', iconColor: 'text-coral-400', barColor: 'bg-pink' },
+  { icon: IconFileText, title: '字幕导出', desc: 'SRT/VTT/TXT 多格式字幕下载，支持离线语音转写', iconBg: 'bg-blue-50 group-hover:bg-blue-100', iconColor: 'text-blue-400', barColor: 'bg-blue' },
+  { icon: IconHeart, title: '免费试用', desc: '每账号每日 3 次免费 AI 总结额度，0 点重置', iconBg: 'bg-amber-50 group-hover:bg-amber-100', iconColor: 'text-amber-400', barColor: 'bg-amber' },
 ]
 
 const sectionRef = useSectionAnimation()

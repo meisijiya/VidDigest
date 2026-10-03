@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from downloader import VideoDownloader
-from douyin import DouyinParser, is_douyin_url
-from database import init_db
+from douyin import AUDIO_FORMAT_ID, DouyinParser, is_douyin_url
+from database import init_db, seed_admin_emails_from_env
 
 # 全局单例
 downloader = VideoDownloader()
@@ -27,6 +27,9 @@ douyin_parser = DouyinParser(download_dir=downloader.DOWNLOAD_DIR)
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化数据库，关闭时清理下载文件"""
     init_db()
+    # 播种必须在 init_db 之后：users 表还不存在时插不进去。
+    # 未配置 VIDDIGEST_ADMIN_EMAILS 是合法配置，这里静默返回 0。
+    seed_admin_emails_from_env()
     yield
     # 关闭时清理下载文件
     download_dir = downloader.DOWNLOAD_DIR
@@ -135,7 +138,13 @@ async def download_video(req: DownloadRequest):
         url = req.clean_url()
         loop = asyncio.get_event_loop()
         if is_douyin_url(url):
-            result = await loop.run_in_executor(None, douyin_parser.download, url)
+            # 抖音这条路自己决定下什么，只认 mode 不认 format_id。不映射的话，
+            # 选了「纯音频」会静默下回视频——界面上写着「下载音频」，
+            # 而用户拿到的是一个带声的 mp4。
+            mode = "audio" if req.format_id == AUDIO_FORMAT_ID else "video"
+            result = await loop.run_in_executor(
+                None, douyin_parser.download, url, mode
+            )
         else:
             result = await loop.run_in_executor(
                 None, downloader.download_video, url, req.format_id
@@ -205,11 +214,13 @@ from api_auth import router as auth_router  # noqa: E402
 from api_payment import router as payment_router  # noqa: E402
 from api_history import router as history_router  # noqa: E402
 from api_community import router as community_router  # noqa: E402
+from admin_api import router as admin_router  # noqa: E402
 app.include_router(summarize_router)
 app.include_router(auth_router)
 app.include_router(payment_router)
 app.include_router(history_router)
 app.include_router(community_router)
+app.include_router(admin_router)
 
 if __name__ == "__main__":
     import uvicorn

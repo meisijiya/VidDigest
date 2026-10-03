@@ -35,6 +35,12 @@ data/
 *.sqlite
 *.log
 
+# 本地开发库的测试账号清单（含明文口令）。
+# 仓库是 PUBLIC，且这些账号只存在于被忽略的 backend/data/app.db 里 ——
+# 清单进版本库等于把一份明文口令清单公开，而它对「不要靠记忆找账号」
+# 这个目的毫无帮助：git log 里查得到，不如直接看本地磁盘。
+TEST_ACCOUNTS.md
+
 # Agent 临时工作区（issue 正文草稿、一次性探针脚本）
 .scratch/
 

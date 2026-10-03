@@ -57,7 +57,7 @@
             </Transition>
 
             <button type="submit" :disabled="loading"
-              class="w-full py-3 rounded-xl bg-violet text-white font-medium text-sm
+              class="w-full py-3 rounded-xl bg-blue text-on-primary font-medium text-sm
                      hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
                      transition-all duration-200 active:scale-[0.98]">
               <span class="flex items-center justify-center gap-2">

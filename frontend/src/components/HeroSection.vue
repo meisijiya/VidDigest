@@ -5,20 +5,20 @@
   ]">
     <!-- 背景装饰：漂浮像素方块（平涂低透明度，依次点亮/下坠） -->
     <div class="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
-      <span class="absolute top-[18%] left-[12%] w-3 h-3 rounded-[3px] bg-violet/25 animate-pixel-blink"></span>
-      <span class="absolute top-[30%] left-[20%] w-2 h-2 rounded-[2px] bg-purple/25 animate-pixel-blink delay-2"></span>
-      <span class="absolute top-[16%] right-[16%] w-3 h-3 rounded-[3px] bg-pink/25 animate-pixel-blink delay-3"></span>
+      <span class="absolute top-[18%] left-[12%] w-3 h-3 rounded-[3px] bg-blue/25 animate-pixel-blink"></span>
+      <span class="absolute top-[30%] left-[20%] w-2 h-2 rounded-[2px] bg-blue/25 animate-pixel-blink delay-2"></span>
+      <span class="absolute top-[16%] right-[16%] w-3 h-3 rounded-[3px] bg-amber/25 animate-pixel-blink delay-3"></span>
       <span class="absolute top-[42%] right-[10%] w-2 h-2 rounded-[2px] bg-cyan/30 animate-pixel-blink delay-1"></span>
       <span class="absolute bottom-[28%] left-[8%] w-2.5 h-2.5 rounded-[2px] bg-cyan/25 animate-pixel-blink delay-4"></span>
-      <span class="absolute bottom-[36%] right-[22%] w-2 h-2 rounded-[2px] bg-violet/25 animate-pixel-blink delay-5"></span>
+      <span class="absolute bottom-[36%] right-[22%] w-2 h-2 rounded-[2px] bg-blue/25 animate-pixel-blink delay-5"></span>
       <!-- 大号像素箭头母题（右侧，极淡） -->
       <svg class="absolute -right-6 top-1/2 -translate-y-1/2 w-64 h-64 opacity-[0.05] hidden lg:block" viewBox="0 0 64 64" fill="none">
-        <rect x="14" y="14" width="12" height="12" rx="2" fill="#7C3AED"/>
-        <rect x="26" y="14" width="12" height="12" rx="2" fill="#A855F7"/>
-        <rect x="38" y="14" width="12" height="12" rx="2" fill="#EC4899"/>
-        <rect x="26" y="26" width="12" height="12" rx="2" fill="#A855F7"/>
-        <rect x="38" y="26" width="12" height="12" rx="2" fill="#06B6D4"/>
-        <rect x="38" y="38" width="12" height="12" rx="2" fill="#06B6D4"/>
+        <rect x="14" y="14" width="12" height="12" rx="2" fill="var(--color-blue-500)"/>
+        <rect x="26" y="14" width="12" height="12" rx="2" fill="var(--color-blue-300)"/>
+        <rect x="38" y="14" width="12" height="12" rx="2" fill="var(--color-amber-500)"/>
+        <rect x="26" y="26" width="12" height="12" rx="2" fill="var(--color-amber-400)"/>
+        <rect x="38" y="26" width="12" height="12" rx="2" fill="var(--color-cyan-500)"/>
+        <rect x="38" y="38" width="12" height="12" rx="2" fill="var(--color-blue-700)"/>
       </svg>
     </div>
 
@@ -32,7 +32,7 @@
           </div>
           <h1 class="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight mb-4">
             <span class="text-gray-900">AI 视频</span>
-            <span class="text-coral-500">理解平台</span>
+            <span class="text-amber-500">理解平台</span>
           </h1>
           <p class="text-lg sm:text-xl text-gray-500 max-w-xl mx-auto leading-relaxed">
             粘贴链接，生成 <span class="text-gray-700 font-medium">总结 / 思维导图 / 问答</span>
@@ -62,7 +62,7 @@
             <button
               @click="handleParse"
               :disabled="loading"
-              class="mr-2 px-6 py-2.5 rounded-xl bg-violet text-white text-sm font-medium
+              class="mr-2 px-6 py-2.5 rounded-xl bg-blue text-on-primary text-sm font-medium
                      hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
                      transition-all duration-200 active:scale-95 whitespace-nowrap"
             >
@@ -116,7 +116,7 @@
              :style="{ animationDelay: s.delay + 's' }">
             <!-- 向下多伸 20 个单位，落在 viewBox 之外被 svg 裁掉：
                  底边因此始终是齐的，凸起浮起来时底下不会露出缝。 -->
-            <rect :x="s.x" :y="s.y" width="120" :height="100 - s.y" fill="#161F36"/>
+            <rect :x="s.x" :y="s.y" width="120" :height="100 - s.y" fill="var(--color-panel)"/>
             <!-- 顶线：只有凸起有。整条线就是上面那个渐变，没有额外的实心底，
                  必须和块同处一个 <g>，分开写线一浮动就脱节。
                  相位与凸起的起伏共用 s.delay：这段浮到最高的刻，正好亮到最盛。 -->
@@ -156,10 +156,14 @@ const url = ref('')
  * 带子是两份拼的，所以**循环接缝那一对也要查** —— 最后一段的凸起紧挨着
  * 下一份的第一段，同样不能撞色。
  *
- * 颜色全部取自 style.css 的 @theme：violet / purple / pink / cyan 四族，
- * 6 个值互不相同，按同族深浅推进再换族；末尾 cyan 接回开头 violet 时
- * 色相跨度足够大，循环点上不会看出「一圈结束了」。
+ * 颜色全部取自 style.css 的 @theme：blue / amber / cyan 三族，6 个值互不相同，
+ * 按同族深浅推进再换族；末尾 amber 接回开头 blue 时色相跨度 168°，
+ * 循环点上不会看出「一圈结束了」。
  * tests/nav-wall.test.mjs 会把每个值拿去和 @theme 对账，配色跑偏当场转红。
+ *
+ * ⚠ 这 6 个值是**写死的 hex 字面量**，测试要求它们能在 @theme 里查到，
+ * 所以它们不随明亮主题变化（亮色下这组深色值会偏暗）。
+ * 要让城墙跟主题，需要另加一层「色值 -> 令牌」的映射，那是后续工作。
  *
  * 两条动画的周期必须凑成整数倍，否则循环点会「跳」一下：
  *   WALL_BOB_SEC  每段上下浮一轮 —— 12 段 × WALL_STEP_DELAY 正好等于它，
@@ -175,17 +179,17 @@ const WALL_STEP_DELAY = 0.2
 
 // 凸起（垛口）画顶线，凹不画。凹的 y 一律大于凸，最高凸 34 < 最浅凹 52。
 const wallBase = [
-  { x: 0,    y: 28, line: '#7c3aed' },   // 凸
+  { x: 0,    y: 28, line: '#2fa1da' },   // 凸 blue-500 主色
   { x: 120,  y: 54 },                    // 凹
-  { x: 240,  y: 32, line: '#a78bfa' },   // 凸
+  { x: 240,  y: 32, line: '#1b5a79' },   // 凸 blue-300 同族压深
   { x: 360,  y: 56 },                    // 凹
-  { x: 480,  y: 26, line: '#a855f7' },   // 凸
+  { x: 480,  y: 26, line: '#f49a34' },   // 凸 amber-500 唯一暖色
   { x: 600,  y: 52 },                    // 凹
-  { x: 720,  y: 34, line: '#ec4899' },   // 凸
+  { x: 720,  y: 34, line: '#60ebc6' },   // 凸 cyan-500 信息色
   { x: 840,  y: 56 },                    // 凹
-  { x: 960,  y: 30, line: '#22d3ee' },   // 凸
+  { x: 960,  y: 30, line: '#67abcd' },   // 凸 blue-700 同族提亮
   { x: 1080, y: 54 },                    // 凹
-  { x: 1200, y: 28, line: '#06b6d4' },   // 凸
+  { x: 1200, y: 28, line: '#e17d0c' },   // 凸 amber-400 暖色压深
   { x: 1320, y: 56 },                    // 凹
 ]
 

@@ -20,72 +20,30 @@
  * 4. **配置（厂商 / 端点 / 模型）可以公开**，key 不行。
  */
 
+/**
+ * 厂商清单**不在这个模块里**。
+ *
+ * 它有一份真值来源：服务端的 `GET /api/models`（由 `api/models.js` 拉取，
+ * 字段转换收在那一个文件里）。工单 #13 之前这里是硬编码的 7 个厂商，
+ * 而 summarizer.py 只认 2 个、默认模型也不一样 —— 两份清单各说各话，
+ * 正在漂移。现在本模块只留**用户的选择状态**（provider 是哪个 id）。
+ *
+ * 组件拉清单、自己渲染下拉，选中时把**已经拿在手里的**那条记录连同 id 一起
+ * 交给 `chooseProvider(id, provider)`。这样漂移源是被删掉，而不是搬到别处。
+ *
+ * 刻意**不留**「接口没回来之前先用这些」的兜底表：那份兜底就是漂移本身，
+ * 而且它会让「前端不再硬编码厂商」这条断言永远测不红。
+ *
+ * `platform` 仍然作为**模式**默认值出现在本模块（见 MODE_PLATFORM）：它是
+ * 「用谁的额度」这个开关，不是厂商，不需要向服务端查。
+ */
+
 const KEY_STORE = 'viddigest_user_api_key'
 const CONFIG_STORE = 'viddigest_byok_config'
 
 /** 两种使用方式。用户要的「一个下拉选其一」就是这两个值。 */
 export const MODE_PLATFORM = 'platform'
 export const MODE_BYOK = 'byok'
-
-/**
- * 预设厂商。base_url / model 是**填入时的默认值**，不是限制：
- * 用户可以在选完之后继续改这两栏（自建服务的模型名五花八门，
- * 猜错一次就会把「模型名写错」报成「凭据无效」，指向完全错误的方向）。
- *
- * 刻意不放 DeepSeek 之外的「聚合平台」：清单一长就会过期，
- * 而自定义那一项永远能覆盖它。
- */
-export const PROVIDERS = [
-  {
-    id: 'platform',
-    label: '平台 Key（默认）',
-    baseUrl: '',
-    model: '',
-    hint: '用平台配置的模型服务，消耗每日免费额度。',
-  },
-  {
-    id: 'bailian',
-    label: '阿里云百炼',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen-plus',
-    hint: '阿里云百炼 OpenAI 兼容模式。',
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com',
-    model: 'deepseek-chat',
-    hint: 'DeepSeek 官方接口。',
-  },
-  {
-    id: 'moonshot',
-    label: 'Moonshot / Kimi',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    model: 'moonshot-v1-32k',
-    hint: '月之暗面 Kimi 开放平台。',
-  },
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
-    hint: 'OpenAI 官方接口。',
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama（本地）',
-    baseUrl: 'http://localhost:11434/v1',
-    model: 'qwen2.5:7b',
-    hint: '本机推理服务。允许 http：自建服务通常没有证书。',
-  },
-  {
-    id: 'custom',
-    label: '自定义（OpenAI 兼容）',
-    baseUrl: '',
-    model: '',
-    hint: '任何 OpenAI 兼容端点。http 与 https 都允许。',
-  },
-]
 
 /** 端点只做与后端一致的最粗筛，真正的判定在服务端。 */
 export function normalizeBaseUrl(raw) {
@@ -255,18 +213,28 @@ export function usePlatform() {
 /**
  * 选厂商：填入该厂商的默认端点与模型（可继续改）。
  *
+ * `provider` 是调用方**已经拿在手里的**那条清单记录（`api/models.js` 转好的
+ * camelCase）。本模块不查表——要查表就得自己持有一份清单，而那份清单会和
+ * `GET /api/models` 漂移，正是工单 #13 要消除的那件事。
+ *
+ * 端点 / 模型取的是**填入时的默认值**，不是限制：用户可以在选完之后继续改
+ * 这两栏（自建服务的模型名五花八门，猜错一次就会把「模型名写错」报成
+ * 「凭据无效」，指向完全错误的方向）。
+ *
+ * 传不进来时退化成「两栏都留空」= 用服务端默认，而不是静默换成别的厂商：
+ * 静默切换会让用户以为选中了 A，存下去的却是 B。
+ *
  * 返回的是 **getPublicState()**，不是那条厂商定义。两者形状不同
  * （后者有 id / label / hint，没有 provider），调用方拿它直接塞进组件
  * state 的话，``state.provider`` 会是 undefined —— 而 provider 正是
  * 「用平台还是用自带」的那个开关，它一丢，保存时就会静默退回平台模式。
  */
-export function chooseProvider(id) {
-  const p = PROVIDERS.find((x) => x.id === id) || PROVIDERS[0]
+export function chooseProvider(id, provider) {
   save({
     apiKey: state.apiKey,
-    provider: p.id,
-    baseUrl: p.baseUrl,
-    model: p.model,
+    provider: String(id || 'platform'),
+    baseUrl: normalizeBaseUrl(provider?.baseUrl),
+    model: normalizeModel(provider?.defaultModel),
   })
   return getPublicState()
 }

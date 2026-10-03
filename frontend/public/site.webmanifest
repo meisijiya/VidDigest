@@ -4,8 +4,8 @@
   "description": "视频解析网站",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0F1729",
-  "theme_color": "#0F1729",
+  "background_color": "#0E141B",
+  "theme_color": "#0E141B",
   "icons": [
     {
       "src": "/android-chrome-192x192.png",

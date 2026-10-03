@@ -149,7 +149,8 @@ curl -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/   # → 200
 | `ALIYUN_BAILIAN_BASE_URL` | —   | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼兼容模式端点                                | 用 workspace 专属地址                                                                 |
 | `ALIYUN_BAILIAN_MODEL`    | —   | `qwen-turbo`                                        | 模型名（`qwen-turbo` 最便宜，`qwen-plus` 性价比最高） | 百炼模型市场                                                                           |
 | `DEEPSEEK_API_KEY`        | ✅   | —                                                   | AI 总结 / 导图 / 问答（兼容旧配置）                  | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
-| `JWT_SECRET`              | ⚠️  | ``           | JWT 签名密钥                                | 自定义 32+ 位随机串                                                                     |
+| `JWT_SECRET`              | ✅   | 无默认值（缺失或纯空白则拒绝启动）                        | JWT 签名密钥                                | `openssl rand -hex 32`（32+ 位随机串）                                                  |
+| `VIDDIGEST_ADMIN_EMAILS`  | —   | 空（合法：没有管理员）                                    | 首个管理员播种，逗号分隔；见 §10.4          | 就是目标账号的邮箱，逗号分隔                                                           |
 | `OPENAI_API_KEY`          | —   | —                                                   | 视频无字幕时 Whisper ASR 回退                   | [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)     |
 | `STRIPE_SECRET_KEY`       | —   | —                                                   | 支付服务接入                                  | [https://dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys)     |
 | `STRIPE_PRICE_ID_MONTHLY` | —   | —                                                   | 月订阅价格 ID                                | Stripe Dashboard → Products                                                      |
@@ -167,8 +168,10 @@ ALIYUN_BAILIAN_MODEL=qwen-turbo
 # 兼容旧配置：DeepSeek（如已配置会被自动识别，无需删除）
 DEEPSEEK_API_KEY=
 
-# ─── 安全（强烈建议改）─────────────────────────
-JWT_SECRET=$(openssl rand -hex 32)        # 生成 64 位随机串
+# ─── 安全（必填，缺失则进程拒绝启动）─────────────
+# 曾经有一个写死在源码里的兜底默认值，已移除：管理后台上线后，
+# 猜中那个常量就等于能伪造任意管理员 token。见 ADR 0010。
+JWT_SECRET=<把下面命令的输出粘进来>        # openssl rand -hex 32
 
 # ─── 支付（可选）───────────────────────────────
 STRIPE_SECRET_KEY=sk_test_xxx
@@ -502,7 +505,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 | vite 端口跳到 5174/5175                              | 5173 被旧实例占             | `taskkill /F /PID <pid>` + 加 `--strictPort`                              |
 | hub 启动报 `CreateProcessW ... 不是有效的 Win32 应用程序`    | 中文 cwd + npx 触发 \0 bug | 用绝对路径 `node node_modules/vite/bin/vite.js`                               |
 | `AI 服务 API Key 未设置`                              | `.env` 缺失或没填           | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY` 或 `DEEPSEEK_API_KEY` → 重启 |
-| `JWT_SECRET` 默认值告警                               | 生产环境忘改                 | `openssl rand -hex 32` 生成 64 位随机串                                        |
+| `RuntimeError: 缺少环境变量 JWT_SECRET`               | `.env` 漏配 / 配了纯空白 / 启动进程读不到 | `openssl rand -hex 32` 生成 64 位随机串，写进 `backend/.env` 后重启            |
 
 
 ### 9.2 运行时类
@@ -579,6 +582,44 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 
 调参入口是环境变量，不是 `database.py` 里的常量——改常量会在下一次改代码时被覆盖。
 
+**以上是全局默认。** 单个用户的例外走管理后台的「额度」页签，
+落在 `users` 表的 `parse_limit_override` / `chat_limit_override` 两列
+（可空，NULL = 用全局）。取值：`0` = 一条都不能用，`-1` = 无限。
+
+两个坑：
+
+1. **给有效 VIP 设覆盖不生效**。VIP 走的是无限额度，额度校验在解析
+   上限**之前**就短路了。覆盖值照写不误（VIP 到期后该生效），
+   但界面会明说此刻不生效——不提示的话，管理员会以为是自己改错了。
+2. 覆盖是**每用户**的，与两个环境变量无关。改了环境变量不会重置
+   已有的覆盖值，要回落得在后台清空。
+
+---
+
+### 10.4 管理员播种
+
+**第一个管理员不能从界面上产生**——能进后台的人才能提权，而进后台
+本身就需要管理员。所以是启动时从环境变量播种一次：
+
+```env
+# 逗号分隔，首尾空格会被 strip，跳过空串。不做大小写折叠。
+VIDDIGEST_ADMIN_EMAILS=you@example.com,other@example.com
+```
+
+三条语义要记住：
+
+- **只播种，不同步**。从 `.env` 里删掉一个邮箱**不会**撤销他的管理员身份。
+  撤销是人的操作，不是配置的副作用——否则 env 少写一个字符就会在下次
+  重启时静默削掉一个管理员。
+- **未配置是合法配置**。返回 0，不报错、不播种。
+- 账号必须**已存在**才能被播种。播种是 `UPDATE` 不是 `INSERT`，
+  先注册再重启。
+
+改完 `.env` 要**重启后端**才生效（`main.py` 没有 `--reload`）。
+
+之后的管理员增减走后台的 SQLite：`UPDATE users SET is_admin = 1 WHERE email = ?`。
+提权与撤权**下一次请求即生效**——管理员身份不进 JWT，每次请求回查数据库。
+
 ---
 
 ## 11. 安全清单
@@ -586,7 +627,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 
 | 项                          | 状态  | 建议                                 |
 | -------------------------- | :---: | ---------------------------------- |
-| `JWT_SECRET` 不使用默认值        | ⚠️  | 生产改 32+ 随机串                        |
+| `JWT_SECRET` 无默认值且必填      | ✅   | 已改为 fail-fast：缺失或纯空白即拒绝启动（工单 #11 / ADR 0010） |
 | `.env` 不入 git              | ✅   | `.gitignore` 已包含                   |
 | CORS `allow_origins=["*"]` | ⚠️  | 生产改为具体域名                           |
 | bcrypt 哈希密码                | ✅   | cost=12 默认                         |

@@ -57,6 +57,12 @@ def is_douyin_url(url: str) -> bool:
         return False
 
 
+#: 音频选项的 format_id。定义在这里而不是 main.py：
+#: 两个模块各写一份字面量就是一次漂移，且变了只有一侧会中的那侧知道。
+AUDIO_FORMAT_ID = "douyin_audio"
+VIDEO_FORMAT_ID = "douyin_nowm"
+
+
 class DouyinParser:
     """抖音视频解析器，无需 Cookie"""
 
@@ -332,17 +338,44 @@ class DouyinParser:
             width = video_info.get("width", 0)
             height = video_info.get("height", 0)
             formats.append({
-                "format_id": "douyin_nowm",
+                "format_id": VIDEO_FORMAT_ID,
                 "ext": "mp4",
                 "resolution": f"{width}x{height}" if width and height else "原始",
                 "height": height or 720,
+                "width": width or 0,
                 "filesize": None,
                 "filesize_approx": None,
                 "vcodec": "h264",
                 "acodec": "aac",
+                "abr": None,
+                "has_video": True,
                 "has_audio": True,
+                "kind": "video",
                 "label": f"无水印 MP4 ({height}p)" if height else "无水印 MP4 (原始画质)",
                 "_direct_url": clean_url,
+            })
+
+        # 音频选项。_get_media_url 早就支持 mode="audio"（出 .mp3），
+        # 但之前无人调用它，也没在这里公布过 —— 能力写好了却不可达。
+        # 音频的大小给 None：需要额外一次 HEAD 请求，而解析一次多一个
+        # 请求换一个大小数字，不值得。界面上就显示「未知大小」。
+        music_urls = item_info.get("music", {}).get("play_url", {}).get("url_list", [])
+        if music_urls:
+            formats.append({
+                "format_id": AUDIO_FORMAT_ID,
+                "ext": "mp3",
+                "resolution": "",
+                "height": 0,
+                "width": 0,
+                "filesize": None,
+                "filesize_approx": None,
+                "vcodec": None,
+                "acodec": "mp3",
+                "abr": None,
+                "has_video": False,
+                "has_audio": True,
+                "kind": "audio",
+                "label": "纯音频 MP3 (只下音频, 未知大小)",
             })
 
         return {

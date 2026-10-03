@@ -21,7 +21,7 @@
               <th class="text-left py-4 px-5 text-gray-500 font-medium bg-panel-2 w-[140px]">对比项</th>
               <th class="text-center py-4 px-5 font-semibold bg-blue-50 text-blue-400 w-1/3">
                 <span class="flex items-center justify-center gap-2">
-                  <span class="w-2 h-2 rounded-[2px] bg-violet"></span>
+                  <span class="w-2 h-2 rounded-[2px] bg-blue"></span>
                   VidDigest
                 </span>
               </th>

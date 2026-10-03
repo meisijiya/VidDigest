@@ -2,7 +2,7 @@
   <section ref="sectionRef" class="py-20 sm:py-24 relative overflow-hidden">
     <div class="max-w-5xl mx-auto px-4 sm:px-6 text-center">
       <div class="mb-14">
-        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-teal-50 border border-teal-100/50 text-teal-300 text-xs font-pixel mb-4">
+        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-50 border border-cyan-100/50 text-cyan-300 text-xs font-pixel mb-4">
           <span class="w-1.5 h-1.5 rounded-[1px] bg-cyan-500"></span>
           Platforms
         </span>
@@ -41,7 +41,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 
 /* 平台徽章：像素点循环使用品牌四色 */
-const brandColors = ['bg-violet', 'bg-purple', 'bg-pink', 'bg-cyan-500']
+const brandColors = ['bg-blue', 'bg-blue', 'bg-amber', 'bg-cyan-500']
 const platformNames = [
   'YouTube', 'Bilibili', '抖音', 'Twitter/X', 'Instagram',
   'Facebook', 'TikTok', 'Vimeo', 'Twitch', 'SoundCloud',

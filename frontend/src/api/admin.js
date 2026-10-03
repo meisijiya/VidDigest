@@ -1,0 +1,319 @@
+import axios from 'axios'
+
+import { toItems, toModelItem } from './models.js'
+
+/**
+ * 管理端接口。**需登录且是管理员**（服务端 `require_admin`）。
+ *
+ * 认证实例的写法与 `api/community.js` 一致：token 从 `auth_token` 取，
+ * 没有就不发 Authorization 头（而不是发一个空的 Bearer）。
+ */
+function client() {
+  const token = localStorage.getItem('auth_token')
+  return axios.create({
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+}
+
+/**
+ * 管理端的一条清单记录 → camelCase：在公共字段之上多两个
+ * `enabled` 与 `sortOrder`。
+ *
+ * 与 `toModelItem` 分开而不是合成一个，是因为「全部行」是**管理视角**：
+ * 公开端点按契约只给 `enabled = 1` 的行，混进管理页要用的字段会让
+ * 那条边界在同一个函数里变得没法看。
+ *
+ * `enabled` 同样是 0 / 1 数字，与库表和接口口径一致。
+ */
+export function toAdminModelItem(raw) {
+  return {
+    ...toModelItem(raw),
+    enabled: Number(raw?.enabled) ? 1 : 0,
+    sortOrder: Number(raw?.sort_order) || 0,
+  }
+}
+
+/** 一次请求 + 一次形状检查。两种出口共用，免得两条路各断各的。 */
+async function fetchAdminItems(map) {
+  const res = await client().get('/api/admin/models')
+  return { items: toItems(res.data, map) }
+}
+
+/**
+ * 全部厂商清单（含 `enabled = 0` 的行）。**仅管理员**。
+ *
+ * 注意与 `api/models.js` 的 `fetchPublicModelCatalog` 分开：普通用户调这个
+ * 会拿到 403，BYOK 面板要用的是公开那一份。
+ *
+ * @returns {Promise<{ items: object[] }>} items 已转成 camelCase
+ */
+export async function fetchAdminModelCatalog() {
+  return fetchAdminItems(toAdminModelItem)
+}
+
+/**
+ * 同一个端点的**原文**出口：`{ items: [...] }` 就是服务端给的那一份
+ * （snake_case，不做任何字段映射）。
+ *
+ * 留它是因为 `AdminPage.vue` 现在 import 的正是这个名字，并且自己在组件里
+ * 做那层映射。新代码要 camelCase 请用 `fetchAdminModelCatalog()`，或者
+ * 直接 `.map(toAdminModelItem)` —— 转换收在 api 层，而不是散在组件里。
+ *
+ * @returns {Promise<{ items: object[] }>} 服务端原文
+ */
+export async function fetchAdminModels() {
+  return fetchAdminItems((row) => row)
+}
+// ── 分页列表（工单 #12）─────────────────────────────────────
+//
+// 服务端返回 `{items, total, limit, offset}`（数据层 `list_admin_users` /
+// `list_admin_community` 的原样），而组件按 `page` / `pageSize` 想。
+// 翻译收在**这一层**：组件不该知道 offset 怎么算，api 层也不该知道
+// 组件内部有个 v.page。
+//
+// **返回的 pageSize 用服务端回传的那一个**，不是我们请求的那一个：
+// 服务端对 limit 有上界（ADMIN_PAGE_SIZE_*），请求 500 会被夹到上界。
+// 组件若还按自己请求的 500 算页数，翻到第二页就会漏行 / 重复行。
+
+/** 把组件的 page/pageSize 翻成服务端的 limit/offset。page 从 1 起。 */
+function toLimitOffset(page, pageSize) {
+  const p = Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1
+  const size = Number.isFinite(pageSize) && pageSize >= 1 ? Math.floor(pageSize) : 20
+  return { limit: size, offset: (p - 1) * size }
+}
+
+/** 形状不对就抛，与 `toItems` 同一纪律：接口没按约定返回 ≠ 这一页是空的。 */
+function toPage(data, what) {
+  if (!data || !Array.isArray(data.items)) {
+    throw new Error(`${what}响应形状不对`)
+  }
+  const limit = Number(data.limit) > 0 ? Number(data.limit) : data.items.length
+  const offset = Number(data.offset) >= 0 ? Number(data.offset) : 0
+  return {
+    items: data.items,
+    total: Number(data.total) || 0,
+    limit,
+    offset,
+    page: Math.floor(offset / limit) + 1,
+    pageSize: limit,
+  }
+}
+
+/**
+ * 后台用户列表（只读）。**需管理员**。
+ *
+ * 返回**服务端原文**（snake_case），字段映射由 `AdminPage.vue` 的 `toUser`
+ * 负责——与同文件里 `fetchAdminModels` 的出口保持同一个约定。
+ *
+ * @param {object} o
+ * @param {number} [o.page=1]      从 1 起
+ * @param {number} [o.pageSize=20]
+ * @param {string} [o.q='']        按邮箱模糊匹配
+ * @returns {Promise<{items: object[], total: number, page: number, pageSize: number}>}
+ */
+export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' } = {}) {
+  const { limit, offset } = toLimitOffset(page, pageSize)
+  const res = await client().get('/api/admin/users', {
+    params: { limit, offset, q: String(q || '').trim() },
+  })
+  return toPage(res.data, '用户列表')
+}
+
+/**
+ * 后台社区记录列表。**需管理员**。
+ *
+ * 不过滤 status：pending 占位行恰恰是后台最该看的（谁占了位没解析完）。
+ * status 现已在契约里，组件据此显示「占位中」——管理员要能分辨一条空壳与
+ * 一条真内容，删之前才知道自己在删什么。
+ */
+export async function fetchAdminCommunity({ page = 1, pageSize = 20 } = {}) {
+  const { limit, offset } = toLimitOffset(page, pageSize)
+  const res = await client().get('/api/admin/community', {
+    params: { limit, offset },
+  })
+  return toPage(res.data, '社区记录')
+}
+
+/**
+ * 调整某个用户的解析 / 对话额度。**需管理员。**
+ *
+ * 字段名必须翻成 snake_case（`parse_limit` / `chat_limit`）才与服务端
+ * `QuotaUpdateRequest` 对上——发 camelCase 的话 pydantic 会当成「两个字段
+ * 都没出现」，于是 `exclude_unset` 得到空字典，**静默什么都不改还返回 200**。
+ * 那是本页最容易犯也最难发现的错，所以在这里翻，不留给调用方。
+ *
+ * 语义（服务端 `QuotaUpdateRequest` 的注释）：
+ *   - 传 `null` → 清除覆盖，回落全局
+ *   - 键整个不出现 → 这一项不动
+ * 本函数**总是**把两个键都发出去，因为组件的 `toQuotaValue` 只会产出
+ * `null` 或整数（留空 = 清除），语义一致。
+ *
+ * @returns {Promise<{user: object, note: string|null, message: string}>}
+ *   `user` 是**回读**结果（服务端重查库），不是请求值的回显。
+ *   `note === 'vip_not_effective'` 时本次调整此刻不生效（VIP 短路）。
+ */
+export async function setUserQuota(userId, { parseLimit = null, chatLimit = null } = {}) {
+  const res = await client().post(`/api/admin/users/${userId}/quota`, {
+    parse_limit: parseLimit ?? null,
+    chat_limit: chatLimit ?? null,
+  })
+  if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
+    throw new Error('额度调整响应形状不对')
+  }
+  return { user: res.data.user, note: res.data.note ?? null, message: res.data.message ?? '' }
+}
+/**
+ * 改一个厂商行（ADR 0010「模型清单可改」）。**需管理员**。
+ *
+ * 两条不可省的翻译：
+ *
+ * 1. **只带调用方真的传了的键**。后端是 PATCH 语义：没出现的键 = 不改那一项。
+ *    无条件把七个字段全发过去，等于每次改一个显示名都顺手把模型列表、
+ *    端点、排序全刷成草稿里的值 —— 而草稿可能没加载全。
+ * 2. **enabled 翻成 0/1**。后端显式拒布尔值（Python 里 `True == 1`，
+ *    `{"enabled": true}` 会静静地变成「上架」）。前端必须先翻。
+ *
+ * 键名翻成 snake_case：发 camelCase 的话 pydantic 会当成「七个字段都没出现」，
+ * 静默什么都不改还返回 200 —— 与 setUserQuota 那条是同一类坑。
+ *
+ * @returns {Promise<{item: object, platformDefault: string|null}>}
+ *   `item` 是**回读**结果。`platformDefault` 让前端能当场显示
+ *   「这一改会影响平台默认模型是什么」，而不是让管理员去猜。
+ */
+export async function updateAdminModel(providerId, patch = {}) {
+  const body = {}
+  if ('label' in patch) body.label = patch.label
+  if ('hint' in patch) body.hint = patch.hint
+  if ('baseUrl' in patch) body.base_url = patch.baseUrl
+  if ('models' in patch) body.models = patch.models
+  if ('defaultModel' in patch) body.default_model = patch.defaultModel
+  if ('enabled' in patch) body.enabled = patch.enabled ? 1 : 0
+  if ('sortOrder' in patch) body.sort_order = patch.sortOrder
+
+  if (Object.keys(body).length === 0) {
+    // 与后端同一条纪律：空 patch 会被判 400，这里先挡住，省一次往返
+    throw new Error('没有任何要改的字段')
+  }
+
+  const res = await client().patch(`/api/admin/models/${providerId}`, body)
+  if (!res.data || !res.data.item) {
+    throw new Error('模型清单更新响应形状不对')
+  }
+  return {
+    item: toAdminModelItem(res.data.item),
+    platformDefault: res.data.platform_default || null,
+  }
+}
+
+/**
+ * 后台建号（ADR 0012）。**需管理员。**
+ *
+ * `email` / `password` 原样发（它们本来就是 snake_case 同形），`is_admin`
+ * 显式翻成布尔——后端声明的是 `bool`，发 0/1 虽然也能过，但让「这个字段
+ * 是不是开关」这件事在契约上只有一个答案。
+ *
+ * @returns {Promise<{user: object}>} `user` 是**回读**结果，不是请求值的回显。
+ */
+export async function createAdminUser({ email, password, isAdmin = false } = {}) {
+  const res = await client().post('/api/admin/users', {
+    email,
+    password,
+    is_admin: !!isAdmin,
+  })
+  if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
+    throw new Error('建号响应形状不对')
+  }
+  return { user: res.data.user }
+}
+
+/**
+ * 改管理员标记（ADR 0012）。**需管理员。**
+ *
+ * **只发 is_admin 一个键**：后端 `UserAdminUpdateRequest` 是 extra="forbid"，
+ * 多带一个键会整个 422（其中包括 is_vip——VIP 不在后台可改范围）。
+ *
+ * @returns {Promise<{user: object}>}
+ */
+export async function setUserAdmin(userId, isAdmin) {
+  const res = await client().patch(`/api/admin/users/${userId}`, {
+    is_admin: !!isAdmin,
+  })
+  if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
+    throw new Error('权限调整响应形状不对')
+  }
+  return { user: res.data.user }
+}
+
+/**
+ * 标签词表（分组 + 上限）。**需管理员**。
+ *
+ * 前端**不**自己维护一份词表：`CommunityPage.vue` 的标签筛选已经是
+ * 「从已加载的卡片汇总」，不在前端抄第二份。后台要让人**勾选**标签就绕不开
+ * 词表，所以从服务端取一次——多这一个端点，好过词表在两个地方各活一份。
+ *
+ * 保留 groups 是因为词表分组顺带说明了每个标签的适用语境，摊平就把这个
+ * 信息丢了。maxTags 由服务端给出，是上限的唯一真值。
+ *
+ * @returns {Promise<{maxTags: number, groups: {name: string, tags: string[]}[]}>}
+ */
+export async function fetchTagVocabulary() {
+  const res = await client().get('/api/admin/tags/vocabulary')
+  const d = res.data || {}
+  if (!Array.isArray(d.groups) || !d.groups.length) {
+    throw new Error('标签词表响应形状不对')
+  }
+  return {
+    maxTags: Number(d.max_tags) > 0 ? Number(d.max_tags) : 3,
+    groups: d.groups
+      .filter((g) => g && Array.isArray(g.tags) && g.tags.length)
+      .map((g) => ({ name: String(g.name || ''), tags: g.tags.map(String) })),
+  }
+}
+
+/**
+ * 改某条社区视频的标签。**需管理员**。
+ *
+ * `tags` 发**词表内**的值，最多 3 个。服务端会严格校验：词表外一律 400 并在
+ * detail 里点名被拒的值——不像模型那条路径会静默回落到「其他」，因为管理员
+ * 打错字不该被藏起来（见 ADR 0013）。
+ *
+ * @returns {Promise<{item: object}>} `item` 是**回读**结果，不是请求值的回显。
+ */
+export async function updateCommunityTags(videoId, tags) {
+  const res = await client().patch(`/api/admin/community/${videoId}`, {
+    tags: (tags || []).map(String),
+  })
+  if (!res.data || !res.data.item || typeof res.data.item !== 'object') {
+    throw new Error('改标签响应形状不对')
+  }
+  return { item: res.data.item }
+}
+
+/**
+ * 删掉一条社区视频（ADR 0013）。**需管理员**。
+ *
+ * **只删 `videos` 那一行**。解析过它的用户在自己「历史」里的记录不受影响——
+ * 库里没有任何外键指向 videos，这正是该语义成立的前提。
+ *
+ * @returns {Promise<{deleted: number}>}
+ */
+export async function deleteCommunityVideo(videoId) {
+  const res = await client().delete(`/api/admin/community/${videoId}`)
+  return { deleted: res.data?.deleted ?? videoId }
+}
+
+/**
+ * 删号（ADR 0012）。**需管理员。**
+ *
+ * 名下有订单或解析历史时后端回 **409**，body 形如
+ * `{ detail, blockers: { orders: 2, parse_history: 5 } }`。
+ * 本函数把 blockers 原样带出去（不塞进 message）：前端要的是数字，
+ * 「还剩几行要处理」不能靠从中文里正则抠。
+ *
+ * @returns {Promise<{deleted: number}>}
+ * @throws {Error} 附带 `.status` 与 `.blockers`（409 时）
+ */
+export async function deleteAdminUser(userId) {
+  const res = await client().delete(`/api/admin/users/${userId}`)
+  return { deleted: res.data?.deleted ?? userId }
+}

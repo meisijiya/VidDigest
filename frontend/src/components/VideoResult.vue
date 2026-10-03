@@ -53,32 +53,54 @@
         </div>
       </div>
 
-      <!-- 格式选择 -->
+      <!-- 格式选择：视频与纯音频分两块。音频没有分辨率，
+           把它塞进「选择画质」那一栏是在骗人。 -->
       <div v-if="video.formats?.length">
-        <label class="block text-sm font-medium text-gray-700 mb-2.5">选择画质</label>
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            v-for="fmt in video.formats"
-            :key="fmt.format_id"
-            @click="selectFormat(fmt)"
-            :class="[
-              'px-3 py-2.5 text-sm rounded-xl border transition-all duration-200 text-left relative overflow-hidden',
-              selectedFormat?.format_id === fmt.format_id
-                ? 'border-blue-500 bg-blue-50 text-blue-400 ring-1 ring-blue-500/30'
-                : 'border-line text-gray-700 hover:border-gray-300 hover:bg-gray-100'
-            ]"
-          >
-            <div class="font-medium font-pixel">{{ fmt.resolution }}</div>
-            <div class="text-xs text-gray-500 mt-0.5">{{ fmt.label }}</div>
-          </button>
-        </div>
+        <template v-if="videoFormats.length">
+          <label class="block text-sm font-medium text-gray-700 mb-2.5">选择画质</label>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              v-for="fmt in videoFormats"
+              :key="fmt.format_id"
+              @click="selectFormat(fmt)"
+              :class="[
+                'px-3 py-2.5 text-sm rounded-xl border transition-all duration-200 text-left relative overflow-hidden',
+                selectedFormat?.format_id === fmt.format_id
+                  ? 'border-blue-500 bg-blue-50 text-blue-400 ring-1 ring-blue-500/30'
+                  : 'border-line text-gray-700 hover:border-gray-300 hover:bg-gray-100'
+              ]"
+            >
+              <div class="font-medium font-pixel">{{ formatTitle(fmt) }}</div>
+              <div class="text-xs text-gray-500 mt-0.5">{{ fmt.label }}</div>
+            </button>
+          </div>
+        </template>
+        <template v-if="audioFormats.length">
+          <label class="block text-sm font-medium text-gray-700 mt-4 mb-2.5">纯音频</label>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              v-for="fmt in audioFormats"
+              :key="fmt.format_id"
+              @click="selectFormat(fmt)"
+              :class="[
+                'px-3 py-2.5 text-sm rounded-xl border transition-all duration-200 text-left relative overflow-hidden',
+                selectedFormat?.format_id === fmt.format_id
+                  ? 'border-blue-500 bg-blue-50 text-blue-400 ring-1 ring-blue-500/30'
+                  : 'border-line text-gray-700 hover:border-gray-300 hover:bg-gray-100'
+              ]"
+            >
+              <div class="font-medium font-pixel">{{ formatTitle(fmt) }}</div>
+              <div class="text-xs text-gray-500 mt-0.5">{{ fmt.label }}</div>
+            </button>
+          </div>
+        </template>
       </div>
 
       <!-- 下载按钮 -->
       <button
         @click="handleDownload"
         :disabled="!selectedFormat || downloading"
-        class="w-full py-3 rounded-xl bg-violet text-white font-medium text-sm
+        class="w-full py-3 rounded-xl bg-blue text-on-primary font-medium text-sm
                hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
                transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2"
       >
@@ -88,14 +110,14 @@
           <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-2"></span>
         </span>
         <svg v-else class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        {{ downloading ? '下载中...' : '下载视频' }}
+        {{ downloading ? '下载中...' : downloadLabel }}
       </button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 const props = defineProps({
   video: Object,
@@ -105,6 +127,30 @@ const props = defineProps({
 const emit = defineEmits(['download'])
 
 const selectedFormat = ref(null)
+
+// 音频与视频分成两块。**未知 kind 一律当视频** —— 方向是刻意挑的：
+// 后端哪天回归漏了 kind，用户最坏是看到一个归错块的选项，而不是一个
+// 凭空消失的选项（后者正是当初让「没有音频」这件事看不见的原因）。
+// 「每条格式都必须自报 kind」由 backend/tests/test_audio_download.py 钉住。
+const videoFormats = computed(() =>
+  (props.video?.formats || []).filter((fmt) => fmt.kind !== 'audio')
+)
+const audioFormats = computed(() =>
+  (props.video?.formats || []).filter((fmt) => fmt.kind === 'audio')
+)
+
+// 按钮文案随选中项走。界面上写着「下载音频」而用户拿到一个带声的 mp4，
+// 是最难查的一类 bug —— 不报错，文件也确实下来了。
+const downloadLabel = computed(() =>
+  selectedFormat.value?.kind === 'audio' ? '下载音频' : '下载视频'
+)
+
+function formatTitle(fmt) {
+  if (fmt.kind !== 'audio') return fmt.resolution
+  // 音频没有分辨率，拿一个码率当标题；码率也未知就退到容器名
+  // （抖音的 mp3 就是这种情况 —— 它有码率，只是我们没去查）。
+  return fmt.abr ? fmt.abr + ' kbps' : ((fmt.ext || '').toUpperCase() || '纯音频')
+}
 
 function selectFormat(fmt) {
   selectedFormat.value = fmt

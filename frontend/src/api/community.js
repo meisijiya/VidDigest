@@ -8,14 +8,39 @@ function client() {
 }
 
 /**
+ * 列表 / 搜索共用的查询参数。
+ *
+ * 空标签**不传**：未选中任何标签时应当退回公开浏览，而「不带 tag」与
+ * 「带一个空 tag」在代码里是两回事——后者读起来像「筛选了一个叫空
+ * 字符串的标签」。
+ */
+function browseParams({ page = 1, pageSize = 20, tag = '' } = {}) {
+  const params = { page, page_size: pageSize }
+  if (tag) params.tag = tag
+  return params
+}
+
+/**
  * 社区列表。**任何人都能看**，未登录同样可用——所以这里刻意不因为
  * 没有 token 就跳过请求。翻页与按标签筛选同属浏览，未登录也开放。
  */
 export async function fetchCommunityVideos({ page = 1, pageSize = 20, tag = '' } = {}) {
   const res = await client().get('/api/community/videos', {
-    params: { page, page_size: pageSize, tag },
+    params: browseParams({ page, pageSize, tag }),
   })
   return res.data
+}
+
+/**
+ * 社区里出现过的全部标签及条数。**任何人可读。**
+ *
+ * 标签选项必须来自这里，不能从当前页卡片汇总：后者随结果集变化——
+ * 翻页或选中某个标签之后，其余标签会从筛选行里整片消失，用户没法
+ * 再叠加第二个筛选。这份清单与服务端是同一份真值，取一次后常驻。
+ */
+export async function fetchCommunityTags() {
+  const res = await client().get('/api/community/tags')
+  return res.data.items || []
 }
 
 /**
@@ -37,11 +62,13 @@ export async function fetchCommunityByUrl(url) {
  * 401 在这里被翻译成 needLogin 标记返回，而不是抛异常：
  * 「没登录」是这个页面的常态之一（列表照样能看），不该和「搜索失败」
  * 一起变成一个红色报错框。
+ *
+ * tag 接受**逗号分隔的多值**，后端按并集处理（命中任一标签即命中）。
  */
 export async function searchCommunity({ q = '', tag = '', page = 1, pageSize = 20 } = {}) {
   try {
     const res = await client().get('/api/community/search', {
-      params: { q, tag, page, page_size: pageSize },
+      params: { q, ...browseParams({ page, pageSize, tag }) },
     })
     return { ...res.data, needLogin: false }
   } catch (err) {

@@ -51,10 +51,49 @@
           </svg>
           <span class="hidden md:inline text-sm">社区</span>
         </button>
+        <!-- 管理后台：只对管理员显示（v-if 挂在 isAdmin 上）。
+             刻意只在**没有**这个按钮时才谈得上「看不到」——前端隐藏只是
+             体验，真正的边界是后端 require_admin 的 403（ADR 0010）。
+             isAdmin 由 App.vue 给：先用 localStorage 里的登录用户渲染，
+             挂载后再用 /api/auth/me 回查一次。 -->
+        <button v-if="isAdmin" type="button" @click="$emit('open-admin')"
+          :title="'管理后台'" aria-label="管理后台"
+          :class="[
+            'p-2 sm:px-4 sm:py-1.5 rounded-lg transition-colors flex items-center gap-1.5',
+            page === 'admin' ? 'text-blue-400 bg-blue-50 font-medium' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+          ]">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          <span class="hidden md:inline text-sm">管理</span>
+        </button>
       </nav>
 
       <!-- Desktop Actions -->
       <div class="flex items-center gap-2">
+        <!-- 主题切换：放在登录态判断之外，游客与登录用户都能切。
+             图标按当前主题给出「切到哪个」，不是「现在是什么」——
+             后者要求用户先在脑子里做一次取反。 -->
+        <button type="button" @click="toggleTheme"
+          :title="theme === 'dark' ? '切换到明亮主题' : '切换到暗色主题'"
+          :aria-label="theme === 'dark' ? '切换到明亮主题' : '切换到暗色主题'"
+          :aria-pressed="theme === 'light'"
+          class="flex-shrink-0 w-9 h-9 rounded-lg grid place-items-center
+                 text-gray-500 hover:text-gray-900 hover:bg-gray-100
+                 border border-line transition-colors">
+          <svg v-if="theme === 'dark'" class="w-4 h-4" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+          </svg>
+          <svg v-else class="w-4 h-4" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true">
+            <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
+          </svg>
+        </button>
+
         <template v-if="user">
           <div class="flex items-center gap-2 mr-1">
             <!-- 悬停/点击展开额度面板：额度拆成「解析 / 追问」两个计数器
@@ -140,8 +179,8 @@
             登录
           </button>
           <button @click="$emit('register')"
-            class="text-sm bg-violet text-white px-5 py-1.5 rounded-full hover:bg-blue-600 transition-all duration-200 active:scale-95 flex items-center gap-1.5">
-            <span class="w-1.5 h-1.5 bg-white rounded-[1px]"></span>
+            class="text-sm bg-blue text-on-primary px-5 py-1.5 rounded-full hover:bg-blue-600 transition-all duration-200 active:scale-95 flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 bg-on-primary rounded-[1px]"></span>
             注册
           </button>
         </template>
@@ -153,11 +192,21 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import PixelLogo from './PixelLogo.vue'
+import { useTheme } from '../composables/useTheme.js'
+
+const { theme, toggleTheme } = useTheme()
 
 const props = defineProps({
   user: { type: Object, default: null },
   page: { type: String, default: 'home' },
   showVipEntry: { type: Boolean, default: false },
+  /**
+   * 是不是管理员。**只用来决定「管理」入口显不显示**。
+   * 它来自 localStorage + /api/auth/me，两者都不是安全边界：
+   * localStorage 里的值任何人都能改，服务端也随时可能撤权。
+   * 真正的判断在服务端 require_admin（ADR 0010）。
+   */
+  isAdmin: { type: Boolean, default: false },
   quota: { type: Object, default: null },
   quotaLoading: { type: Boolean, default: false },
   /**
@@ -167,7 +216,7 @@ const props = defineProps({
    */
   byok: { type: Object, default: null },
 })
-const emit = defineEmits(['login', 'register', 'logout', 'open-vip', 'go-home', 'open-history', 'open-community', 'request-quota', 'open-byok'])
+const emit = defineEmits(['login', 'register', 'logout', 'open-vip', 'go-home', 'open-history', 'open-community', 'open-admin', 'request-quota', 'open-byok'])
 
 const scrolled = ref(false)
 const headerRef = ref(null)

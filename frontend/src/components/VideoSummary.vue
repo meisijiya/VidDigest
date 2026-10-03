@@ -15,7 +15,7 @@
           {{ tab.label }}
         </span>
         <div v-if="activeTab === tab.key"
-          class="absolute bottom-0 left-3 right-3 h-0.5 bg-violet rounded-full"></div>
+          class="absolute bottom-0 left-3 right-3 h-0.5 bg-blue rounded-full"></div>
       </button>
     </div>
 
@@ -81,7 +81,7 @@
         <!-- 显式括号是必须的：写成 @click="startSummarize" 会把 MouseEvent
              当成 overwrite 传进去，于是「开始 AI 解析」会静默地变成一次覆盖。 -->
         <button @click="startSummarize()"
-          class="px-6 py-2.5 rounded-xl bg-violet text-white text-sm font-medium
+          class="px-6 py-2.5 rounded-xl bg-blue text-on-primary text-sm font-medium
                  hover:bg-blue-600 transition-all duration-200 active:scale-95
                  flex items-center gap-2">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -122,13 +122,13 @@
             <!-- 导出字幕 -->
             <div class="ml-auto flex items-center gap-1.5">
               <button v-if="subtitleData.segments?.length" @click="exportSubtitle('srt')"
-                class="px-2.5 py-1 rounded-md bg-panel border border-line text-gray-500 hover:text-teal-300 hover:border-teal-200 transition-colors flex items-center gap-1 font-pixel"
+                class="px-2.5 py-1 rounded-md bg-panel border border-line text-gray-500 hover:text-cyan-300 hover:border-cyan-200 transition-colors flex items-center gap-1 font-pixel"
                 title="导出带时间轴的 SRT 字幕文件">
                 <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 SRT
               </button>
               <button @click="exportSubtitle('txt')"
-                class="px-2.5 py-1 rounded-md bg-panel border border-line text-gray-500 hover:text-teal-300 hover:border-teal-200 transition-colors flex items-center gap-1 font-pixel"
+                class="px-2.5 py-1 rounded-md bg-panel border border-line text-gray-500 hover:text-cyan-300 hover:border-cyan-200 transition-colors flex items-center gap-1 font-pixel"
                 title="导出纯文本字幕（每句一行）">
                 <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 TXT
@@ -204,7 +204,7 @@
               @keyup.enter="handleChat" />
           </div>
           <button @click="handleChat" :disabled="chatLoading || !chatQuestion.trim()"
-            class="px-5 py-2.5 rounded-xl bg-violet text-white text-sm font-medium
+            class="px-5 py-2.5 rounded-xl bg-blue text-on-primary text-sm font-medium
                    hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
                    transition-all duration-200 active:scale-95 whitespace-nowrap flex items-center gap-2">
             <svg v-if="chatLoading" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -463,8 +463,9 @@ function renderMindmap() {
       zoom: true,
       pan: true,
       maxWidth: 600,
-      /* 深色面板适配：品牌四色按层级平涂 */
-      color: (node) => ['#7C3AED', '#A855F7', '#EC4899', '#06B6D4'][node.state?.depth % 4] || '#A855F7',
+      /* 节点按层级平涂品牌色。markmap 的 color 回调要的是字面颜色，
+         拿不到 CSS 变量，所以这里用 @theme 里的 hex（与城墙同一套）。 */
+      color: (node) => ['#2fa1da', '#1b5a79', '#f49a34', '#60ebc6'][node.state?.depth % 4] || '#1b5a79',
     }, root)
   } catch (e) {
     console.error('Markmap render error:', e)
@@ -733,17 +734,18 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 思维导图深色适配：markmap 节点文字经 foreignObject 渲染，颜色取自 svg 上的
+/* 思维导图适配：markmap 节点文字经 foreignObject 渲染，颜色取自 svg 上的
    --markmap-text-color 变量（库默认 #333，深色底不可见）。
-   库默认样式定义于 .markmap（0,1,0），此处用 svg.markmap（0,1,1）提权覆盖。 */
+   库默认样式定义于 .markmap（0,1,0），此处用 svg.markmap（0,1,1）提权覆盖。
+   这些是 CSS 自定义属性，所以引用令牌即可跟随明亮主题。 */
 :deep(svg.markmap) {
-  --markmap-text-color: #dde2ee;
-  --markmap-a-color: #22d3ee;
-  --markmap-a-hover-color: #67e8f9;
-  --markmap-code-bg: #1d2742;
-  --markmap-code-color: #c4b5fd;
-  --markmap-highlight-bg: rgba(124, 58, 237, 0.28);
-  --markmap-highlight-node-bg: rgba(124, 58, 237, 0.14);
+  --markmap-text-color: var(--color-gray-800);
+  --markmap-a-color: var(--color-info);
+  --markmap-a-hover-color: var(--color-cyan-400);
+  --markmap-code-bg: var(--color-panel-2);
+  --markmap-code-color: var(--color-info);
+  --markmap-highlight-bg: color-mix(in srgb, var(--color-primary) 28%, transparent);
+  --markmap-highlight-node-bg: color-mix(in srgb, var(--color-primary) 14%, transparent);
 }
 /* 问答历史抽屉展开/收起动画 */
 .drawer-enter-active,

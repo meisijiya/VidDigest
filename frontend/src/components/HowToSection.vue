@@ -59,8 +59,8 @@ import IconZap from './icons/IconZap.vue'
 
 const steps = [
   { icon: IconSearch, title: '粘贴链接', desc: '复制你想下载的视频链接，粘贴到搜索框，点击解析', iconBg: 'bg-blue-50', iconColor: 'text-blue-400', numClass: 'bg-blue-50 border-blue-200 text-blue-400' },
-  { icon: IconPackage, title: '解析下载', desc: '一键解析视频信息，选择清晰度，快速下载到本地', iconBg: 'bg-coral-50', iconColor: 'text-coral-400', numClass: 'bg-coral-50 border-coral-200 text-coral-400' },
-  { icon: IconZap, title: 'AI 总结', desc: '自动生成视频摘要、思维导图，还可与 AI 对话提问', iconBg: 'bg-teal-50', iconColor: 'text-teal-400', numClass: 'bg-teal-50 border-teal-200 text-teal-300' },
+  { icon: IconPackage, title: '解析下载', desc: '一键解析视频信息，选择清晰度，快速下载到本地', iconBg: 'bg-amber-50', iconColor: 'text-amber-400', numClass: 'bg-amber-50 border-amber-200 text-amber-400' },
+  { icon: IconZap, title: 'AI 总结', desc: '自动生成视频摘要、思维导图，还可与 AI 对话提问', iconBg: 'bg-cyan-50', iconColor: 'text-cyan-400', numClass: 'bg-cyan-50 border-cyan-200 text-cyan-300' },
 ]
 
 const sectionRef = useSectionAnimation()

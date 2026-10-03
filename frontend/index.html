@@ -9,10 +9,25 @@
     <link rel="shortcut icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
-    <meta name="theme-color" content="#0F1729" />
+    <meta name="theme-color" content="#0e141b" />
     <meta name="msapplication-config" content="/browserconfig.xml" />
-    <meta name="msapplication-TileColor" content="#0F1729" />
+    <meta name="msapplication-TileColor" content="#0e141b" />
     <title>VidDigest · AI 视频理解与下载平台</title>
+    <!-- 主题必须在首帧之前定下来。等 Vue 挂载后再应用会让暗色用户看到一帧白底，
+         所以这段同步内联在 <head> 里执行，localStorage 是唯一来源。 -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('viddigest-theme')
+          if (t !== 'light' && t !== 'dark') {
+            t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+          }
+          document.documentElement.setAttribute('data-theme', t)
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark')
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

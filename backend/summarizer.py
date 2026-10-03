@@ -17,6 +17,8 @@ from openai import OpenAI
 from credentials import UserCredential
 from tags import vocabulary_prompt_text
 
+import model_catalog
+
 logger = logging.getLogger("summarizer")
 
 # ── extract() 的失败原因 ────────────────────────────────
@@ -672,6 +674,26 @@ def _parse_tail(tail: str) -> tuple[str, list]:
     return mindmap, list(raw_tags)
 
 
+#: 平台默认模型的**最后兜底**，只在模型清单表读不到时用（工单 #13 / ADR 0011）。
+#:
+#: 改动前这里写死的是 ``qwen-turbo``，而前端 byok.js:50 写的是 ``qwen-plus``
+#: ——两份硬编码已经在漂移。本轮把清单入库并**收敛到 qwen-plus**（表里
+#: bailian 行的 default_model 就是它），兜底值跟着收敛。
+#:
+#: 兜底**不是**默认路径：读表失败会打一条 warning（model_catalog 侧），
+#: 所以「静默用一个可能已下架的模型名」这件事不会发生。
+_FALLBACK_BAILIAN_MODEL = "qwen-plus"
+
+
+def _bailian_default_model() -> str:
+    """百炼的平台默认模型，取自 model_providers 表。
+
+    读不到表 / 该行没配 default_model 时回落 ``_FALLBACK_BAILIAN_MODEL``，
+    并且那条 warning 由 model_catalog 打——回落本身必须是**有痕迹**的。
+    """
+    return model_catalog.platform_default_model("bailian") or _FALLBACK_BAILIAN_MODEL
+
+
 class VideoSummarizer:
     """
     ────────────────────────────────────────────────────────────
@@ -687,7 +709,8 @@ class VideoSummarizer:
       1. 阿里云百炼 OpenAI 兼容模式（默认推荐）
            - ALIYUN_BAILIAN_API_KEY   必填
            - ALIYUN_BAILIAN_BASE_URL  可选，默认 https://dashscope.aliyuncs.com/compatible-mode/v1
-           - ALIYUN_BAILIAN_MODEL     可选，默认 qwen-turbo（最便宜）
+           - ALIYUN_BAILIAN_MODEL     可选，默认取模型清单表里的 bailian.default_model
+                                    （表里没配时回落 qwen-plus，见工单 #13）
       2. DeepSeek（兼容旧配置）
            - DEEPSEEK_API_KEY         必填
 
@@ -704,7 +727,9 @@ class VideoSummarizer:
 
     # 默认配置常量
     DEFAULT_BAILIAN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    DEFAULT_BAILIAN_MODEL = "qwen-turbo"
+    # 默认模型不再写死：它在 model_providers 表里，由 __init__ 取一次
+    # 存成 self._bailian_model（工单 #13）。改动前这一行是 "qwen-turbo"，
+    # 与前端 byok.js 的 "qwen-plus" 漂移，本轮收敛到表里的 qwen-plus。
     DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
     DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 
@@ -727,6 +752,11 @@ class VideoSummarizer:
         那里是唯一一份规则，且拒绝内嵌 userinfo：带 userinfo 的地址
         会触发 Basic 认证，与 Authorization 头互相覆盖。
         """
+        # 平台默认模型取一次存实例上：表里那一行是**运行时**的事实，
+        # 而类属性是 import 期求值的——写成类属性就等于把这次读表冻在
+        # 模块加载那一刻，后台改了默认模型也要等重启才生效。
+        self._bailian_model = _bailian_default_model()
+
         if credential is not None:
             self.provider = "user_credential"
             user_base_url, user_model = credential.endpoint
@@ -744,8 +774,8 @@ class VideoSummarizer:
             )
             self.model = user_model or os.getenv(
                 "ALIYUN_BAILIAN_MODEL",
-                self.DEFAULT_BAILIAN_MODEL,
-            ).strip() or self.DEFAULT_BAILIAN_MODEL
+                self._bailian_model,
+            ).strip() or self._bailian_model
             return
 
         bailian_key = os.getenv("ALIYUN_BAILIAN_API_KEY", "").strip()
@@ -763,8 +793,8 @@ class VideoSummarizer:
             )
             self.model = os.getenv(
                 "ALIYUN_BAILIAN_MODEL",
-                self.DEFAULT_BAILIAN_MODEL,
-            ).strip() or self.DEFAULT_BAILIAN_MODEL
+                self._bailian_model,
+            ).strip() or self._bailian_model
         elif deepseek_key:
             # ── DeepSeek（兼容旧配置）──
             self.provider = "deepseek"
@@ -779,7 +809,7 @@ class VideoSummarizer:
                 "未检测到 AI 服务 API Key，请配置以下任一组环境变量：\n"
                 "  ├─ 阿里云百炼（推荐，最便宜）:\n"
                 "  │   ALIYUN_BAILIAN_API_KEY=sk-xxx\n"
-                "  │   ALIYUN_BAILIAN_MODEL=qwen-turbo   # 可选，默认 qwen-turbo\n"
+                "  │   ALIYUN_BAILIAN_MODEL=qwen-plus    # 可选，不配则取模型清单表里的默认值\n"
                 "  └─ DeepSeek（兼容）:\n"
                 "      DEEPSEEK_API_KEY=sk-xxx\n"
                 "  获取地址: https://bailian.console.aliyun.com/  或  https://platform.deepseek.com/api_keys"

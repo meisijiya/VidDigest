@@ -43,7 +43,18 @@ _conn_generation = 0
 def get_connection_generation() -> int:
     return _conn_generation
 
-MAX_PARSE_HISTORY_PER_USER = 30
+#: 每用户保留的解析历史条数。
+#:
+#: 曾经是 30，配合历史页一次全量渲染尚可。搜索 + 标签 + 收藏 + 分页
+#: 落地之后，30 条是一个用户**翻不到底也搜不到**的窗口：想找三个月前
+#: 存的那条链接，唯一的办法是它还没被挤出去。
+#:
+#: 1000 是保留条数，不是单页条数 —— 列表按 HISTORY_PAGE_SIZE_DEFAULT
+#: 分页取，否则一千个卡片一次进 DOM。
+MAX_PARSE_HISTORY_PER_USER = 1000
+
+#: 历史列表单页条数。与社区列表同值：两个列表的翻页手感不该不一样。
+HISTORY_PAGE_SIZE_DEFAULT = 20
 
 # 两个额度上限都从环境变量读取，改配置不必发版。
 # 各自独立取值：解析产出内容、追问消耗对话，用量节奏本就不同。
@@ -62,11 +73,17 @@ def _env_int(name: str, default: int) -> int:
 DAILY_PARSE_LIMIT = _env_int("VIDDIGEST_DAILY_PARSE_LIMIT", 3)
 DAILY_CHAT_LIMIT = _env_int("VIDDIGEST_DAILY_CHAT_LIMIT", 10)
 
-#: 额度种类 → (计数字段, 日期字段, 上限常量名)
+#: 额度种类 → (计数字段, 日期字段, 上限常量名, 覆盖列名)
 #: 两个计数器在同一张 users 表上，但各占自己的列与日期字段。
+#:
+#: 第四项是工单 #12 新增的「单人覆盖列」。它必须与前三项**待在同一张表里**：
+#: 把覆盖列名单独开一张映射，就多出一处「新增额度种类时忘了在这里登记」的位置，
+#: 而那种遗漏的表现是 override 永远读不到（静默回落全局），不是报错。
 _QUOTA_KINDS = {
-    "parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT"),
-    "chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT"),
+    "parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT",
+              "parse_limit_override"),
+    "chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT",
+             "chat_limit_override"),
 }
 
 
@@ -197,6 +214,16 @@ def get_db():
 def init_db():
     """初始化数据库表结构"""
     with get_db() as conn:
+        # is_favorite 的补列必须排在 executescript **之前**。
+        #
+        # 脚本里有 `CREATE INDEX ... ON parse_history(is_favorite)`，而
+        # `CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作：老库里那一列
+        # 不会凭空出现，索引一建就 no such column，整段脚本直接 abort，
+        # 排在后面的迁移永远轮不到 —— 表现为「代码本地好好的，一升级就打不开」。
+        #
+        # 全新库里 parse_history 还没建出来，那时也不能 ALTER，所以函数内部
+        # 自己判断表在不在。
+        _migrate_history_favorite_column(conn)
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,6 +231,12 @@ def init_db():
                 password_hash TEXT NOT NULL,
                 is_vip INTEGER DEFAULT 0,
                 vip_expire_at TEXT,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                -- 单人额度上限覆盖（工单 #12）。**可空、默认 NULL**。
+                -- NULL 的语义是「回落全局上限」，**不是 0**：0 是「一条都不能用」，
+                -- 两者在库里必须分得开，否则给某个账号「不限量」会变成「完全封死」。
+                parse_limit_override INTEGER,
+                chat_limit_override INTEGER,
                 daily_summary_count INTEGER DEFAULT 0,
                 last_summary_date TEXT,
                 daily_parse_count INTEGER DEFAULT 0,
@@ -243,6 +276,11 @@ def init_db():
                 mindmap_md TEXT DEFAULT '',
                 subtitle_data TEXT DEFAULT '',
                 chat_history TEXT DEFAULT '[]',
+                -- 收藏（个人标记）。为什么是这一列而不是一张表：
+                -- 「收藏哪条解析」是 parse_history 行的属性，跟着行走
+                -- 才对，单独建表要多一次 join，还多一个能写歪的入口。
+                -- 它只影响**这条记录自己**的裁剪与删除，不进社区。
+                is_favorite INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (user_id) REFERENCES users(id)
@@ -250,6 +288,8 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_history_user ON parse_history(user_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_history_user_url ON parse_history(user_id, video_url);
+            -- 「仅收藏」是历史页的一个档位，这条索引让它不必扫全表。
+            CREATE INDEX IF NOT EXISTS idx_history_fav ON parse_history(user_id, is_favorite);
 
             -- 社区视频表（ADR 0001）：全站共享，一个链接只有一行。
             --
@@ -308,8 +348,19 @@ def init_db():
         """)
 
         _migrate_quota_columns(conn)
+        _migrate_quota_override_columns(conn)
         _migrate_video_card_columns(conn)
+        _migrate_admin_column(conn)
         _create_video_search_index(conn)
+        # 模型清单（工单 #13 / ADR 0011）是**另一张表**，DDL 与播种都在
+        # model_catalog 里——那张表不属于 users 域，塞进来只会让两条不同的
+        # 迁移线索混在同一个文件里。
+        #
+        # 延迟 import：model_catalog 顶层要 import database（取 get_db），
+        # 模块级双向 import 会成环。与 auth.get_current_user 里的
+        # `from database import get_user_by_id` 同一套路。
+        from model_catalog import init_model_catalog
+        init_model_catalog(conn)
 
 
 def _migrate_quota_columns(conn) -> None:
@@ -330,6 +381,89 @@ def _migrate_quota_columns(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+def _migrate_quota_override_columns(conn) -> None:
+    """给已存在的 users 表补上单人额度覆盖列（工单 #12，expand 阶段）。
+
+    为什么必须单独一步：`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作，
+    老库里不会有新列，quota_limit 一读就报 no such column。**建表语句与迁移
+    两处都必须写**，只改前者的话老库起不来、而新库看起来一切正常——
+    这类错误只在升级现场暴露。
+
+    逐列判断再 ALTER：SQLite 没有 `ADD COLUMN IF NOT EXISTS`，重复执行会抛
+    duplicate column name，所以先查列是否存在。这也让重复跑 init_db 幂等。
+
+    列**不写 NOT NULL、不写 DEFAULT**：0 与 NULL 在额度语义里是两件事
+    （一条都不能用 vs 回落全局），建表语句里同样保持可空默认 NULL。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    for column, ddl in (
+        ("parse_limit_override", "ALTER TABLE users ADD COLUMN parse_limit_override INTEGER"),
+        ("chat_limit_override", "ALTER TABLE users ADD COLUMN chat_limit_override INTEGER"),
+    ):
+        if column not in existing:
+            conn.execute(ddl)
+
+
+def _migrate_admin_column(conn) -> None:
+    """给已存在的 users 表补上 is_admin 列（工单 #11，expand 阶段）。
+
+    与额度列同一套路：建表语句里已经有这一列，但 `CREATE TABLE IF NOT EXISTS`
+    对老库是空操作，老库的 users 表不会凭空多出列，而 auth.require_admin
+    一读就报 no such column。**两处都必须写**：只改建表语句，老库起不来。
+
+    NOT NULL + DEFAULT 0：没有「未设置」这个状态，一个账号要么是管理员要么不是。
+    老行由 DEFAULT 0 兜底，不会因为加列而被判成管理员。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "is_admin" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+
+
+# ── 首个管理员播种（工单 #11）──────────────────────────────
+#
+# 播种只做一件事：把 VIDDIGEST_ADMIN_EMAILS 里列出的账号置为 is_admin=1。
+# 它**不是**「同步」——配置里删掉一个邮箱不会撤销该账号的管理员身份
+# （撤销是人的操作，不是配置的副作用）。这样 env 少写一个字符不会在
+# 下次启动时静默削掉一个管理员。
+
+
+def _parse_admin_emails(raw: str | None) -> list[str]:
+    """把逗号分隔的邮箱串解析成去空、去首尾空白的列表。
+
+    strip 与跳过空串是必须的：运维手写 "a@x.com, b@x.com" 时逗号后面那个
+    空格是常态，邮箱本身还可能带着引号残留。不 strip 就会拿一个永远匹配不上的
+    字符串去查库，然后**安静地什么也不播种**——那是最难查的一种失败。
+
+    保持原样、不做大小写折叠：注册时 email 原样入库（见 create_user，
+    没有 lower），折叠会让「配了大写、注册用小写」这类偏差变成静默命中，
+    反过来更难解释。按原样匹配，配错就是不播种。
+    """
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def seed_admin_emails_from_env() -> int:
+    """按 VIDDIGEST_ADMIN_EMAILS 播种管理员，返回受影响的用户行数。
+
+    **未配置是合法配置**：返回 0，不报错、不播种。不是每个部署都有管理员。
+
+    刻意在**调用时**读 env（而不是模块级冻结成常量），与 quota_limit 同一理由：
+    冻结的副本会让「改了配置行为随之改变」这条无法验证。启动播种自然满足这一点，
+    但本函数也可能被测试直接调用。
+    """
+    emails = _parse_admin_emails(os.getenv("VIDDIGEST_ADMIN_EMAILS"))
+    if not emails:
+        return 0
+    placeholders = ",".join("?" * len(emails))
+    with get_db() as conn:
+        cursor = conn.execute(
+            f"UPDATE users SET is_admin = 1 WHERE email IN ({placeholders})",
+            emails,
+        )
+        return cursor.rowcount
 
 
 # ── 社区浏览与搜索（工单 #7）─────────────────────────────────
@@ -361,6 +495,33 @@ def _migrate_video_card_columns(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+def _migrate_history_favorite_column(conn) -> None:
+    """给 parse_history 补上 is_favorite 列。
+
+    理由同 _migrate_video_card_columns：``CREATE TABLE IF NOT EXISTS``
+    对已存在的表是空操作，老库里不会凭空多出这一列，而收藏的读写都要
+    SELECT 它 —— 不补列，代码一跑就 no such column。
+
+    默认 0（未收藏），所以老记录升级过来不会被当成收藏。
+
+    **表还不存在时什么都不做**：``init_db`` 把本函数排在 executescript 之前
+    调用，而全新库的 parse_history 那一刻还不存在，ALTER 会直接抛
+    ``no such table``。那种情况下随后 CREATE TABLE 自带这一列。
+    """
+    existing = {
+        row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='parse_history'"
+        )
+    }
+    if not existing:
+        return
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(parse_history)")}
+    if "is_favorite" not in columns:
+        conn.execute(
+            "ALTER TABLE parse_history ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 #: 全文检索索引表名。
@@ -450,6 +611,21 @@ COMMUNITY_PAGE_SIZE_DEFAULT = 20
 COMMUNITY_PAGE_SIZE_MAX = 100
 
 
+def _decode_tags_text(raw) -> list:
+    """把 tags 列的 JSON 文本还原成字符串数组。
+
+    收在一处是因为这段已经在这个文件里长出了四份副本，各写各的。
+    类型不对就当没有，不让脏数据变成下游的 TypeError。
+    """
+    try:
+        parsed = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        parsed = []
+    if not isinstance(parsed, list):
+        return []
+    return [t for t in parsed if isinstance(t, str)]
+
+
 def _project_video(row, fields: tuple) -> dict:
     """按字段白名单投影一行，tags 由 JSON 文本还原成数组。
 
@@ -529,18 +705,44 @@ def _paginate(from_clause: str, where: str, params: tuple, page: int,
 _COMMUNITY_VISIBLE = "v.status = 'ready'"
 
 
-def _tag_clause(tag: str, alias: str = "v") -> tuple[str, tuple]:
-    """按标签精确筛选。
+def _split_tags(tag) -> list:
+    """把 ``"编程,架构设计"`` / ``["编程", "架构设计"]`` 统一成去空后的列表。"""
+    if tag is None:
+        return []
+    raw = tag if isinstance(tag, (list, tuple)) else str(tag).split(",")
+    out = []
+    for t in raw:
+        t = str(t).strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def _tag_clause(tag, alias: str = "v") -> tuple[str, tuple]:
+    """按一组标签精确筛选（**并集**：命中任一即可）。
+
+    为什么并集不是交集：交集在两个标签很少共同出现时直接返回空，
+    而「选了筛选反而一条都没有」在界面上和「筛选坏了」完全一样。
+    并集永远给得出东西，选错方向也就不会长得像 bug。
 
     刻意走 json_each 而不是 FTS：trigram 匹配不到 2 个字符的词
     （实测「编程」召回 0），而标签里大量是 2 字词。标签是**枚举值**，
     精确匹配既更快也更准。
+
+    json_valid 不是保险是必需：videos.tags 是存 JSON 的 TEXT 列，
+    坏一行 json_each 就抛，而调用方是列表接口 —— 一行坏数据 = 整个
+    页面 500。COALESCE 同理：历史页那边是 LEFT JOIN，v.tags 可能是 NULL。
     """
-    if not tag:
+    names = _split_tags(tag)
+    if not names:
         return "", ()
+    marks = ", ".join("?" * len(names))
     return (
-        f" AND EXISTS (SELECT 1 FROM json_each({alias}.tags) WHERE value = ?)",
-        (tag,),
+        f" AND EXISTS (SELECT 1 FROM json_each("
+        f"  CASE WHEN json_valid(COALESCE({alias}.tags, '[]'))"
+        f"       THEN {alias}.tags ELSE '[]' END"
+        f") WHERE value IN ({marks}))",
+        tuple(names),
     )
 
 
@@ -557,6 +759,29 @@ def list_community_videos(page: int = 1, page_size: int = COMMUNITY_PAGE_SIZE_DE
     result = _paginate("videos v", where, params, page, page_size, order)
     result["items"] = [_project_video(r, COMMUNITY_CARD_FIELDS) for r in result["items"]]
     return result
+
+
+def list_community_tags() -> list:
+    """社区里出现过的全部标签及各自条数（只数 ready 行）。
+
+    给社区页的标签筛选当**选项来源**。刻意不由前端从当前页汇总：
+    那样一来翻页或一筛选，标签就会增减，用户读起来是「筛选不生效」。
+
+    json_valid 守卫是必需的而不是保险：videos.tags 坏一行，json_each
+    就抛，而这一行正是整个标签行的数据源 —— 抛了就是整行标签都没了。
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT je.value AS tag, count(*) AS n
+               FROM videos v
+               JOIN json_each(
+                   CASE WHEN json_valid(COALESCE(v.tags, '[]'))
+                        THEN v.tags ELSE '[]' END) je
+               WHERE v.status = 'ready'
+               GROUP BY je.value
+               ORDER BY n DESC, je.value""",
+        ).fetchall()
+    return [{"tag": r["tag"], "count": r["n"]} for r in rows]
 
 
 def get_community_video(video_id: int) -> dict | None:
@@ -738,8 +963,8 @@ def is_vip_active(user) -> bool:
 # 留着只会让人以为还有第二条计费路径。这里是唯一的计费实现。
 
 
-def _quota_spec(kind: str) -> tuple[str, str, str]:
-    """取出某类额度对应的 (计数字段, 日期字段, 上限常量名)。
+def _quota_spec(kind: str) -> tuple[str, str, str, str]:
+    """取出某类额度对应的 (计数字段, 日期字段, 上限常量名, 覆盖列名)。
 
     拼错的 kind 立刻抛错：静默 fallback 会让「扣了对话额度却记到解析头上」
     这类错误一路走到用户面前才发现。
@@ -752,22 +977,64 @@ def _quota_spec(kind: str) -> tuple[str, str, str]:
     return spec
 
 
-def quota_limit(kind: str) -> int:
-    """按模块当前值取上限——而不是导入时冻结的常量。
+#: 「无限」的取值。与 ``remaining == -1`` 的既有约定同一个数：
+#: 数据层一律用 -1 表示不限量，覆盖列也用同一个数，两边不必再翻译一次。
+QUOTA_UNLIMITED = -1
 
-    刻意不写成 `from DAILY_PARSE_LIMIT`：测试会 monkeypatch 模块属性，
-    导入时冻结会让「改配置后行为随之改变」这条 AC 无法验证。
+
+def _resolve_quota_limit(kind: str, override: int | None, vip_active: bool) -> tuple[int, str]:
+    """把「覆盖值 + VIP 状态」折成一个 (上限, 来源)。
+
+    **纯函数，不触库。** 它是上限取值的唯一规则实现，
+    ``quota_limit`` 与后台用户列表两处都调它——
+    两条读出口各自算一遍的话，后台显示的额度就可能和真实判定对不上，
+    而管理员恰恰是唯一会去核对那个数字的人。
+
+    优先级：有效 VIP > 覆盖值 > 全局。
+    VIP 压过覆盖值不是疏忽，是 ``check_quota_kind`` / ``consume_quota`` /
+    ``refund_quota`` 三处都在解析上限**之前**就短路返回 -1 的既有行为
+    （工单 #12 把它写成了显式要求：改额度对有效 VIP 必须报「不生效」，
+    不能静默成功）。这里如实反映那三处的判定，后台才不会显示一个假数字。
+    """
+    if vip_active:
+        return QUOTA_UNLIMITED, "vip"
+    if override is not None:
+        return int(override), "override"
+    return globals()[_quota_spec(kind)[2]], "global"
+
+
+def quota_limit(kind: str, user_id: int | None = None) -> int:
+    """取上限。传 user_id 时该用户的覆盖值优先，**只在这一处解析**。
+
+    全局值走 ``globals()[...]`` 而不是 ``from DAILY_PARSE_LIMIT``：
+    测试会 monkeypatch 模块属性，导入时冻结会让「改配置后行为随之改变」
+    这条 AC 无法验证。
 
     公开是因为路由层要报同样的数字。import 时冻结的副本会和这里的
     remaining 打架，同一份 payload 报出 `remaining=0, limit=3`（真实上限 1）。
+
+    刻意**不**新写一个 effective_limit()：多一个入口就多一次「A 处用了
+    覆盖值、B 处忘了」的可能，而这类分裂的表现恰恰是上面那句自相矛盾的
+    payload。覆盖值的读取只在这里发生，别处要数字就带着 user_id 来调。
+
+    传了 user_id 会**多一次查询**（调用方往往已经读过同一个 users 行）。
+    这是刻意的：把已取到的行传进来会让函数多一个「行可能不是这个用户的」
+    入参，而省下的只是一次本地 SQLite 的点查——用正确性换它不划算。
     """
-    return globals()[_quota_spec(kind)[2]]
+    if user_id is None:
+        return _resolve_quota_limit(kind, None, vip_active=False)[0]
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT {_quota_spec(kind)[3]} FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    override = row[_quota_spec(kind)[3]] if row else None
+    return _resolve_quota_limit(kind, override, vip_active=False)[0]
 
 
 def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
     """判定单类额度。只读，不写库。返回 (allowed, remaining)，-1 表示无限。"""
-    count_col, date_col, _ = _quota_spec(kind)
-    limit = quota_limit(kind)
+    count_col, date_col, _, _ = _quota_spec(kind)
+    limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:
@@ -776,6 +1043,18 @@ def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
             return False, 0
         if is_vip_active(user):
             return True, -1
+        # 上限为负 = 无限（工单 #12 允许把单人上限设成 -1）。
+        # 少了这一支，下面 `current >= limit` 会拿 0 >= -1 判成「已用完」，
+        # 于是「设成无限」的用户反而被彻底封死——比不设更糟。
+        if limit < 0:
+            return True, QUOTA_UNLIMITED
+        # 上限为 0 = 一条都不能用（工单 #12 的值域）。
+        # 这一支必须排在「今天还没用过 → 额度是满的」那条捷径**之前**：
+        # 那条捷径假设 limit >= 1，limit=0 时它会返回 (True, 0)，
+        # 于是「一条都不能用」变成了「可以用 0 次」——和封禁没区别，
+        # 区别只是用户以为自己被封了。
+        if limit == 0:
+            return False, 0
         # 日期不是今天，说明今天还没用过，额度是满的
         if user[date_col] != today:
             return True, limit
@@ -793,8 +1072,8 @@ def check_quota(user_id: int) -> dict:
 
 def consume_quota(user_id: int, kind: str) -> int:
     """扣减一次额度，返回扣减后的 remaining。调用前须已通过 check_quota_kind。"""
-    count_col, date_col, _ = _quota_spec(kind)
-    limit = quota_limit(kind)
+    count_col, date_col, _, _ = _quota_spec(kind)
+    limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:
@@ -809,14 +1088,16 @@ def consume_quota(user_id: int, kind: str) -> int:
                 f"UPDATE users SET {count_col} = 1, {date_col} = ? WHERE id = ?",
                 (today, user_id),
             )
-            return limit - 1
+            return QUOTA_UNLIMITED if limit < 0 else limit - 1
 
         current = user[count_col] or 0
         conn.execute(
             f"UPDATE users SET {count_col} = {count_col} + 1 WHERE id = ?",
             (user_id,),
         )
-        return limit - current - 1
+        # 计数照扣（后台要看今日用量），报出的 remaining 仍是 -1：
+        # 无限额度的用户不该因为扣了一次就少一个数。
+        return QUOTA_UNLIMITED if limit < 0 else limit - current - 1
 
 
 def refund_quota(user_id: int, kind: str) -> int:
@@ -827,8 +1108,8 @@ def refund_quota(user_id: int, kind: str) -> int:
     绝不会把计数压到负数，也不会跨天给今天白送额度，
     更不会把并发的另一次扣减覆盖掉。
     """
-    count_col, date_col, _ = _quota_spec(kind)
-    limit = quota_limit(kind)
+    count_col, date_col, _, _ = _quota_spec(kind)
+    limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     with get_db() as conn:
@@ -839,7 +1120,7 @@ def refund_quota(user_id: int, kind: str) -> int:
             return -1
         # 跨天了：扣的是昨天的，回滚会让今天的额度凭空多出来，不做。
         if user[date_col] != today:
-            return limit
+            return QUOTA_UNLIMITED if limit < 0 else limit
 
         # 单条 UPDATE 里完成减一。读-改-写两步会和并发的 consume_quota
         # 交叉：中间那次扣减会被本处的绝对值覆盖掉，等于白送额度。
@@ -851,7 +1132,421 @@ def refund_quota(user_id: int, kind: str) -> int:
         row = conn.execute(
             f"SELECT {count_col} FROM users WHERE id = ?", (user_id,)
         ).fetchone()
-        return limit - (row[count_col] or 0)
+        return QUOTA_UNLIMITED if limit < 0 else limit - (row[count_col] or 0)
+
+
+# ── 管理后台读出口（工单 #12）─────────────────────────────────
+#
+# 「读出口按谁在读枚举，不要按数据在哪张表枚举」：下面两个列表各自有一条
+# **不依赖任何旧表已有行**的读路径——空库启动时也读得到（只是空数组），
+# 管理员账号本身由 users 表给出，不会因为先有列表后有用户就看不见人。
+#
+# 刻意不塞进 api_community / api_summarize：那两个模块的读出口是**公开**的，
+# 后台的读出口是特权读出口，两者混在一处等于给公开端点开一个后门。
+
+#: 后台列表每页条数。**必须有上界**——没有上界的 limit?limit=999999 就是
+#: 一次把整张 users 表拉进内存，而这张表随时间单调增长。
+ADMIN_PAGE_SIZE_DEFAULT = 20
+ADMIN_PAGE_SIZE_MAX = 200
+
+#: offset 的上界。与 _MAX_SAFE_PAGE 同一理由：OFFSET 过大在 SQLite 里
+#: 会溢出，且没有任何一个合法的前端会翻到那么后面。
+_MAX_SAFE_OFFSET = 1_000_000_000
+
+
+def _clamp_limit_offset(limit, offset) -> tuple[int, int]:
+    """把 limit / offset 收敛到安全范围。**两个方向都要收。**
+
+    收下界：limit <= 0 会让 SQL 变成「取 0 行」，一个手滑的 limit=0
+    就会让后台看起来「没有数据」——而它其实有 999 条。归一到默认值，
+    宁可多给也不谎报空。
+    """
+    try:
+        limit = int(limit)
+        offset = int(offset)
+    except (TypeError, ValueError):
+        limit, offset = ADMIN_PAGE_SIZE_DEFAULT, 0
+    return (
+        max(1, min(limit, ADMIN_PAGE_SIZE_MAX)),
+        max(0, min(offset, _MAX_SAFE_OFFSET)),
+    )
+
+
+def _quota_used_today(row, kind: str) -> int:
+    """该用户**今天**已用掉多少条。跨天的旧计数按 0 报。
+
+    不这么做的话，后台会在第二天早上显示「已用 3 次」而用户实际满额可用——
+    管理员会据此去改额度，改的却是一个昨天的事实。
+    """
+    count_col, date_col, _, _ = _quota_spec(kind)
+    if row[date_col] != datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+        return 0
+    return row[count_col] or 0
+
+
+def _admin_user_item(row) -> dict:
+    """后台用户行。字段名与前端契约一一对应，不多不少。
+
+    limit 与 source 取自 ``_resolve_quota_limit``——与真实判定同一份规则，
+    后台显示的数字和用户实际被卡住的那个数字必然一致。
+    """
+    item = {
+        "id": row["id"],
+        "email": row["email"],
+        "is_admin": row["is_admin"],
+        "is_vip": row["is_vip"],
+        "vip_expire_at": row["vip_expire_at"],
+        "created_at": row["created_at"],
+    }
+    vip_active = is_vip_active(row)
+    for kind, (count_col, date_col, limit_name, override_col) in _QUOTA_KINDS.items():
+        limit, source = _resolve_quota_limit(kind, row[override_col], vip_active)
+        item[f"{kind}_used"] = _quota_used_today(row, kind)
+        item[f"{kind}_limit"] = limit
+        item[f"{kind}_limit_override"] = row[override_col]
+        item[f"{kind}_limit_source"] = source
+    return item
+
+
+def _like_escape(raw: str) -> str:
+    """转义 LIKE 模式里的三个特殊字符。
+
+    不转义的话，管理员搜 `%` 会匹配全表，搜 `_` 会匹配任意单字符——
+    这是**功能**上的错，不是注入（参数仍然是绑定变量），但足以让人
+    对着「搜什么都全出来」的结果排查半天。
+    """
+    return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def list_admin_users(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0,
+                     q: str = "") -> dict:
+    """后台用户列表（require_admin 保护）。返回 {items, total, limit, offset}。
+
+    排序用 id 升序而不是 created_at：created_at 有并列（同秒注册），
+    并列的行在翻页时会重复出现或凭空消失，而 offset 分页没有「同值保持原序」
+    的保证。按主键排则天然稳定。
+    """
+    limit, offset = _clamp_limit_offset(limit, offset)
+    where, params = "", ()
+    if q:
+        where = "WHERE email LIKE ? ESCAPE '\\'"
+        params = (f"%{_like_escape(q.strip())}%",)
+    with get_db() as conn:
+        total = conn.execute(f"SELECT count(*) FROM users {where}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT * FROM users {where} ORDER BY id ASC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+    return {
+        "items": [_admin_user_item(r) for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def admin_user_detail(user_id: int) -> dict | None:
+    """重读一个用户行（用于写操作后回读，确认真的落库）。
+
+    刻意是**重读**而不是回显请求值：回显等于把「我们打算写什么」当成
+    「我们写成了什么」返回，写失败时前端会显示一个不存在的额度。
+    """
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _admin_user_item(row) if row else None
+
+
+def set_user_quota_override(user_id: int, overrides: dict) -> int:
+    """写入单人额度覆盖，返回受影响的行数（0 = 用户不存在 → 404）。
+
+    ``overrides`` 形如 ``{"parse": 5, "chat": None}``：
+    值是 None 表示**清除覆盖**、回落全局。只写传进来的 key，
+    没传的 key 一个字都不动。
+
+    列名一律取自 ``_QUOTA_KINDS``，不接受外部传入——拼进 SQL 的必须是
+    白名单里的常量，不是请求里的字符串。
+    """
+    if not overrides:
+        return 0
+    assignments, params = [], []
+    for kind, value in overrides.items():
+        # 拼错的 kind 在这里抛，而不是拼出一条 no such column 的 UPDATE。
+        _, _, _, override_col = _quota_spec(kind)
+        assignments.append(f"{override_col} = ?")
+        params.append(value)
+    with get_db() as conn:
+        cursor = conn.execute(
+            f"UPDATE users SET {', '.join(assignments)} WHERE id = ?",
+            (*params, user_id),
+        )
+        return cursor.rowcount
+
+
+class UserConflict(Exception):
+    """删除 / 改权限被前置条件挡下。路由层翻成 409。
+
+    刻意**不**继承 ValueError：ValueError 说的是「你传的值不对」，
+    而这里说的是「这个人现在动不了」——两者的补救动作完全不同，
+    混成一个 400 会让前端把「先处理订单」显示成「参数写错了」。
+    """
+
+    def __init__(self, detail: str, blockers: dict | None = None):
+        super().__init__(detail)
+        self.detail = detail
+        #: 表名 → 行数。给前端做「还剩几行要处理」，不给人看。
+        self.blockers = blockers or {}
+
+
+#: 删用户前必须为空的表 → 给管理员看的中文名。
+#:
+#: orders 与 parse_history 都带 ``REFERENCES users(id)`` 且**没有 ON DELETE**，
+#: SQLite 在 foreign_keys=ON 下按 RESTRICT 处理：不先清掉这些行，
+#: DELETE 会直接抛 ForeignKeyError —— 500，且错误信息对管理员毫无指导性。
+#: 这里先查一次，把数据库约束翻译成一句能照着做的话。
+_USER_DELETE_BLOCKERS = {
+    "orders": "订单",
+    "parse_history": "解析历史",
+}
+
+
+def _user_admin_count(conn) -> int:
+    return conn.execute("SELECT count(*) FROM users WHERE is_admin = 1").fetchone()[0]
+
+
+def set_user_admin(user_id: int, is_admin: bool, *, acting_id: int | None = None) -> int:
+    """改管理员标记。返回 1 = 成功，0 = 用户不存在（路由层翻 404）。
+
+    **不**碰 VIP：会员判定留在 ``is_vip_active`` 那一条路径上，
+    由订单支付写入。后台改它会同时踩到「新增测试不得锁会员行为」这条纪律。
+
+    两道自锁保护，失效后果都不可逆：
+      · 不能撤销**自己**的权限 —— 那这次操作就成了最后一步，
+        单管理员部署下再没有人能把它改回来（只能进库改）。
+      · 不能把**最后一个**管理员降级 —— 同上，只是隔了一层。
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT is_admin FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return 0
+        if acting_id is not None and user_id == acting_id and not is_admin:
+            raise UserConflict("不能撤销自己的管理员权限——那样就没有人能把它改回来了")
+        if row["is_admin"] and not is_admin and _user_admin_count(conn) <= 1:
+            raise UserConflict("系统里只剩这一个管理员，不能降级")
+        conn.execute(
+            "UPDATE users SET is_admin = ?, updated_at = datetime('now') WHERE id = ?",
+            (1 if is_admin else 0, user_id),
+        )
+        return 1
+
+
+def create_admin_user(email: str, password_hash: str, is_admin: bool = False) -> dict:
+    """后台建号。
+
+    **不写任何额度覆盖**：新号一律回落全局上限，与公开注册完全一致。
+    要单独放宽走额度那条路（``set_user_quota_override``），
+    在这里偷偷给一份初值会让「这个号为什么和别人不一样」变成查不到的历史。
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            "INSERT INTO users (email, password_hash, is_admin) VALUES (?, ?, ?)",
+            (email, password_hash, 1 if is_admin else 0),
+        )
+        return {
+            "id": cursor.lastrowid,
+            "email": email,
+            "is_admin": 1 if is_admin else 0,
+        }
+
+
+def delete_user(user_id: int, *, acting_id: int | None = None) -> None:
+    """删掉一个用户。**名下有内容就拒绝**，绝不静默级联（ADR 0012）。
+
+    拒绝而不是级联的理由：订单是支付凭证，解析历史是用户自己的数据。
+    级联换来的是「后台一个按钮点下去」，付出的是「删错了没法恢复」——
+    两边不对称，所以宁可让人多走一步。冲突时抛 ``UserConflict``。
+
+    ``videos`` **不**在阻断名单里：``parsed_by`` 本来就是弱引用，
+    既有设计写明「解析者注销后社区内容必须留下来」（ADR 0010），
+    社区列表用 LEFT JOIN 取作者，解析者没了照样读得出。
+
+    ``chat_messages`` 没有外键，但必须跟着删：同一段注释也写了
+    「会话记录应随该用户一起消失，而不是变成孤儿行」。
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT is_admin FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return
+        if acting_id is not None and user_id == acting_id:
+            raise UserConflict("不能删除自己正在用的账号")
+        # 这条在端点路径下**不可达**：actor 与 target 不同时 actor 也是管理员，
+        # 于是管理员至少两个，「最后一个」的条件永远不成立；actor == target
+        # 时上面已经拦住了。留着是纵深防御——自删守卫哪天放宽，这里兜住。
+        if row["is_admin"] and _user_admin_count(conn) <= 1:
+            raise UserConflict("系统里只剩这一个管理员，不能删除")
+
+        counts = {
+            table: conn.execute(
+                f"SELECT count(*) FROM {table} WHERE user_id = ?", (user_id,)
+            ).fetchone()[0]
+            for table in _USER_DELETE_BLOCKERS
+        }
+        blocking = {t: n for t, n in counts.items() if n}
+        if blocking:
+            parts = "、".join(
+                f"{_USER_DELETE_BLOCKERS[t]} {n} 条" for t, n in blocking.items()
+            )
+            raise UserConflict(
+                f"这个账号名下还有{parts}，先处理掉再删。"
+                "后台不替你级联删除——删错了没法恢复。",
+                blockers=blocking,
+            )
+
+        conn.execute("DELETE FROM chat_messages WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+#: 后台社区列表项的 SELECT 投影。列表与「改完回读」共用同一段 SQL 是刻意的：
+#: 两处各写一份的话，字段集早晚会漂移，而前端会用 PATCH 的返回值**直接替换**
+#: 列表里那一行——漂移会立刻变成「改完之后这一行比别行少字段」。
+_ADMIN_COMMUNITY_ITEM_SQL = (
+    "SELECT v.id, v.video_url, v.video_title AS title, v.tags, v.created_at, "
+    "       v.status, u.email AS author_email "
+    "FROM videos v LEFT JOIN users u ON u.id = v.parsed_by"
+)
+
+
+def _admin_community_item(row) -> dict:
+    """后台社区列表项的投影：把 tags 从 JSON 字符串解析成 list。
+
+    单独抽出来是因为改标签的端点要回读**同一形状**（update_video_tags
+    末尾那次回读）。解析容错与列表那边逐字一致：解析不出来退回空数组，
+    而不是把原始字符串透出去——前端拿到字符串会直接渲染成 `["编程"]` 那样
+    一串带引号的怪东西。
+    """
+    item = dict(row)
+    try:
+        parsed = json.loads(item.get("tags") or "[]")
+    except (ValueError, TypeError):
+        parsed = []
+    item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
+    return item
+
+
+def list_admin_community(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0) -> dict:
+    """后台社区记录列表（require_admin 保护）。
+
+    **不过滤 status**：pending 行是占位，后台要看的是「谁占了位没解析完」，
+    这类记录恰恰只在 pending 状态里存在。这条仍然成立。
+
+    这段注释的第三句原本是「项目范围边界也明确不做下架，后台因此没有、也不该有
+    「只看得见已就绪」这层过滤」——**这一句已经不成立了**：后台现在有改标签与
+    删除两个写出口。保留「不过滤」不是为了给下架让路，而是因为把占位行过滤掉
+    会让「谁占了位没解析完」这个问题**永远查不出来**：占位行本身就是答案。
+    删除端点的语义（只删 videos 一行）在 delete_video_record 里说全了，
+    与这里读不读得到是两件事。
+
+    列表项**带上 status**（ready / pending）：前端要按状态区别渲染——一个是社区
+    内容，一个是占位。只给一个「都看得见的列表」却不告知状态，前端就只能把占位
+    行当内容画出来，而 pending 行里根本没有总结与字幕。
+
+    LEFT JOIN users 取作者邮箱：parsed_by 没有外键（ADR 0010——解析者注销后
+    社区内容必须留下来），所以作者可能已经不在，用 LEFT 而不是 INNER，
+    否则那些行会凭空消失，而它们恰恰是最该被看见的。
+    """
+    limit, offset = _clamp_limit_offset(limit, offset)
+    with get_db() as conn:
+        total = conn.execute("SELECT count(*) FROM videos").fetchone()[0]
+        rows = conn.execute(
+            _ADMIN_COMMUNITY_ITEM_SQL + " ORDER BY v.id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    return {
+        "items": [_admin_community_item(row) for row in rows],
+        "total": total, "limit": limit, "offset": offset,
+    }
+
+
+def update_video_tags(video_id: int, tags: list[str]) -> dict | None:
+    """改一条社区视频的标签，**回读**改动后的列表项；没有这一行就返回 None。
+
+    返回回读而不是 rowcount：前端拿返回值去替换列表里那一行，形状必须与
+    列表项**逐字段一致**，而这个一致性靠「共用 _ADMIN_COMMUNITY_ITEM_SQL 与
+    _admin_community_item」保证，不是靠两处抄得一样仔细。回读还在同一个事务里
+    做，所以并发删掉这一行时拿到的是 None（404），而不是一条刚被删掉的行的残影。
+
+    **只碰 tags 与 updated_at**：status / summary_md / mindmap_md /
+    subtitle_text 一个都不写。改分类不该顺手改内容；把它们塞进同一条 UPDATE
+    的代价是「以后加一列就默认能被后台改」，而那正好是在把后台变成第二条
+    内容写入路径。updated_at 要跟着动：它就是这一行「最后一次被维护」的时刻，
+    不动的话后台分不清「三个月前解析的」与「今天刚被改过标签的」。
+
+    **不带 status 条件**：ready 与 pending 都允许改标签。pending 行的标签此刻
+    还没写回（模型还没跑完），但后台正是要能给占位行标上人工指定的分类。
+    加 ``AND status = 'ready'`` 会让它对占位行静默 404，而 404 在契约里的
+    含义是「这一行不存在」——那是在说谎。
+
+    值域（词表 / 非空 / 不超过 MAX_TAGS）由调用方在进到这里之前判掉：
+    那是**请求**的合法性，不是存储的约束，判据的形态（400 + detail）属于
+    端点。这里只负责落库，因此不 import tags——省掉一条数据层到词表模块的边。
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(list(tags), ensure_ascii=False)
+    with get_db() as conn:
+        cursor = conn.execute(
+            "UPDATE videos SET tags = ?, updated_at = ? WHERE id = ?",
+            (payload, now, video_id),
+        )
+        if cursor.rowcount == 0:
+            # 0 只有一种含义：没有这一行。不静默成功——那会让管理员以为
+            # 改到了某个其实不存在的地方。
+            return None
+        row = conn.execute(
+            _ADMIN_COMMUNITY_ITEM_SQL + " WHERE v.id = ?", (video_id,)
+        ).fetchone()
+    return _admin_community_item(row) if row else None
+
+
+def delete_video_record(video_id: int) -> int:
+    """删掉一条社区视频记录，返回删掉的行数（0 = 没有这一行）。
+
+    **只删 videos 一张表。** 这是本设计成立的前提，而不是实现时的克制：
+    建表语句里全库只有两处外键，都是 ``REFERENCES users(id)``（orders 与
+    parse_history），**没有任何外键指向 videos**；parse_history 与
+    chat_messages 都不引用 videos——它们只按 user_id / video_url 记自己的事，
+    与「社区里那一行还在不在」无关。schema 里根本没有这条边，所以删这一行在
+    数据上就波及不到任何用户记录；**要是哪天给 videos 加上被引用的外键，
+    这条论证连同下面那段一起作废**。
+
+    parse_history 保留是用户明确要的语义：视频从社区消失，解析过它的用户在
+    自己的历史里仍看得到自己那条记录。级联删掉它等于替用户决定「你解析过
+    的东西不许留」——而解析历史是**用户自己的数据**，不是社区内容的附属品。
+    （对照 delete_user：那条是「有名下内容就 409，绝不级联」，方向一致。）
+
+    **允许删 pending 占位行，不加 status 守卫。** 代价先说清：一次正在进行的
+    解析会因此在 complete_video 处拿到 0，而那个函数的 docstring 明写「由
+    调用方报警而不是静默当作成功」——所以后果是**响亮地失败**，不是数据悄悄
+    写丢。仍然允许删的理由是**后台没有别的清理出口**：
+
+    - 占位行不带任何「我还活着」的凭据。updated_at 只在被写时才会动，
+      解析过程本身不会续租，所以「进程正在跑」与「半小时前崩了」在表里
+      是**同一种形状**。
+    - 唯一近似的判据是 :data:`VIDEO_PENDING_TTL_SECONDS`（默认 30 分钟），
+      而它只活在 reserve_video 的接管分支里：同一个链接被**再次解析**时
+      才会顺带回收陈旧占位。后台这个页面拿不到它，也用不上它。
+    - 于是禁止删 pending 的实际后果是：崩掉的占位行除非有人恰好重新解析
+      那个链接，否则后台永远清不掉它——把一种「偶发但响亮的失败」换成
+      一种「静默且永久的死条目」。这是更糟的死路。
+
+    选「响亮地失败」而不是「制造死条目」。complete_video 的调用方已经处理
+    0 的分支，不在本次改动范围内。
+    """
+    with get_db() as conn:
+        cursor = conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+        return cursor.rowcount
 
 
 # ── 订单操作 ──────────────────────────────────────────────
@@ -935,12 +1630,23 @@ def get_user_orders(user_id: int) -> list:
 # ── 解析历史记录 ──────────────────────────────────────────
 
 def _trim_parse_history(conn, user_id: int):
-    """每用户只保留最近 MAX_PARSE_HISTORY_PER_USER 条记录"""
+    """每用户只保留最近 MAX_PARSE_HISTORY_PER_USER 条**未收藏**记录。
+
+    **收藏不参与裁剪。** 这不是「多给它一点空间」：上限不管多大，
+    越线那一刻被删的一定是最旧的那条，而那恰好可能是用户攒下来、
+    特意标了星的那条。界面上没有任何一处提示过「收藏也会被裁掉」，
+    所以那是一次静默的数据丢失 —— 收藏这个功能存在的全部意义就是
+    挡掉它。
+
+    因此收藏条数**不受上限约束**：1000 条未收藏 + 任意条收藏都成立。
+    """
     conn.execute(
-        f"""DELETE FROM parse_history WHERE user_id = ? AND id NOT IN (
-            SELECT id FROM parse_history WHERE user_id = ?
-            ORDER BY COALESCE(updated_at, created_at) DESC
-            LIMIT {int(MAX_PARSE_HISTORY_PER_USER)})""",
+        f"""DELETE FROM parse_history
+            WHERE user_id = ? AND is_favorite = 0 AND id NOT IN (
+                SELECT id FROM parse_history
+                WHERE user_id = ? AND is_favorite = 0
+                ORDER BY COALESCE(updated_at, created_at) DESC
+                LIMIT {int(MAX_PARSE_HISTORY_PER_USER)})""",
         (user_id, user_id),
     )
 
@@ -1167,6 +1873,181 @@ def get_parse_history_detail(user_id: int, history_id: int) -> dict | None:
     # 老列回退也归它管——这里不再另写一份。
     item["chat_history"] = get_chat_session(user_id, item["video_url"])
     return item
+
+
+#: 历史列表的「有 AI 结果」判定。**别名写死为 h** —— 一旦套上别名就
+#: 必须用别名指列，裸表名在 SQLite 里会报 no such column。
+#:
+#: 与 get_parse_histories 的 has_ai_result 同一口径：有问答记录，
+#: 或 summary_md 非空。字幕/思维导图单独存在不算「AI 解析过」——
+#: 那两个都不花模型调用，界面上那个 AI 徽标指的是总结。
+_HISTORY_HAS_AI_ALIASED_H = (
+    "(EXISTS (SELECT 1 FROM chat_messages m"
+    "  WHERE m.user_id = h.user_id AND m.video_url = h.video_url)"
+    " OR (h.chat_history IS NOT NULL AND h.chat_history != '[]')"
+    " OR COALESCE(TRIM(h.summary_md), '') != '')"
+)
+
+
+def list_parse_histories(user_id: int, q: str = "", tag: str = "",
+                         favorite: bool = False, ai: str = "",
+                         page: int = 1,
+                         page_size: int = HISTORY_PAGE_SIZE_DEFAULT) -> dict:
+    """历史列表：分页 + 关键词 / 标签 / 仅收藏 / AI 状态，可任意组合。
+
+    q 走 LIKE 而不是 FTS5，与社区刻意不同：社区是全站共享表、量级不封顶，
+    值得养一个 FTS 虚拟表；历史是**按 user_id 隔离的个人列表**，
+    上限 1000 条（且 _trim_parse_history 兜着），一条 B 树索引上的 LIKE
+    扫 1000 行是微秒级。为一个人最多 1000 行的表建 FTS + 触发器，
+    换来的是「一条坏记录就能让整张表 500」那类新风险。
+
+    链接定位（q 以 http 开头）走**等值**而不是子串：粘贴链接时用户要的
+    是「就是这一条」，而 LIKE 会同时命中被当成子串出现的别的记录。
+    """
+    q = (q or "").strip()
+    where = ["h.user_id = ?"]
+    params: list = [user_id]
+
+    if q.startswith(("http://", "https://")):
+        where.append("h.video_url = ?")
+        params.append(q)
+    elif q:
+        where.append("(COALESCE(h.video_title, '') LIKE ? OR h.video_url LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+
+    tag_clause, tag_params = _tag_clause(tag)
+    if tag_clause:
+        # 共享子句自带前导 " AND "（社区那两处是直接拼进 where 串的），
+        # 而这里把条件收集起来再统一 join —— 不去掉就会拼出
+        # "... AND  AND EXISTS ..."，SQLite 直接 syntax error near "AND"。
+        where.append(tag_clause.lstrip().removeprefix("AND "))
+        params.extend(tag_params)
+
+    if favorite:
+        where.append("h.is_favorite = 1")
+
+    if ai == "ai":
+        where.append(_HISTORY_HAS_AI_ALIASED_H)
+    elif ai == "parse":
+        where.append(f"NOT {_HISTORY_HAS_AI_ALIASED_H}")
+
+    page, page_size = _clamp_page(page, page_size)
+    clause = " AND ".join(where)
+    sql_from = "parse_history h LEFT JOIN videos v ON v.video_url = h.video_url"
+
+    with get_db() as conn:
+        total = conn.execute(
+            f"SELECT count(*) FROM {sql_from} WHERE {clause}", tuple(params)
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT h.id, h.video_url, h.video_title, h.summary_md,
+                       COALESCE(h.updated_at, h.created_at) AS updated_at,
+                       h.created_at, h.is_favorite,
+                       CASE WHEN json_valid(h.video_data)
+                            THEN COALESCE(json_extract(h.video_data, '$.thumbnail'), '')
+                            ELSE '' END AS cover_url,
+                       {_HISTORY_HAS_AI_ALIASED_H} AS has_ai_result,
+                       COALESCE(v.tags, '[]') AS tags
+                FROM {sql_from} WHERE {clause}
+                ORDER BY COALESCE(h.updated_at, h.created_at) DESC, h.id DESC
+                LIMIT ? OFFSET ?""",
+            (*params, page_size, (page - 1) * page_size),
+        ).fetchall()
+
+    items = []
+    for r in rows:
+        item = dict(r)
+        summary_md = item.pop("summary_md") or ""
+        item["summary_preview"] = summary_md.strip()[:120]
+        item["has_ai_result"] = bool(item["has_ai_result"])
+        item["is_favorite"] = bool(item["is_favorite"])
+        if not isinstance(item.get("cover_url"), str):
+            item["cover_url"] = ""
+        item["tags"] = _decode_tags_text(item.get("tags"))
+        items.append(item)
+
+    return {
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) // page_size,
+        # 三档计数要能对上：仅解析 + AI解析 == 全部（忽略搜索/标签/收藏过滤）。
+        # 不给这两个数的话，前端那三个档位的数字只能靠总数减出来，
+        # 而减法在有搜索条件时会骗人。
+        "has_ai": sum(1 for i in items if i["has_ai_result"]),
+        "favorites": sum(1 for i in items if i["is_favorite"]),
+    }
+
+
+def list_parse_history_facets(user_id: int) -> list:
+    """历史页标签筛选的选项（带计数），来自该用户的**全部**历史。
+
+    刻意不受当前筛选条件影响，也不按当前页汇总：
+    前者会让「选了标签 A 之后标签 B 消失」，后者会让「翻页之后标签增减」。
+    两种表现用户读起来都是同一个意思 —— 「这个筛选不生效」。
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT je.value AS tag, count(*) AS n
+               FROM parse_history h
+               LEFT JOIN videos v ON v.video_url = h.video_url
+               JOIN json_each(
+                   CASE WHEN json_valid(COALESCE(v.tags, '[]'))
+                        THEN v.tags ELSE '[]' END) je
+               WHERE h.user_id = ?
+               GROUP BY je.value
+               ORDER BY n DESC, je.value""",
+            (user_id,),
+        ).fetchall()
+    return [{"tag": r["tag"], "count": r["n"]} for r in rows]
+
+
+def set_parse_history_favorite(user_id: int, history_id: int,
+                               is_favorite: bool) -> bool:
+    """收藏 / 取消收藏。记录不存在时返回 False。
+
+    **不动 updated_at。** 列表按 updated_at 倒序；一旦收藏也顺带刷新
+    时间戳，用户点一下星标，这条记录就会从列表中间跳到最顶上 ——
+    在他手指底下重排，看起来像页面出 bug。
+    """
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE parse_history SET is_favorite = ? WHERE user_id = ? AND id = ?",
+            (1 if is_favorite else 0, user_id, history_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_parse_history_favorite(user_id: int, history_id: int):
+    """收藏状态：1 收藏 / 0 未收藏 / None 记录不存在。"""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT is_favorite FROM parse_history WHERE user_id = ? AND id = ?",
+            (user_id, history_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return 1 if row["is_favorite"] else 0
+
+
+def clear_parse_history(user_id: int, keep_favorites: bool = True) -> int:
+    """清空历史，返回删掉的条数。
+
+    默认**跳过收藏**：一键清空是典型的误操作，而收藏是用户唯一一处
+    「这条我特意留着的」标记。要连收藏一起删，调用方得显式要求。
+    """
+    with get_db() as conn:
+        if keep_favorites:
+            cur = conn.execute(
+                "DELETE FROM parse_history WHERE user_id = ? AND is_favorite = 0",
+                (user_id,),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM parse_history WHERE user_id = ?", (user_id,)
+            )
+        return cur.rowcount
 
 
 def delete_parse_history(user_id: int, history_id: int) -> bool:

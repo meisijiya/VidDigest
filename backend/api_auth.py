@@ -41,6 +41,18 @@ def _build_user_response(user: dict) -> dict:
         "email": user["email"],
         "is_vip": is_vip,
         "vip_expire_at": vip_expire_at,
+        # 前端没有任何别的途径知道「当前这个人是不是管理员」——管理入口的
+        # 可见性判据最终来自这里。缺了这个字段，入口就永远不显示，而症状
+        # 看起来像渲染 bug，实际是接口少给了一把钥匙。
+        #
+        # 只暴露**本人**的角色，不是提权路径：真正的边界仍是 require_admin
+        # （工单 #11），而前端隐藏只做体验（ADR 0010）。
+        #
+        # 用 bool() 而不是原样透传：库里是 0/1，而前端要用它做 v-if 判据，
+        # `0` 在 JS 里是 falsy 所以能用，但 `None`（老行没有该列时）也是
+        # falsy、`1`/`0` 却是 number 不是 boolean，两种类型混在一个字段里
+        # 会让「=== true」这种判据在某一侧悄悄失效。
+        "is_admin": bool(user.get("is_admin")),
     }
 
 

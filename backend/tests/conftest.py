@@ -2,6 +2,14 @@
 import os
 import sys
 
+# auth.py 在 JWT_SECRET 缺失时 **import 即失败**（工单 #11）。
+# conftest 是 pytest 收集阶段第一批执行的模块，早于任何 test_*.py，
+# 所以测试专用密钥必须在这里设，且早于 import database / auth。
+# setdefault：外部环境真的配了密钥时不覆盖，测试不会盖掉真实配置。
+os.environ.setdefault(
+    "JWT_SECRET", "test-only-jwt-secret-0123456789abcdef0123456789abcdef"
+)
+
 import pytest
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -96,6 +104,28 @@ def write_in_worker_then_next_test_sees_nothing():
     assert wrote == ["probe@example.com"], "前置写入失败，后续隔离断言无意义"
     _previous_db["was_written"] = True
     return True
+
+
+@pytest.fixture()
+def legacy_db(tmp_path, monkeypatch):
+    """一个**先有旧结构**的库，不是空库。
+
+    ``db`` 夹具会先 ``init_db()``，也就是造出一张**全新**的表——于是
+    「老库没有 is_favorite、靠迁移补上」那条路径在它下面一次都走不到。
+    补列排错了顺序，全量测试照样绿，真库一升级就打不开。
+
+    所以这里只做 ``db`` 夹具的前半段：换库路径 + 清掉所有线程的连接，
+    **不建表**。隔离强度与 ``db`` 完全一样，区别只是把建表这件事交还给
+    测试自己，好让它能先摆一张缺列的表出来。
+
+    名字进了 ``check_db_fixture.DB_FIXTURE_ARGS``：门禁豁免的是「显式
+    声明我要自己管库结构」，不是「碰库可以不隔离」——不取任何夹具的
+    测试照样会被报出来。
+    """
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "legacy.db"))
+    close_all_thread_connections()
+    yield database
+    close_all_thread_connections()
 
 
 @pytest.fixture()
