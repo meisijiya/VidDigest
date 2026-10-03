@@ -300,7 +300,8 @@
             </div>
           </div>
 
-          <!-- ══ AI 服务：只读的厂商 / 模型清单（工单 #13 的展示侧）。 ══ -->
+          <!-- ══ AI 服务：可改的厂商 / 模型清单。凭据仍只在 .env（ADR 0010 / 0011）。
+     清单行可改，但**不能新增**厂商：新增平台的凭据得先配 .env 并重启。 ══ -->
           <div v-else>
             <p class="mb-3 text-xs text-gray-400">可改显示名、端点、可选模型、平台默认与上下架。凭据（key）仍只在 <code class="font-pixel">.env</code>，不经前端也不入库（ADR 0011）。</p>
             <div class="grid gap-3 sm:grid-cols-2">
