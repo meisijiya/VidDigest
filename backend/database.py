@@ -569,21 +569,6 @@ def get_community_video(video_id: int) -> dict | None:
     return _project_video(row, COMMUNITY_DETAIL_FIELDS) if row else None
 
 
-def get_community_video_by_url(video_url: str) -> dict | None:
-    """按 URL 取社区**卡片**（列表级白名单投影）。没有或尚未 ready 则 None。
-
-    刻意只给卡片、不给详情：这条查询的前端用途是「社区里有没有这一份」
-    （要不要重新解析），不是「把内容取回来渲染」。要内容只有详情与
-    /api/summarize 两条路，都要求登录。
-    """
-    with get_db() as conn:
-        row = conn.execute(
-            f"SELECT v.* FROM videos v WHERE v.video_url = ? AND {_COMMUNITY_VISIBLE}",
-            (video_url,),
-        ).fetchone()
-    return _project_video(row, COMMUNITY_CARD_FIELDS) if row else None
-
-
 def publish_video_card(video_url: str, video_title: str = "", cover_url: str = "") -> int:
     """回填社区卡片的标题与封面，返回更新的行数。
 

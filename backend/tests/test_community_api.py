@@ -16,6 +16,8 @@
 """
 import json
 
+from pathlib import Path
+
 import pytest
 
 import auth
@@ -31,6 +33,9 @@ SECRET_SUBTITLE = "SECRET_SUBTITLE_MARKER_丙"
 #: 未登录列表项的**全部**键。多一个键就是多泄漏一列，少一个键则是功能坏了。
 #: id / video_url 是标识不是内容：卡片要能点开、详情要能被寻址。
 EXPECTED_CARD_KEYS = {"id", "video_url", "cover_url", "video_title", "tags"}
+
+#: 本文件要断言 database.py 里的某个函数**已经不存在**，需要读源码。
+ROOT_BACKEND = Path(__file__).resolve().parent.parent
 
 #: 绝不允许出现在未登录响应里的键名。
 FORBIDDEN_KEYS = {"summary_md", "mindmap_md", "subtitle_text", "subtitle_data",
@@ -721,33 +726,37 @@ class TestSearchIsFullTextNotLike:
         assert new.json()["total"] == 1
 
 
-# ── 顺带修：/api/history/by-url 不再绕过社区表 ─────────────────
+# ── by-url 只有一条读出口（ADR 0007 修订后的收敛）────────────────
 
-class TestHistoryByUrlReadsCommunity:
-    def test_by_url_hits_community_without_any_personal_record(
+BY_URL = "/api/community/videos/by-url"
+
+
+class TestSingleByUrlTruthSource:
+    """「社区里有没有这一条」在全仓只有一个答案。"""
+
+    def test_hits_community_without_any_personal_record(
         self, client_app, seeded, make_user
     ):
         """社区里有、但这个人从没解析过 → 仍应命中。
 
-        改之前查个人历史表，这种人拿不到，于是会去重新解析；
-        改之后同一个链接对所有人指向同一份社区内容。
+        这正是「查个人历史表」会漏掉的那类人：他们会以为社区里没有，
+        于是去重新解析，白花一次额度。
         """
         app, mk = client_app
         uid = mk("fresh@example.com")
         client, headers = as_user(app, uid, "fresh@example.com")
         with client:
-            r = client.get("/api/history/by-url",
+            r = client.get(BY_URL,
                            params={"url": "https://youtu.be/dQw4w9WgXcQ"},
                            headers=headers)
-        assert r.status_code == 200
-        assert r.json()["item"]["video_title"] == "机器学习入门从零到一"
+        assert r.status_code == 200, r.text
+        assert r.json()["exists"] is True
 
-    def test_by_url_ignores_personal_history_alone(self, client_app, seeded, make_user):
-        """个人历史里有、社区里没有 → 不算命中。
+    def test_ignores_personal_history_alone(self, client_app, make_user):
+        """个人历史里有、社区里没有 → 不算命中，且不得回显个人那份内容。
 
-        这一条是本工单要消灭的那个洞：改之前它会命中，前端于是直接渲染
-        个人那份 summary_md，社区里那一份（若已被别人解析出来）就再也
-        到不了这个用户眼前，同一链接呈现两份不同总结。
+        这是要消灭的那个洞：判据若落在个人表上，前端会直接渲染他那份
+        summary_md，社区里别人解析出的同一份内容就再也到不了他眼前。
         """
         app, mk = client_app
         uid = mk("solo@example.com")
@@ -760,41 +769,74 @@ class TestHistoryByUrlReadsCommunity:
         )
         client, headers = as_user(app, uid, "solo@example.com")
         with client:
-            r = client.get("/api/history/by-url",
+            r = client.get(BY_URL,
                            params={"url": "https://example.com/v/only-mine"},
                            headers=headers)
-        assert r.json()["item"] is None, "个人历史被当成了社区内容"
+        assert r.json()["exists"] is False, "个人历史被当成了社区内容"
         assert SECRET_SUMMARY not in r.text
+        assert SECRET_MINDMAP not in r.text
 
-    def test_by_url_returns_card_not_content(self, client_app, seeded, make_user):
-        """by-url 只回答「在不在」，不返回任何内容。"""
+    def test_returns_existence_and_permission_only(self, client_app, seeded, make_user):
+        """by-url 只回答「在不在」与「能不能改」，不返回任何内容。
+
+        多带一列内容出来，就多一条内容读出口——而那条路不扣额度、
+        鉴权口径还要再对一次。
+        """
         app, mk = client_app
         uid = mk()
         client, headers = as_user(app, uid)
         with client:
-            r = client.get("/api/history/by-url",
+            r = client.get(BY_URL,
                            params={"url": "https://youtu.be/dQw4w9WgXcQ"},
                            headers=headers)
-        assert set(r.json()["item"].keys()) == EXPECTED_CARD_KEYS
+        assert set(r.json().keys()) == {"exists", "can_regenerate"}, r.json()
         for marker in (SECRET_SUMMARY, SECRET_MINDMAP, SECRET_SUBTITLE):
             assert marker not in r.text
 
-    def test_by_url_misses_while_placeholder_pending(self, client_app, seeded, make_user):
+    def test_misses_while_placeholder_pending(self, client_app, seeded, make_user):
         """占位不算命中：社区里还没有结果，前端应当去解析。"""
         app, mk = client_app
         uid = mk()
         client, headers = as_user(app, uid)
         with client:
-            r = client.get("/api/history/by-url",
+            r = client.get(BY_URL,
                            params={"url": "https://example.com/v/pending"},
                            headers=headers)
-        assert r.json()["item"] is None
+        assert r.json()["exists"] is False
 
-    def test_by_url_still_requires_login(self, client_app, seeded):
+    def test_still_requires_login(self, client_app, seeded):
         app, _mk = client_app
         with anon(app) as c:
-            r = c.get("/api/history/by-url", params={"url": "https://youtu.be/dQw4w9WgXcQ"})
+            r = c.get(BY_URL, params={"url": "https://youtu.be/dQw4w9WgXcQ"})
         assert r.status_code == 401
+
+    def test_there_is_exactly_one_by_url_read_outlet(self):
+        """守卫本身：别让第二条 by-url 读出口再长出来。
+
+        这条是本文件存在的理由。上一次分叉（同一问题两条端点、形状不同）
+        直接让我把根因判反了——而当时**所有测试都是绿的**。
+        """
+        import api_community
+        import api_history
+
+        routes = []
+        for mod in (api_community, api_history):
+            for r in mod.router.routes:
+                path = getattr(r, "path", "")
+                if path.endswith("by-url"):
+                    routes.append(f"{mod.__name__}{path}")
+        assert routes == ["api_community" + BY_URL], (
+            f"by-url 读出口不止一条：{routes}。它们答同一个问题，"
+            "形状还不一样，下一个人只改一条就会分叉。"
+        )
+
+    def test_the_dead_helper_is_gone_from_the_data_layer(self):
+        """get_community_video_by_url 已删：它只被那条死路由用。"""
+        src = (ROOT_BACKEND / "database.py").read_text(encoding="utf-8")
+        assert "def get_community_video_by_url" not in src, (
+            "get_community_video_by_url 还在。它现在没有任何调用方，"
+            "留着只会让人以为它是另一条读出口。"
+        )
 
 
 # ── 卡片回填 ─────────────────────────────────────────────────
@@ -874,7 +916,7 @@ class TestBackfillFillsGapsButNeverOverwrites:
         assert database.publish_video_card(
             "https://example.com/known", "原始标题", "https://img/a.jpg"
         ) == 1
-        row = database.get_community_video_by_url("https://example.com/known")
+        row = database.get_video_by_url("https://example.com/known")
         assert row["video_title"] == "原始标题"
         assert row["cover_url"] == "https://img/a.jpg"
 
@@ -898,7 +940,7 @@ class TestBackfillFillsGapsButNeverOverwrites:
         assert database.publish_video_card(url, "", "https://img/second.jpg") == 0, (
             "一个字段都没写进去，却报告 updated=1"
         )
-        row = database.get_community_video_by_url(url)
+        row = database.get_video_by_url(url)
         assert row["cover_url"] == "https://img/first.jpg", "第二个调用者覆盖了先到者的封面"
 
     def test_second_backfill_cannot_rewrite(self, db):
@@ -908,7 +950,7 @@ class TestBackfillFillsGapsButNeverOverwrites:
         assert database.publish_video_card(
             "https://example.com/known", "被改掉的标题", "https://img/evil.jpg"
         ) == 0, "第二次回填不该改写已经填好的字段"
-        row = database.get_community_video_by_url("https://example.com/known")
+        row = database.get_video_by_url("https://example.com/known")
         assert row["video_title"] == "原始标题", row
         assert row["cover_url"] == "https://img/a.jpg", row
 
@@ -919,7 +961,7 @@ class TestBackfillFillsGapsButNeverOverwrites:
         assert database.publish_video_card(
             "https://example.com/known", "", "https://img/b.jpg"
         ) == 1
-        row = database.get_community_video_by_url("https://example.com/known")
+        row = database.get_video_by_url("https://example.com/known")
         assert row["video_title"] == "原始标题", "补封面不该动到已填的标题"
         assert row["cover_url"] == "https://img/b.jpg"
 

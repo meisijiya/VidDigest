@@ -24,16 +24,6 @@ export async function deleteHistory(id) {
   await client().delete(`/api/history/${id}`)
 }
 
-/** 按视频 URL 查历史记录（解析复用缓存；未命中返回 null） */
-export async function fetchHistoryByUrl(url) {
-  try {
-    const res = await client().get('/api/history/by-url', { params: { url } })
-    return res.data.item
-  } catch {
-    return null
-  }
-}
-
 /**
  * 当前用户与某个视频的追问会话（只有他自己读得到）。
  * 没有记录时返回空数组——那是正常状态，不是错误。

@@ -31,7 +31,7 @@ DB_FUNCS = {
     "reserve_video", "complete_video", "release_video", "get_video_by_url",
     # 社区浏览与检索（工单 #7）：漏一个就等于这道门禁对那条路径失明
     "list_community_videos", "get_community_video",
-    "get_community_video_by_url", "publish_video_card",
+    "publish_video_card",
     "search_community_videos",
     # 追问会话（工单 #8）：append_chat_history 已退役，追问记录改存 chat_messages
     "append_chat_turn", "get_recent_chat_messages", "get_chat_session",
