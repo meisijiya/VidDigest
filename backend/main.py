@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from downloader import VideoDownloader
-from douyin import DouyinParser, is_douyin_url
+from douyin import AUDIO_FORMAT_ID, DouyinParser, is_douyin_url
 from database import init_db, seed_admin_emails_from_env
 
 # 全局单例
@@ -138,7 +138,13 @@ async def download_video(req: DownloadRequest):
         url = req.clean_url()
         loop = asyncio.get_event_loop()
         if is_douyin_url(url):
-            result = await loop.run_in_executor(None, douyin_parser.download, url)
+            # 抖音这条路自己决定下什么，只认 mode 不认 format_id。不映射的话，
+            # 选了「纯音频」会静默下回视频——界面上写着「下载音频」，
+            # 而用户拿到的是一个带声的 mp4。
+            mode = "audio" if req.format_id == AUDIO_FORMAT_ID else "video"
+            result = await loop.run_in_executor(
+                None, douyin_parser.download, url, mode
+            )
         else:
             result = await loop.run_in_executor(
                 None, downloader.download_video, url, req.format_id

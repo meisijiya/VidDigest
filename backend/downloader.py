@@ -23,6 +23,12 @@ class VideoDownloader:
 
     DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 
+    #: 格式卡片总数上限。分不清画质的人数会在这里被上限截断。
+    MAX_FORMATS = 15
+    #: 音频选项单独的上限。留得少是有意的：DASH 源的码率梯度很密，
+    #: 列满 15 个音频位只会把真正要选的画质挤出去。
+    MAX_AUDIO_OPTIONS = 3
+
     def __init__(self):
         os.makedirs(self.DOWNLOAD_DIR, exist_ok=True)
         self.ffmpeg_path = _find_ffmpeg_path()
@@ -92,13 +98,24 @@ class VideoDownloader:
     # ── 提取并整理格式 ────────────────────────────────────
 
     def _extract_formats(self, info: dict) -> list:
-        """从 yt-dlp info 中提取并整理可用格式"""
+        """从 yt-dlp info 中提取并整理可用格式。
+
+        **音频轨必须进来。** 这里原来有一句 ``if not has_video: continue``，
+        把 yt-dlp 返回的纯音频格式整批丢掉了 —— 而 DASH 源（B站 / YouTube）
+        本来就只给分离的视频流和音频流，于是「只下音频」在界面上根本不是
+        一个选项，是一条走不到的路。
+
+        返回的每一项都带 ``kind``（``video`` / ``audio``）。前端要按它分组，
+        而「缺字段就当视频」正是当初让这个问题看不见的那个默认。
+        """
         raw_formats = info.get("formats", [])
         if not raw_formats:
             return []
 
         seen = set()
-        results = []
+        videos = []
+        audios = []
+        audio_seen = set()
 
         for f in raw_formats:
             vcodec = f.get("vcodec", "none")
@@ -106,14 +123,45 @@ class VideoDownloader:
             height = f.get("height")
             ext = f.get("ext", "mp4")
 
-            has_video = vcodec and vcodec != "none"
-            has_audio = acodec and acodec != "none"
+            has_video = bool(vcodec and vcodec != "none")
+            has_audio = bool(acodec and acodec != "none")
+
+            filesize = f.get("filesize") or f.get("filesize_approx")
+
+            if not has_video and has_audio:
+                # 纯音频：按 (容器, 码率) 去重。DASH 源常给出四五个 opus 码率，
+                # 彼此只差几十 k —— 全列出来会把有用的视频选项挤出上限，
+                # 给用户一堆没有实际差别的选择。
+                abr = f.get("abr") or f.get("tbr") or 0
+                key = (ext, round(float(abr)))
+                if key in audio_seen:
+                    continue
+                audio_seen.add(key)
+                bitrate = f"{int(abr)}kbps" if abr else "未知码率"
+                audios.append({
+                    "format_id": f.get("format_id", ""),
+                    "ext": ext,
+                    "resolution": "",
+                    "height": 0,
+                    "width": 0,
+                    "filesize": filesize,
+                    "filesize_approx": filesize,
+                    "vcodec": None,
+                    "acodec": acodec,
+                    "abr": int(abr) if abr else None,
+                    "has_video": False,
+                    "has_audio": True,
+                    "kind": "audio",
+                    "label": f"{bitrate} {ext.upper()} (仅音频, "
+                             f"{self._format_filesize(filesize)})",
+                })
+                continue
 
             if not has_video:
+                # 既无视频也无音频：预览图 / 字幕轨之类的，不是可下载内容。
                 continue
 
             resolution = f"{f.get('width', '?')}x{height}" if height else "未知"
-            filesize = f.get("filesize") or f.get("filesize_approx")
             size_label = self._format_filesize(filesize)
 
             if has_audio:
@@ -127,24 +175,32 @@ class VideoDownloader:
                 continue
             seen.add(key)
 
-            results.append({
+            videos.append({
                 "format_id": f.get("format_id", ""),
                 "ext": ext,
                 "resolution": resolution,
                 "height": height or 0,
+                "width": f.get("width") or 0,
                 "filesize": filesize,
                 "filesize_approx": filesize,
                 "vcodec": vcodec,
-                "acodec": acodec if has_audio else None,
+                "acodec": acodec,
+                "abr": None,
+                "has_video": True,
                 "has_audio": has_audio,
+                "kind": "video",
                 "label": label,
             })
 
-        results.sort(key=lambda x: x["height"], reverse=True)
+        videos.sort(key=lambda x: x["height"], reverse=True)
+        # 码率高的排前面；码率缺失（0）沉底，而不是排到最前面当默认项。
+        audios.sort(key=lambda x: (x["abr"] or 0, x["filesize"] or 0), reverse=True)
+
+        results = []
 
         # 如果所有视频格式都没有音频，添加一个合并格式选项
-        if not any(r["has_audio"] for r in results) and results:
-            best_video = results[0]
+        if videos and not any(r["has_audio"] for r in videos):
+            best_video = videos[0]
             merged = {
                 **best_video,
                 "format_id": "bestvideo+bestaudio/best",
@@ -152,9 +208,15 @@ class VideoDownloader:
                 "has_audio": True,
                 "acodec": "merged",
             }
-            results.insert(0, merged)
+            results.append(merged)
 
-        return results[:15]
+        # 上限是 15，但**先给音频留位置**。直接 videos[:15] 再往后拼音频，
+        # 音频会被静默挤掉 —— 而这正是「用户看不到音频选项」的第二种成因。
+        audio_budget = min(len(audios), self.MAX_AUDIO_OPTIONS)
+        video_budget = max(1, self.MAX_FORMATS - len(results) - audio_budget)
+        results.extend(videos[:video_budget])
+        results.extend(audios[:audio_budget])
+        return results[:self.MAX_FORMATS]
 
     # ── 下载视频 ──────────────────────────────────────────
 
@@ -173,7 +235,11 @@ class VideoDownloader:
 
         if self.has_ffmpeg:
             ydl_opts["ffmpeg_location"] = self.ffmpeg_path
-            ydl_opts["merge_output_format"] = "mp4"
+            # merge_output_format 只对**合并**语义。纯音频下载不涉合并，
+            # 把它写成上下文只会让下一个读人以为一个 m4a 下载会被
+            # 强制转成 mp4（实际不会，但说法是假的）。
+            if "+" in format_id:
+                ydl_opts["merge_output_format"] = "mp4"
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
