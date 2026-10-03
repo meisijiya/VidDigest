@@ -2,129 +2,329 @@
 @plugin "@tailwindcss/typography";
 
 /* ══════════════════════════════════════════════════════════════
-   Design System — VidDigest · Pixel Grid 深色像素矩阵
-   ink 深空蓝底 · violet 紫罗兰主色 · pink 品红强调 · cyan 信息青
-   全站平涂，零彩色渐变；像素方块为品牌母题
+   Design System — VidDigest · 石墨 + 湖蓝
+   石墨中性色底 · 天蓝主色 · 橙唯一暖色 · 青绿信息色
+   零彩色渐变；像素方块为品牌母题
+
+   ⚠ 两处刻意保留的约定，改动前先读 ADR 0008 / 0009：
+
+   1) gray / slate 走**反向映射**（数值越小越深），沿用本项目既有语义。
+      所以 gray-50 是「最深的页面底」而不是「浅灰 50」。按数值直觉用色阶
+      会读反 —— 这是有意保留的债，不是笔误。
+   2) 明亮主题不新建一套类名，只在 [data-theme="light"] 下**覆盖同名变量**。
+      Tailwind v4 把 @theme 编译成 :root 上的 CSS 变量、工具类引用 var()，
+      所以 679 处色类零迁移自动跟随。
    ══════════════════════════════════════════════════════════════ */
 
 @theme {
-  /* gray → 深空蓝中性色（反向映射：数值越小越深，适配深色面板语义） */
-  --color-gray-50: #161f36;
-  --color-gray-100: #1d2742;
-  --color-gray-200: #263152;
-  --color-gray-300: #3a4568;
-  --color-gray-400: #76819d;
-  --color-gray-500: #8b94ad;
-  --color-gray-600: #a7afc4;
-  --color-gray-700: #c6ccdc;
-  --color-gray-800: #dde2ee;
-  --color-gray-900: #e8ecf5;
+  /* gray / slate → 石墨中性色（反向映射，数值越小越深） */
+  --color-gray-50: #0e141b;
+  --color-gray-100: #161f27;
+  --color-gray-200: #1d262f;
+  --color-gray-300: #2a3641;
+  --color-gray-400: #5d6b79;
+  --color-gray-500: #818c98;
+  --color-gray-600: #acb2b9;
+  --color-gray-700: #bcc2c8;
+  --color-gray-800: #d4d9dd;
+  --color-gray-900: #eaedf0;
 
-  /* slate → 同系深空蓝（prose 等场景） */
-  --color-slate-50: #161f36;
-  --color-slate-100: #1d2742;
-  --color-slate-200: #263152;
-  --color-slate-300: #3a4568;
-  --color-slate-400: #76819d;
-  --color-slate-500: #8b94ad;
-  --color-slate-600: #a7afc4;
-  --color-slate-700: #c6ccdc;
-  --color-slate-800: #dde2ee;
-  --color-slate-900: #e8ecf5;
+  --color-slate-50: #0e141b;
+  --color-slate-100: #161f27;
+  --color-slate-200: #1d262f;
+  --color-slate-300: #2a3641;
+  --color-slate-400: #5d6b79;
+  --color-slate-500: #818c98;
+  --color-slate-600: #acb2b9;
+  --color-slate-700: #bcc2c8;
+  --color-slate-800: #d4d9dd;
+  --color-slate-900: #eaedf0;
 
-  /* blue → violet 紫罗兰主色 */
-  --color-blue-50: #221a3d;
-  --color-blue-100: #2e2453;
-  --color-blue-200: #3d3069;
-  --color-blue-300: #54418c;
-  --color-blue-400: #a78bfa;
-  --color-blue-500: #7c3aed;
-  --color-blue-600: #8b5cf6;
-  --color-blue-700: #a78bfa;
-  --color-blue-800: #c4b5fd;
-  --color-blue-900: #ddd6fe;
+  /* blue → 天蓝主色 */
+  --color-blue-50: #09171e;
+  --color-blue-100: #0f2936;
+  --color-blue-200: #154055;
+  --color-blue-300: #1b5a79;
+  --color-blue-400: #2083b4;
+  --color-blue-500: #2fa1da;
+  --color-blue-600: #248cc0;
+  --color-blue-700: #67abcd;
+  --color-blue-800: #90bdd3;
+  --color-blue-900: #b1cedc;
 
-  /* indigo → purple 亮紫辅助 */
-  --color-indigo-50: #251a40;
-  --color-indigo-100: #33234f;
-  --color-indigo-200: #49306b;
-  --color-indigo-300: #6b4599;
-  --color-indigo-400: #c084fc;
-  --color-indigo-500: #a855f7;
-  --color-indigo-600: #c084fc;
-  --color-indigo-700: #d8b4fe;
-  --color-indigo-800: #e9d5ff;
-  --color-indigo-900: #f3e8ff;
+  /* cyan → 青绿信息色 */
+  --color-cyan-50: #0a2720;
+  --color-cyan-100: #104638;
+  --color-cyan-200: #166e57;
+  --color-cyan-300: #1c9e7b;
+  --color-cyan-400: #25e4b1;
+  --color-cyan-500: #60ebc6;
+  --color-cyan-600: #39e5b7;
+  --color-cyan-700: #9de3d1;
+  --color-cyan-800: #ceeee6;
+  --color-cyan-900: #f6fbfa;
 
-  /* coral → pink 品红强调 */
-  --color-coral-50: #33152b;
-  --color-coral-100: #451b3a;
-  --color-coral-200: #5f2651;
-  --color-coral-300: #8a3370;
-  --color-coral-400: #f472b6;
-  --color-coral-500: #ec4899;
-  --color-coral-600: #f472b6;
+  /* emerald → 绿 · 成功态（与青绿信息色刻意分开，不复用同一族） */
+  --color-emerald-50: #0b1f16;
+  --color-emerald-100: #123726;
+  --color-emerald-200: #1b563a;
+  --color-emerald-300: #237a51;
+  --color-emerald-400: #2bb675;
+  --color-emerald-500: #45d391;
+  --color-emerald-600: #2fc27e;
+  --color-emerald-700: #79cca5;
+  --color-emerald-800: #a2d6be;
+  --color-emerald-900: #c3e2d3;
 
-  /* teal/cyan → 信息青 */
-  --color-teal-50: #0e2a38;
-  --color-teal-100: #123849;
-  --color-teal-200: #1b4b5e;
-  --color-teal-300: #67e8f9;
-  --color-teal-400: #22d3ee;
-  --color-teal-500: #06b6d4;
-  --color-teal-600: #22d3ee;
-  --color-teal-700: #67e8f9;
-  --color-cyan-50: #0e2a38;
-  --color-cyan-100: #123849;
-  --color-cyan-200: #1b4b5e;
-  --color-cyan-300: #67e8f9;
-  --color-cyan-400: #22d3ee;
-  --color-cyan-500: #06b6d4;
-  --color-cyan-600: #22d3ee;
-  --color-cyan-700: #67e8f9;
+  /* amber → 橙 · 全站唯一暖色，承担「视频」语义 */
+  --color-amber-50: #251707;
+  --color-amber-100: #42280b;
+  --color-amber-200: #683e0e;
+  --color-amber-300: #965710;
+  --color-amber-400: #e17d0c;
+  --color-amber-500: #f49a34;
+  --color-amber-600: #ef870f;
+  --color-amber-700: #e2af75;
+  --color-amber-800: #e6c8a6;
+  --color-amber-900: #eedfcd;
 
-  /* 状态/点缀色（深色适配） */
-  --color-amber-50: #35260f;
-  --color-amber-100: #4a3517;
-  --color-amber-600: #fbbf24;
-  --color-emerald-50: #0e2e22;
-  --color-emerald-100: #14402f;
-  --color-emerald-600: #34d399;
-  --color-purple-50: #2a1b45;
-  --color-purple-100: #3a2658;
-  --color-purple-600: #c084fc;
-  --color-rose-50: #38121f;
-  --color-rose-100: #4c1828;
-  --color-rose-600: #fb7185;
-  --color-yellow-50: #352a0e;
-  --color-yellow-100: #4a3a15;
-  --color-yellow-200: #6b531f;
-  --color-yellow-700: #fde047;
-  --color-red-50: #3a1518;
-  --color-red-500: #f87171;
+  /* yellow → 琥珀状态色 */
+  --color-yellow-50: #261f08;
+  --color-yellow-100: #44370c;
+  --color-yellow-200: #6b560f;
+  --color-yellow-300: #9a7a12;
+  --color-yellow-400: #e6b40f;
+  --color-yellow-500: #f3c93f;
+  --color-yellow-600: #eebc19;
+  --color-yellow-700: #e3cc80;
+  --color-yellow-800: #e8dcb2;
+  --color-yellow-900: #f2ecd9;
 
-  /* 品牌语义色 */
-  --color-ink: #0f1729;
-  --color-panel: #161f36;
-  --color-panel-2: #1d2742;
-  --color-line: #263152;
-  --color-violet: #7c3aed;
-  --color-purple: #a855f7;
-  --color-pink: #ec4899;
-  --color-cyan: #06b6d4;
+  /* rose → 玫红状态色 */
+  --color-rose-50: #270c10;
+  --color-rose-100: #45131b;
+  --color-rose-200: #6d1a28;
+  --color-rose-300: #9b2136;
+  --color-rose-400: #dd304d;
+  --color-rose-500: #e76a7f;
+  --color-rose-600: #df435d;
+  --color-rose-700: #e2a4af;
+  --color-rose-800: #efd4d9;
+  --color-rose-900: #fdfbfc;
+
+  /* red → 错误态 */
+  --color-red-50: #260b0a;
+  --color-red-100: #441110;
+  --color-red-200: #6b1816;
+  --color-red-300: #991f1b;
+  --color-red-400: #e3241e;
+  --color-red-500: #ea5c57;
+  --color-red-600: #e33731;
+  --color-red-700: #e19694;
+  --color-red-800: #eac5c4;
+  --color-red-900: #f7ebeb;
+
+  /* 品牌语义色（结构色 + 三个角色色） */
+  --color-ink: #0e141b;
+  --color-panel: #181f25;
+  --color-panel-2: #1e262f;
+  --color-line: #2b3640;
+  --color-primary: #2fa1da;
+  --color-accent: #f49a34;
+  --color-info: #60ebc6;
+
+  /* 压在主色上的文字色。**不是**恒为白：实测白字压 #2fa1da 只有 2.90:1，
+     达不到 AA 的 4.5；深墨字是 6.52:1。明亮主题主色变深，两侧结论反转，
+     所以它必须是令牌而不是写字面量。 */
+  --color-on-primary: #04211a;
+
+  /* 压在饱和色块（-400..-600 实底）上的文字色。与 on-primary 不同，它**不随主题翻转**：
+     暗色 cyan-500 #60ebc6 上要深墨（12.5:1），亮色 cyan-500 #1da581 上也要深墨（5.46:1）——
+     两侧同向。以前 App.vue 那个按钮写的是 text-ink，亮色主题下 ink 是页面底色（近白），
+     压在实心青块上只有 2.89:1。 */
+  --color-on-solid: #04211a;
+
+  /* 裸色族别名：让 bg-violet/25 这类不带色阶的写法有落点 */
+  --color-blue: #2fa1da;
+  --color-cyan: #60ebc6;
+  --color-amber: #f49a34;
 
   --font-pixel: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", Consolas, monospace;
 }
 
-/* ── CSS Custom Properties ─────────────────────────────── */
+/* ── 明亮主题：同名变量换值，色相不变只翻明度 ─────────────────
+   实测对比度（WCAG，正文需 ≥4.5）：正文/背景 9.35，主色/背景 6.37，
+   强调色/背景 8.39。色相全部避开 240°–300°。 */
+[data-theme="light"] {
+  /* 中性：反向映射同暗色（数值越小越深）。100 = panel-2，
+     因为 hover 底与缩略图占位都需要一个「看得见的浅灰」，
+     早先的 #ffffff 让 hover 与占位块在白底上完全消失。
+     文字级 300..900 单调加深：数值越大越重。 */
+  --color-gray-50: #f8f9f9;
+  --color-gray-100: #f0f2f4;
+  --color-gray-200: #e3e7eb;
+  --color-gray-300: #7a8693;
+  --color-gray-400: #606c79;
+  --color-gray-500: #525e6a;
+  --color-gray-600: #46515d;
+  --color-gray-700: #3a434d;
+  --color-gray-800: #2e363f;
+  --color-gray-900: #1f262d;
+
+  /* slate 与 gray 同值：反向映射下两者在本项目里没有语义差异，
+     但类名各有人在用，所以都留着。 */
+  --color-slate-50: #f8f9f9;
+  --color-slate-100: #f0f2f4;
+  --color-slate-200: #e3e7eb;
+  --color-slate-300: #7a8693;
+  --color-slate-400: #606c79;
+  --color-slate-500: #525e6a;
+  --color-slate-600: #46515d;
+  --color-slate-700: #3a434d;
+  --color-slate-800: #2e363f;
+  --color-slate-900: #1f262d;
+
+
+  /* blue · 表面带 50-200 = 浅染底，文字带 300+ = 可读字色 */
+  --color-blue-50: #f4f7f8;
+  --color-blue-100: #eaf0f3;
+  --color-blue-200: #d0e1e9;
+  --color-blue-300: #44758e;
+  --color-blue-400: #3f7089;
+  --color-blue-500: #1f7ead;
+  --color-blue-600: #336680;
+  --color-blue-700: #2b5970;
+  --color-blue-800: #244d62;
+  --color-blue-900: #193747;
+  --color-blue: #1f7ead;
+
+  /* cyan · 表面带 50-200 = 浅染底，文字带 300+ = 可读字色 */
+  --color-cyan-50: #f4f8f7;
+  --color-cyan-100: #e9f4f1;
+  --color-cyan-200: #cfebe3;
+  --color-cyan-300: #367b69;
+  --color-cyan-400: #327866;
+  --color-cyan-500: #1da581;
+  --color-cyan-600: #266d5a;
+  --color-cyan-700: #205f4e;
+  --color-cyan-800: #1a5243;
+  --color-cyan-900: #113a30;
+  --color-cyan: #1da581;
+
+  /* amber · 表面带 50-200 = 浅染底，文字带 300+ = 可读字色 */
+  --color-amber-50: #f9f6f3;
+  --color-amber-100: #f5efe8;
+  --color-amber-200: #eddecc;
+  --color-amber-300: #906737;
+  --color-amber-400: #8d6232;
+  --color-amber-500: #b66b16;
+  --color-amber-600: #845826;
+  --color-amber-700: #734c1f;
+  --color-amber-800: #654119;
+  --color-amber-900: #482e11;
+  --color-amber: #b66b16;
+
+  /* emerald · 表面带 50-200 = 浅染底，文字带 300+ = 可读字色 */
+  --color-emerald-50: #f4f8f6;
+  --color-emerald-100: #eaf3ef;
+  --color-emerald-200: #d1e8dd;
+  --color-emerald-300: #417a5f;
+  --color-emerald-400: #3c775c;
+  --color-emerald-500: #3c7b5e;
+  --color-emerald-600: #316d51;
+  --color-emerald-700: #295e45;
+  --color-emerald-800: #22513b;
+  --color-emerald-900: #173a2a;
+  --color-emerald: #3c7b5e;
+
+  /* yellow · 表面带 50-200 = 浅染底，文字带 300+ = 可读字色 */
+  --color-yellow-50: #f9f7f3;
+  --color-yellow-100: #f5f2e8;
+  --color-yellow-200: #ece5cd;
+  --color-yellow-300: #816e32;
+  --color-yellow-400: #7e6b2e;
+  --color-yellow-500: #826e2c;
+  --color-yellow-600: #746022;
+  --color-yellow-700: #65541c;
+  --color-yellow-800: #564716;
+  --color-yellow-900: #3d330f;
+  --color-yellow: #826e2c;
+
+  /* rose · 表面带 50-200 = 浅染底，文字带 300+ = 可读字色 */
+  --color-rose-50: #f8f4f5;
+  --color-rose-100: #f3e9eb;
+  --color-rose-200: #e9d0d4;
+  --color-rose-300: #ad5161;
+  --color-rose-400: #a74b5a;
+  --color-rose-500: #b34c5e;
+  --color-rose-600: #a03d4d;
+  --color-rose-700: #8c3342;
+  --color-rose-800: #7f2c3a;
+  --color-rose-900: #5c1e29;
+  --color-rose: #b34c5e;
+
+  /* red · 表面带 50-200 = 浅染底，文字带 300+ = 可读字色 */
+  --color-red-50: #f8f4f4;
+  --color-red-100: #f4e9e9;
+  --color-red-200: #ebd0cf;
+  --color-red-300: #b0514d;
+  --color-red-400: #aa4a47;
+  --color-red-500: #b74b48;
+  --color-red-600: #a33c39;
+  --color-red-700: #8f322f;
+  --color-red-800: #812c29;
+  --color-red-900: #5e1e1c;
+  --color-red: #b74b48;
+
+  --color-ink: #f8f9f9;
+  --color-panel: #ffffff;
+  --color-panel-2: #f0f2f4;
+  --color-line: #d6dbe1;
+  --color-primary: #1f7ead;
+  --color-accent: #b66b16;
+  --color-info: #1da581;
+  --color-on-solid: #04211a;
+  --color-on-primary: #ffffff;
+}
+
+/* ── 非 @theme 的表面变量 ─────────────────────────────────
+   这些是「氛围」而非「令牌」：网格线、阴影、滚动条、选区、骨架屏。
+   放这里是因为它们不属于 Tailwind 工具类的取值范围。 */
 :root {
-  --color-primary: #7c3aed;
-  --color-primary-light: #a78bfa;
-  --color-accent: #ec4899;
-  --color-info: #06b6d4;
-  --glass-bg: rgba(22, 31, 54, 0.82);
-  --glass-border: rgba(148, 163, 216, 0.14);
-  --glass-shadow: 0 8px 32px rgba(3, 7, 18, 0.45);
+  --c-bg: #0e141b;
+  --c-grid-line: rgba(188, 194, 200, 0.05);
+  --c-fg: #eaedf0;
+  --c-glass-bg: rgba(24, 31, 37, 0.82);
+  --c-glass-border: rgba(140, 155, 168, 0.16);
+  --c-glass-shadow: 0 8px 32px rgba(3, 7, 18, 0.45);
+  --c-hover-line: #1b5a79;
+  --c-hover-shadow: 0 12px 40px rgba(3, 7, 18, 0.5);
+  --c-scroll: #2a3641;
+  --c-scroll-hi: #5d6b79;
+  --c-sel-bg: rgba(47, 161, 218, 0.35);
+  --c-sel-fg: #eaedf0;
+  --c-skel-a: #161f27;
+  --c-skel-b: #1e262f;
+  --c-primary-light: #67abcd;
+  --c-particle: 1;      /* 亮色下氛围层整体降透明度 */
+}
+[data-theme="light"] {
+  --c-bg: #f8f9f9;
+  --c-grid-line: rgba(25, 31, 36, 0.055);
+  --c-fg: #191f24;
+  --c-glass-bg: rgba(255, 255, 255, 0.86);
+  --c-glass-border: rgba(60, 74, 84, 0.14);
+  --c-glass-shadow: 0 8px 32px rgba(25, 31, 36, 0.10);
+  --c-hover-line: #1f7ead;
+  --c-hover-shadow: 0 12px 40px rgba(25, 31, 36, 0.12);
+  --c-scroll: #d8dde1;
+  --c-scroll-hi: #b3bcc4;
+  --c-sel-bg: rgba(31, 126, 173, 0.25);
+  --c-sel-fg: #191f24;
+  --c-skel-a: #e3e7eb;
+  --c-skel-b: #f0f2f4;
+  --c-primary-light: #36718f;
+  --c-particle: 0.55;
 }
 
 /* ── Keyframe Animations ──────────────────────────────── */
@@ -179,13 +379,13 @@
 .delay-4 { animation-delay: 0.4s; }
 .delay-5 { animation-delay: 0.5s; }
 
-/* 深色面板（替代原毛玻璃） */
+/* 半透明面板（两套主题共用，靠 --c-glass-* 变量分叉） */
 .glass {
-  background: var(--glass-bg);
+  background: var(--c-glass-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow);
+  border: 1px solid var(--c-glass-border);
+  box-shadow: var(--c-glass-shadow);
 }
 
 /* Card hover lift */
@@ -194,8 +394,8 @@
 }
 .card-hover:hover {
   transform: translateY(-4px);
-  border-color: #3d3069;
-  box-shadow: 0 12px 40px rgba(3, 7, 18, 0.5);
+  border-color: var(--c-hover-line);
+  box-shadow: var(--c-hover-shadow);
 }
 
 /* 像素等宽标签 */
@@ -215,78 +415,83 @@
 /* Custom scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #263152; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #3a4568; }
+::-webkit-scrollbar-thumb { background: var(--c-scroll); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--c-scroll-hi); }
 
 /* Selection */
-::selection { background: rgba(124, 58, 237, 0.35); color: #e8ecf5; }
+::selection { background: var(--c-sel-bg); color: var(--c-sel-fg); }
 
-/* ── 像素矩阵氛围：深空蓝底 + 细网格线（平涂线条，非彩色渐变） ── */
+/* ── 石墨底 + 细网格线（平涂线条，非彩色渐变） ──
+   网格线与底色都走变量：亮色主题下自动换成深色细线，不需要另写一份 body。 */
 body {
-  background-color: #0f1729;
+  background-color: var(--c-bg);
   background-image:
-    repeating-linear-gradient(0deg, rgba(148, 163, 216, 0.045) 0 1px, transparent 1px 56px),
-    repeating-linear-gradient(90deg, rgba(148, 163, 216, 0.045) 0 1px, transparent 1px 56px);
+    repeating-linear-gradient(0deg, var(--c-grid-line) 0 1px, transparent 1px 56px),
+    repeating-linear-gradient(90deg, var(--c-grid-line) 0 1px, transparent 1px 56px);
   background-attachment: fixed;
-  color: #e8ecf5;
+  color: var(--c-fg);
+  transition: background-color .25s ease, color .25s ease;
 }
 
-/* ── typography 插件深色适配：--tw-prose-* 变量不随 @theme 重映射，需显式覆盖 ── */
+/* ── typography 插件适配 ────────────────────────────────
+   --tw-prose-* 不随 @theme 重映射，必须显式给值；这里全部引用令牌，
+   所以亮色主题零重复。 */
 .prose {
-  --tw-prose-body: #c6ccdc;
-  --tw-prose-headings: #e8ecf5;
-  --tw-prose-lead: #a7afc4;
-  --tw-prose-links: #22d3ee;
-  --tw-prose-bold: #e8ecf5;
-  --tw-prose-counters: #a78bfa;
-  --tw-prose-bullets: #54418c;
-  --tw-prose-hr: #263152;
-  --tw-prose-quotes: #c6ccdc;
-  --tw-prose-quote-borders: #7c3aed;
-  --tw-prose-captions: #8b94ad;
-  --tw-prose-kbd: #dde2ee;
-  --tw-prose-code: #c4b5fd;
-  --tw-prose-pre-code: #e8ecf5;
-  --tw-prose-pre-bg: #161f36;
-  --tw-prose-th-borders: #3a4568;
-  --tw-prose-td-borders: #263152;
+  --tw-prose-body: var(--color-gray-700);
+  --tw-prose-headings: var(--color-gray-900);
+  --tw-prose-lead: var(--color-gray-600);
+  --tw-prose-links: var(--color-info);
+  --tw-prose-bold: var(--color-gray-900);
+  --tw-prose-counters: var(--color-blue-600);
+  --tw-prose-bullets: var(--color-blue-300);
+  --tw-prose-hr: var(--color-gray-300);
+  --tw-prose-quotes: var(--color-gray-700);
+  --tw-prose-quote-borders: var(--color-primary);
+  --tw-prose-captions: var(--color-gray-500);
+  --tw-prose-kbd: var(--color-gray-800);
+  --tw-prose-code: var(--color-info);
+  --tw-prose-pre-code: var(--color-gray-900);
+  --tw-prose-pre-bg: var(--color-panel);
+  --tw-prose-th-borders: var(--color-gray-400);
+  --tw-prose-td-borders: var(--color-gray-300);
 }
 
-/* ── 摘要 Markdown 层级样式（深色适配） ─────────────────── */
+/* ── 摘要 Markdown 层级样式 ─────────────────────────────
+   全部引用令牌：亮色主题下这一整块无需分叉。 */
 .summary-content {
-  color: #c6ccdc;
+  color: var(--color-gray-700);
 }
 .summary-content li {
-  color: #c6ccdc;
+  color: var(--color-gray-700);
 }
 .summary-content li::marker {
-  color: #7c3aed;
+  color: var(--color-primary);
 }
 .summary-content ol li::marker {
-  color: #a78bfa;
+  color: var(--color-blue-600);
 }
 .summary-content h1 {
   font-size: 1.35rem;
   font-weight: 700;
-  color: #e8ecf5;
+  color: var(--color-gray-900);
   margin: 0.25rem 0 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid #263152;
+  border-bottom: 2px solid var(--color-gray-300);
   line-height: 1.4;
 }
 .summary-content h2 {
   font-size: 1.1rem;
   font-weight: 700;
-  color: #a78bfa;
+  color: var(--color-blue-600);
   margin: 1.5rem 0 0.75rem;
   padding-left: 0.6rem;
-  border-left: 4px solid #7c3aed;
+  border-left: 4px solid var(--color-primary);
   line-height: 1.4;
 }
 .summary-content h3 {
   font-size: 1rem;
   font-weight: 600;
-  color: #c6ccdc;
+  color: var(--color-gray-700);
   margin: 1rem 0 0.5rem;
   line-height: 1.4;
 }
@@ -295,7 +500,7 @@ body {
 .summary-content h3 ~ ol,
 .summary-content h3 ~ p {
   margin-left: 1rem;
-  border-left: 2px solid #1d2742;
+  border-left: 2px solid var(--color-gray-200);
   padding-left: 0.75rem;
 }
 .summary-content ul {
@@ -315,29 +520,29 @@ body {
 .summary-content p {
   margin: 0.5rem 0;
   line-height: 1.8;
-  color: #b8c0d4;
+  color: var(--color-gray-600);
 }
-.summary-content strong { color: #dde2ee; }
-.summary-content a { color: #22d3ee; }
+.summary-content strong { color: var(--color-gray-800); }
+.summary-content a { color: var(--color-info); }
 .summary-content code {
   font-family: var(--font-pixel);
-  background: #1d2742;
-  border: 1px solid #263152;
+  background: var(--color-gray-100);
+  border: 1px solid var(--color-gray-300);
   border-radius: 4px;
   padding: 0.1em 0.4em;
   font-size: 0.88em;
-  color: #c4b5fd;
+  color: var(--color-info);
 }
 
-/* Skeleton loading 深空蓝色调 */
+/* Skeleton loading（同色相不同明度，视觉上是明度渐变而非彩色渐变） */
 .skeleton {
-  background: linear-gradient(90deg, #161f36 25%, #1d2742 50%, #161f36 75%);
+  background: linear-gradient(90deg, var(--c-skel-a) 25%, var(--c-skel-b) 50%, var(--c-skel-a) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
   border-radius: 8px;
 }
 .animate-shimmer {
-  background: linear-gradient(90deg, #161f36 25%, #1d2742 50%, #161f36 75%);
+  background: linear-gradient(90deg, var(--c-skel-a) 25%, var(--c-skel-b) 50%, var(--c-skel-a) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
 }

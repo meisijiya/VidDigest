@@ -89,6 +89,19 @@ function themeHexes() {
   return new Set((theme.match(/#[0-9a-fA-F]{6}/g) || []).map((h) => h.toLowerCase()))
 }
 
+/** @theme 里每个 hex 属于哪个色族。用来判断城墙是「色谱」还是「同族深浅」。
+ *  从 @theme 反查而不是在测试里再写死一份色值：写死的那份迟早会过期，
+ *  过期之后它锁的就不是当前设计，而是历史遗留。 */
+function themeFamilies() {
+  const css = read('../src/style.css')
+  const theme = css.slice(css.indexOf('@theme {'), css.indexOf('\n}', css.indexOf('@theme {')))
+  const map = new Map()
+  for (const m of theme.matchAll(/--color-([a-z]+)-(\d{2,3}):\s*(#[0-9a-fA-F]{6})/g)) {
+    map.set(m[3].toLowerCase(), m[1])
+  }
+  return map
+}
+
 function wallStepsSrc() {
   const start = heroVue.indexOf('const wallSteps = [')
   assert.ok(start >= 0, 'HeroSection 里没有 wallSteps')
@@ -497,16 +510,22 @@ describe('城墙 · 顶线渐变显现', () => {
       + '城墙会露出不属于本站色系的杂色')
   })
 
-  test('凸起覆盖 violet / purple / pink / cyan 四个品牌色族', () => {
-    // 只查「四个族各自的代表色都在」：6 个凸起全用 violet 的深浅也能通过
-    // 上面的「互不相同」，但那就不是色谱、只是同色系的 6 根条。
-    const lines = new Set(wallBase().filter((s) => s.line).map((s) => s.line))
-    for (const [token, hex] of Object.entries({
-      violet: '#7c3aed', purple: '#a855f7', pink: '#ec4899', cyan: '#06b6d4',
-    })) {
-      assert.ok(lines.has(hex),
-        `城墙里没有 ${token}（${hex}）—— 四个品牌色族少了一族，色谱断了`)
+  test('凸起横跨多个品牌色族，不是同族深浅凑数', () => {
+    // 只查「色族覆盖」：6 个凸起全用主色的深浅也能通过上面的「互不相同」，
+    // 但那就不是色谱、只是同色系的 6 根条。族从 @theme 反查，不在测试里写死。
+    const families = themeFamilies()
+    assert.ok(families.size > 20, `@theme 里只反查出 ${families.size} 个色值，解析多半没对上`)
+
+    const lines = [...new Set(wallBase().filter((s) => s.line).map((s) => s.line))]
+    const seen = new Set()
+    for (const c of lines) {
+      const fam = families.get(c)
+      assert.ok(fam, `城墙色 ${c} 在 @theme 里查不到所属色族 —— 它的来路说不清`)
+      seen.add(fam)
     }
+    assert.ok(seen.size >= 3,
+      `城墙只用了 ${seen.size} 个色族（${[...seen].join('/')}）—— `
+      + '少于 3 个就不是色谱，是同色系的 6 根条')
   })
 
   test('渐变只给凸起生成（凹没有顶线）', () => {

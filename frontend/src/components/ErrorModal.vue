@@ -33,7 +33,7 @@
 
           <div class="px-8 pb-8">
             <button @click="$emit('close')"
-              class="w-full py-2.5 rounded-xl bg-violet text-white font-medium text-sm
+              class="w-full py-2.5 rounded-xl bg-blue text-on-primary font-medium text-sm
                      hover:bg-blue-600 transition-all duration-200 active:scale-95">
               {{ actionText }}
             </button>

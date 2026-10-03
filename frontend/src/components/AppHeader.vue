@@ -55,6 +55,29 @@
 
       <!-- Desktop Actions -->
       <div class="flex items-center gap-2">
+        <!-- 主题切换：放在登录态判断之外，游客与登录用户都能切。
+             图标按当前主题给出「切到哪个」，不是「现在是什么」——
+             后者要求用户先在脑子里做一次取反。 -->
+        <button type="button" @click="toggleTheme"
+          :title="theme === 'dark' ? '切换到明亮主题' : '切换到暗色主题'"
+          :aria-label="theme === 'dark' ? '切换到明亮主题' : '切换到暗色主题'"
+          :aria-pressed="theme === 'light'"
+          class="flex-shrink-0 w-9 h-9 rounded-lg grid place-items-center
+                 text-gray-500 hover:text-gray-900 hover:bg-gray-100
+                 border border-line transition-colors">
+          <svg v-if="theme === 'dark'" class="w-4 h-4" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+          </svg>
+          <svg v-else class="w-4 h-4" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true">
+            <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
+          </svg>
+        </button>
+
         <template v-if="user">
           <div class="flex items-center gap-2 mr-1">
             <!-- 悬停/点击展开额度面板：额度拆成「解析 / 追问」两个计数器
@@ -140,8 +163,8 @@
             登录
           </button>
           <button @click="$emit('register')"
-            class="text-sm bg-violet text-white px-5 py-1.5 rounded-full hover:bg-blue-600 transition-all duration-200 active:scale-95 flex items-center gap-1.5">
-            <span class="w-1.5 h-1.5 bg-white rounded-[1px]"></span>
+            class="text-sm bg-blue text-on-primary px-5 py-1.5 rounded-full hover:bg-blue-600 transition-all duration-200 active:scale-95 flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 bg-on-primary rounded-[1px]"></span>
             注册
           </button>
         </template>
@@ -153,6 +176,9 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import PixelLogo from './PixelLogo.vue'
+import { useTheme } from '../composables/useTheme.js'
+
+const { theme, toggleTheme } = useTheme()
 
 const props = defineProps({
   user: { type: Object, default: null },

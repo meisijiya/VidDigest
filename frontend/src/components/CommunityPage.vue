@@ -30,8 +30,8 @@
                    text-gray-800 placeholder-gray-400 focus:border-blue-200 focus:outline-none" />
         </div>
         <button type="submit" :disabled="searching"
-          class="px-4 py-2 rounded-xl bg-blue-400 text-white text-sm font-medium
-                 hover:bg-blue-500 transition-colors disabled:opacity-50">
+          class="px-4 py-2 rounded-xl bg-blue text-on-primary text-sm font-medium
+                 hover:bg-blue-600 transition-colors disabled:opacity-50">
           {{ searching ? '搜索中...' : '搜索' }}
         </button>
         <button v-if="activeQuery || activeTag" type="button" @click="clearSearch"
@@ -63,14 +63,14 @@
         <button @click="selectTag('')"
           :class="['px-3 py-1.5 rounded-lg text-xs font-pixel transition-colors border',
                    activeTag === ''
-                     ? 'bg-blue-400 text-white border-blue-400'
+                     ? 'bg-blue text-on-primary border-blue'
                      : 'bg-panel text-gray-500 border-line hover:border-gray-300']">
           全部
         </button>
         <button v-for="t in tagOptions" :key="t" @click="selectTag(t)"
           :class="['px-3 py-1.5 rounded-lg text-xs font-pixel transition-colors border',
                    activeTag === t
-                     ? 'bg-blue-400 text-white border-blue-400'
+                     ? 'bg-blue text-on-primary border-blue'
                      : 'bg-panel text-gray-500 border-line hover:border-gray-300']">
           {{ t }}
         </button>

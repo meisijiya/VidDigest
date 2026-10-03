@@ -36,7 +36,7 @@
           <div class="max-w-7xl mx-auto px-4 sm:px-6">
             <!-- 缓存复用提示 + 重新解析 -->
             <div v-if="fromCache"
-              class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs rounded-xl px-4 py-2.5 bg-teal-50 border border-teal-100 text-teal-300">
+              class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs rounded-xl px-4 py-2.5 bg-cyan-50 border border-cyan-100 text-cyan-300">
               <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
               </svg>
@@ -44,9 +44,9 @@
               <button @click="reparse"
                 :disabled="reparseLoading || canRegenerate !== true"
                 :title="canRegenerate === true ? '用新的提示词重新生成并覆盖这一份' : '只有首次解析这个视频的人才能重新解析'"
-                class="ml-auto px-3 py-1 rounded-lg bg-panel border border-teal-200 text-teal-300 font-medium
-                       hover:bg-teal-500 hover:text-ink hover:border-teal-500 disabled:opacity-50
-                       disabled:hover:bg-panel disabled:hover:text-teal-300 disabled:hover:border-teal-200
+                class="ml-auto px-3 py-1 rounded-lg bg-panel border border-cyan-200 text-cyan-300 font-medium
+                       hover:bg-cyan-500 hover:text-on-solid hover:border-cyan-500 disabled:opacity-50
+                       disabled:hover:bg-panel disabled:hover:text-cyan-300 disabled:hover:border-cyan-200
                        transition-all duration-200 active:scale-95 flex items-center gap-1.5">
                 <svg :class="['w-3.5 h-3.5', reparseLoading && 'animate-spin']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>

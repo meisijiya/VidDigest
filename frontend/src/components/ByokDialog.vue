@@ -174,7 +174,7 @@ function clearAll() {
 
         <footer class="flex flex-wrap items-center gap-2 pt-1">
           <button type="button" @click="saveAndClose"
-            class="px-4 py-2 rounded-xl bg-violet text-white text-sm font-medium
+            class="px-4 py-2 rounded-xl bg-blue text-on-primary text-sm font-medium
                    hover:bg-blue-600 transition-all duration-200 active:scale-95">
             保存
           </button>

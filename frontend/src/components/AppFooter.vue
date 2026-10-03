@@ -1,5 +1,5 @@
 <template>
-  <footer class="relative overflow-hidden text-gray-500 bg-[#0B1220] border-t border-line">
+  <footer class="relative overflow-hidden text-gray-500 bg-ink border-t border-line">
     <!-- 顶部像素阶梯沿：与页面的像素化过渡 -->
     <div class="absolute top-0 left-0 right-0 flex justify-center gap-1 pt-0 pointer-events-none" aria-hidden="true">
       <span v-for="(w, i) in pixelSteps" :key="i"
@@ -47,13 +47,15 @@ import PixelLogo from './PixelLogo.vue'
 /** 页脚 Logo 与顶部 Logo 一样是「回到起始页」的入口。 */
 defineEmits(['go-home'])
 
-/* 像素阶梯：品牌四色平涂，高低错落形成下坠动势 */
+/* 像素阶梯：品牌六色平涂，高低错落形成下坠动势。
+   走令牌而不是任意值：原来是 bg-[#7C3AED] 这类硬编码，完全绕过了 @theme，
+   改配色时它们会变成无人认领的杂色。 */
 const pixelSteps = [
-  { h: 6, color: 'bg-[#7C3AED]' },
-  { h: 10, color: 'bg-[#A855F7]' },
-  { h: 6, color: 'bg-[#EC4899]' },
-  { h: 14, color: 'bg-[#A855F7]' },
-  { h: 6, color: 'bg-[#06B6D4]' },
-  { h: 18, color: 'bg-[#06B6D4]' },
+  { h: 6, color: 'bg-blue-500' },
+  { h: 10, color: 'bg-blue-300' },
+  { h: 6, color: 'bg-amber-500' },
+  { h: 14, color: 'bg-amber-400' },
+  { h: 6, color: 'bg-cyan-500' },
+  { h: 18, color: 'bg-blue-700' },
 ]
 </script>

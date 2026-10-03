@@ -1,9 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#0F1729"/>
-  <rect x="14" y="14" width="12" height="12" rx="1" fill="#7C3AED"/>
-  <rect x="26" y="14" width="12" height="12" rx="1" fill="#A855F7"/>
-  <rect x="38" y="14" width="12" height="12" rx="1" fill="#EC4899"/>
-  <rect x="26" y="26" width="12" height="12" rx="1" fill="#A855F7"/>
-  <rect x="38" y="26" width="12" height="12" rx="1" fill="#06B6D4"/>
-  <rect x="38" y="38" width="12" height="12" rx="1" fill="#06B6D4"/>
+  <!-- 品牌标记，与 src/components/PixelLogo.vue 同构。
+       色值写死不引用主题变量：标签页 / 书签不读 CSS 变量，也不跟随 data-theme。
+       底板统一用 #161F36（原先这里是 #0F1729、与组件里的 #161F36 不一致，
+       同一枚 logo 在页内和标签页上是两种深蓝）。改这里请同步改那个组件，
+       theme.test.mjs 有一组断言盯着两边一致。 -->
+  <rect width="64" height="64" rx="14" fill="#161F36"/>
+  <rect x="14" y="14" width="12" height="12" rx="2" fill="#7C3AED"/>
+  <rect x="26" y="14" width="12" height="12" rx="2" fill="#A855F7"/>
+  <rect x="38" y="14" width="12" height="12" rx="2" fill="#EC4899"/>
+  <rect x="26" y="26" width="12" height="12" rx="2" fill="#A855F7"/>
+  <rect x="38" y="26" width="12" height="12" rx="2" fill="#06B6D4"/>
+  <rect x="38" y="38" width="12" height="12" rx="2" fill="#06B6D4"/>
 </svg>
