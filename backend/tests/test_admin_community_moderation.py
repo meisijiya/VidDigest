@@ -16,6 +16,7 @@
 「谁的记录都读不到」与「历史跟着社区一起没了」，症状是一样的。
 """
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -88,6 +89,24 @@ def _stored_tags(video_id: int) -> list:
 
 
 # ── 改标签 ────────────────────────────────────────────────────
+
+def _frozen_clock(moment):
+    """造一个替掉 ``database.datetime`` 的类，把「现在」钉在 moment。
+
+    **继承** ``datetime`` 而不是顶替它：``database`` 别处还要用
+    ``datetime.fromisoformat``，一个只实现了 ``now`` 的假类会让那些路径
+    **因错误的原因**抛错 -- 那种红不是护栏在响，是测错了东西。
+    """
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return moment.replace(tzinfo=None)
+            return moment.astimezone(tz)
+
+    return _Clock
+
 
 class TestTagUpdate:
     def test_tags_land_in_db_and_come_back_in_the_item(self, client_app):
@@ -177,11 +196,26 @@ class TestTagUpdate:
         assert r.status_code == 200, r.text
         assert r.json()["item"]["tags"] == ["读书", "健身"]
 
-    def test_only_tags_and_updated_at_change(self, client_app):
-        """改标签不许改到内容与状态；updated_at 必须跟着动。"""
+    def test_only_tags_and_updated_at_change(self, client_app, monkeypatch):
+        """改标签不许改到内容与状态；updated_at 必须跟着动。
+
+        时间是**钉死**的，不是「等一会儿再看变了没」。那种写法靠的是时钟
+        走过了一格，而本机实测：连续两次 ``datetime.now()`` 有 199832/200000
+        次返回**完全相同**的值（时钟量化到约 0.3ms）。创建那一行后紧接着
+        PATCH，极易落进同一格，于是这条断言成了掷骰子——单跑 5 次全过，
+        全量跑偶尔红，而 ``update_video_tags`` 本身并没有错。
+
+        钉死之后断的是「updated_at 被写成了**这次改标签**的时刻」：正向证法
+        是值必须**等于**钉死的那一刻，把 UPDATE 里的 updated_at 去掉就会红。
+        """
         client, _, plain_id = client_app
         vid = _ready_video("https://v.example/h", plain_id, with_tags=["编程"])
         before = _stored_row(vid)
+
+        # 从这一行自己存的值派生，必然不同，且仍在同一天（不触发按日期
+        # 重置的那类副作用）。
+        moment = datetime.fromisoformat(before["updated_at"]) + timedelta(minutes=7)
+        monkeypatch.setattr(database, "datetime", _frozen_clock(moment))
 
         r = client.patch(f"/api/admin/community/{vid}", json={"tags": ["读书"]},
                          headers=_admin_hdr(client_app))
@@ -189,8 +223,10 @@ class TestTagUpdate:
         after = _stored_row(vid)
 
         assert after["tags"] != before["tags"]
-        assert after["updated_at"] != before["updated_at"], (
-            "updated_at 没动：后台就分不清这条是刚被维护过的")
+        assert after["updated_at"] == moment.isoformat(), (
+            f"updated_at 没跟着这次改标签走：期望 {moment.isoformat()!r}，"
+            f"实际 {after['updated_at']!r}——后台就分不清这条是刚被维护过的")
+        assert after["updated_at"] != before["updated_at"]
         for column in ("status", "summary_md", "mindmap_md", "subtitle_text",
                        "created_at", "parsed_by", "video_url"):
             assert after[column] == before[column], f"改标签竟然动到了 {column}"
