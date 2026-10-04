@@ -2,10 +2,10 @@
 
 > 本文档面向**运维 / 部署 / 故障排查**场景。开发期的快速启动请看 [README.md](../README.md)，API 细节请看 [API.md](API.md)。
 
-> ⚠️ **会员制已停用（代码保留）**：项目当前不做会员制，所有用户统一为每日 3 次免费额度。
+> **会员制不启用**：所有用户统一为每日 3 次免费额度。
 > 前端付费入口由 `frontend/src/config/features.js` 的 `MEMBERSHIP_ENABLED = false` 关闭。
-> 后端 `api_payment.py`、`is_vip_active()`、`orders` 表与 Stripe 相关配置**均保留未删**，
-> 恢复会员制时把该开关改回 `true` 即可。下方涉及 Stripe 的章节仅供恢复时参考，当前无需配置。
+> 后端 `api_payment.py`、`is_vip_active()`、`orders` 表与 Stripe 配置位属于契约的一部分，
+> 动它们前先读 ADR 0010 / 0012。下方涉及 Stripe 的章节当前无需配置。
 
 ---
 
@@ -148,7 +148,7 @@ curl -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/   # → 200
 | `ALIYUN_BAILIAN_API_KEY`  | ✅   | —                                                   | AI 总结 / 导图 / 问答（推荐，最便宜）                 | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/)       |
 | `ALIYUN_BAILIAN_BASE_URL` | —   | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼兼容模式端点                                | 用 workspace 专属地址                                                                 |
 | `ALIYUN_BAILIAN_MODEL`    | —   | `qwen-turbo`                                        | 模型名（`qwen-turbo` 最便宜，`qwen-plus` 性价比最高） | 百炼模型市场                                                                           |
-| `DEEPSEEK_API_KEY`        | ✅   | —                                                   | AI 总结 / 导图 / 问答（兼容旧配置）                  | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
+| `DEEPSEEK_API_KEY`        | ✅   | —                                                   | AI 总结 / 导图 / 问答（与百炼二选一）                  | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
 | `JWT_SECRET`              | ✅   | 无默认值（缺失或纯空白则拒绝启动）                        | JWT 签名密钥                                | `openssl rand -hex 32`（32+ 位随机串）                                                  |
 | `VIDDIGEST_ADMIN_EMAILS`  | —   | 空（合法：没有管理员）                                    | 首个管理员播种，逗号分隔；见 §10.4          | 就是目标账号的邮箱，逗号分隔                                                           |
 | `OPENAI_API_KEY`          | —   | —                                                   | 视频无字幕时 Whisper ASR 回退                   | [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)     |
@@ -165,12 +165,12 @@ curl -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/   # → 200
 # 阿里云百炼：填写 ALIYUN_BAILIAN_API_KEY 即可，默认模型 qwen-turbo
 ALIYUN_BAILIAN_API_KEY=sk-your-bailian-key
 ALIYUN_BAILIAN_MODEL=qwen-turbo
-# 兼容旧配置：DeepSeek（如已配置会被自动识别，无需删除）
+# 或 DeepSeek（两组配任意一组即可，程序按非空的那组选用）
 DEEPSEEK_API_KEY=
 
 # ─── 安全（必填，缺失则进程拒绝启动）─────────────
-# 曾经有一个写死在源码里的兜底默认值，已移除：管理后台上线后，
-# 猜中那个常量就等于能伪造任意管理员 token。见 ADR 0010。
+# JWT_SECRET 没有默认值。写死一个兜底常量等于让猜中常量的人
+# 伪造任意管理员 token，所以缺失或纯空白时直接拒绝启动。见 ADR 0010。
 JWT_SECRET=<把下面命令的输出粘进来>        # openssl rand -hex 32
 
 # ─── 支付（可选）───────────────────────────────
@@ -273,7 +273,8 @@ hub stop --name frontend-dev
 
 ### 5.4 systemd 守护（Linux 生产）
 
-`/etc/systemd/system/<app>-backend.service`：
+`<app>` 是部署方自己定的服务名与安装根目录（下面用 `<app>` 占位，不要照抄字面量）。
+单元文件放在 `/etc/systemd/system/<app>-backend.service`：
 
 ```ini
 [Unit]
@@ -284,8 +285,7 @@ After=network.target
 Type=simple
 User=www-data
 WorkingDirectory=/opt/<app>/backend
-Environment="ALIYUN_BAILIAN_API_KEY=sk-xxx"
-Environment="JWT_SECRET=xxx"
+EnvironmentFile=/opt/<app>/backend/.env
 ExecStart=/opt/<app>/backend/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2
 Restart=on-failure
 RestartSec=5
@@ -293,6 +293,9 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ```
+
+> 密钥走 `EnvironmentFile` 指向 `.env`，不要写成 `Environment=` 行内赋值 ——
+> unit 文件是纯文本，进程列表和 `systemctl show` 都能读到行内值。
 
 ```bash
 sudo systemctl daemon-reload
@@ -302,58 +305,73 @@ sudo systemctl status <app>-backend
 
 ### 5.5 测试账号（演示 / 压测 / 联调用）
 
-> 项目内置两个长期可用的测试账号，覆盖**普通用户 + VIP**两类典型场景。
-> `.test` 是 RFC 6761 保留 TLD，不会被真实邮件系统处理，可放心写入文档。
+> **凭据由部署方自定，本文不提供任何账号口令。**
+> 仓库是 PUBLIC：把口令写进运维手册，等于把一份可用的登录凭据公开贴在 README 上，
+> 与 `.gitignore` 里已经确立的「含明文口令的清单不入版本库」是同一条规矩。
+> 本地开发库自带的测试账号清单是 `TEST_ACCOUNTS.md`，它同样在 `.gitignore` 里 ——
+> 需要时看本机磁盘，不要指望从 git 里取。
 
+需要两类账号，一类覆盖**免费额度受限**路径，一类覆盖**额度不设限**路径。
 
-| 邮箱                   | 密码          | VIP  | AI 配额 | 用途                          |
-| -------------------- | ----------- | :----: | :-----: | --------------------------- |
-| `test@example.org` | `[已移除的测试口令]` | ❌    | 3 次/日 | 测试免费用户配额限制、付费引导弹窗、错误文案      |
-| `vip@example.org`  | `[已移除的测试口令]`  | ✅ 永久 | 无限    | 测试 VIP 全功能（无限制总结 / 导图 / 问答） |
+| 用途 | 账号 | 额度 | 覆盖场景 |
+|------|------|:----:|----------|
+| 免费用户 | 自定（建议用 RFC 6761 保留 TLD，如 `<name>.test`） | 3 次/日 | 配额限制、付费引导弹窗、错误文案 |
+| 不限额度 | 自定 | 无限 | 总结 / 导图 / 问答的完整路径 |
 
-
-**VIP 账号说明**：`vip_expire_at` 设为 `2099-12-31`，实质上等于永久有效。生产环境请勿沿用。
-
-**首次部署后自动创建（如未自动创建，手动执行）**
+口令与邮箱都从环境变量读，不落在命令行历史里：
 
 ```bash
-# 1) 注册两个普通账号（走标准 /api/auth/register，密码经 bcrypt 哈希）
-curl -X POST http://127.0.0.1:8000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.org","password":"[已移除的测试口令]"}'
+export TEST_USER_EMAIL='<free-user>.test'
+export TEST_USER_PASSWORD="$(openssl rand -base64 18)"
+export TEST_VIP_EMAIL='<unlimited>.test'
+export TEST_VIP_PASSWORD="$(openssl rand -base64 18)"
 
-curl -X POST http://127.0.0.1:8000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"vip@example.org","password":"[已移除的测试口令]"}'
+# 1) 注册（走标准 /api/auth/register，密码经 bcrypt 哈希）
+for pair in "$TEST_USER_EMAIL:$TEST_USER_PASSWORD" "$TEST_VIP_EMAIL:$TEST_VIP_PASSWORD"; do
+  curl -sS -X POST http://127.0.0.1:8000/api/auth/register \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"${pair%%:*}\",\"password\":\"${pair##*:}\"}"
+  echo
+done
+```
 
-# 2) 将 vip 账号升级为 VIP（直接改库，绕开 Stripe）
-"D:/path/to/backend/venv/Scripts/python.exe" - <<'PY'
-import sqlite3
-conn = sqlite3.connect('D:/path/to/backend/data/app.db')
+**把不限额度账号的额度置为无限**（直接改库，不走支付）：
+
+```bash
+"<venv-python>" - <<'PY'
+import os, sqlite3
+conn = sqlite3.connect('backend/data/app.db')
 conn.execute(
-    "UPDATE users SET is_vip=1, vip_expire_at='2099-12-31 23:59:59' WHERE email='vip@example.org'"
+    "UPDATE users SET parse_limit_override=-1, chat_limit_override=-1 WHERE email=?",
+    (os.environ["TEST_VIP_EMAIL"],),
 )
 conn.commit()
 conn.close()
-print('✓ vip@example.org 已升级为 VIP')
+print("ok")
 PY
 ```
+
+> `parse_limit_override` / `chat_limit_override` 取值：`0` = 一条都不能用，`-1` = 无限，`NULL` = 用全局默认。
+> 给有效 VIP 设覆盖不生效 —— VIP 在上限校验之前就短路了。
 
 **重置账号（如被压测数据污染）**
 
 ```bash
-# 删掉两个测试账号，重新跑上面的"首次部署"脚本
-"D:/path/to/backend/venv/Scripts/python.exe" - <<'PY'
-import sqlite3
-conn = sqlite3.connect('D:/path/to/backend/data/app.db')
-conn.execute("DELETE FROM users WHERE email LIKE '%@example.org'")
+"<venv-python>" - <<'PY'
+import os, sqlite3
+conn = sqlite3.connect('backend/data/app.db')
+conn.execute("DELETE FROM users WHERE email IN (?, ?)",
+             (os.environ["TEST_USER_EMAIL"], os.environ["TEST_VIP_EMAIL"]))
 conn.commit()
 conn.close()
-print('✓ 测试账号已清空')
+print("ok")
 PY
 ```
 
-**自动化测试**：CI 环境可直接用 `test@example.org` 跑权限校验类用例；用 `vip@example.org` 跑配额无限制场景。注意免费用户每天解析 3 次、追问 10 次（见 §10.3），连续跑测试前先把 `VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT` 调大，或清掉 `daily_parse_count` / `daily_chat_count` 字段。
+**自动化测试**：CI 需要的凭据由 CI 自己的 secret 注入，不写进任何入库文件。
+免费用户每天解析 3 次、追问 10 次（见 §10.3），连续跑测试前先把
+`VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT` 调大，或清掉
+`daily_parse_count` / `daily_chat_count` 字段。
 
 ## 6. 进程管理（hub）
 
@@ -471,7 +489,7 @@ ls -lh backend/data/app.db
 ### 8.2 备份策略
 
 ```bash
-# 每日凌晨 3 点归档（crontab 示例）
+# 每日凌晨 3 点归档（crontab 示例；<app> 与备份根目录按你的部署填）
 0 3 * * * sqlite3 /opt/<app>/backend/data/app.db ".backup '/backup/<app>-$(date +\%Y\%m\%d).db'"
 
 # 手动备份
@@ -545,7 +563,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 | -------------------- | ---------------- | ------------------------------------- |
 | `database is locked` | SQLite 多写并发      | 加 `--workers 1`（默认即如此）                |
 | 用户列表错乱               | 升级数据库 schema 没迁移 | 看 `database.py` 是否有 `ALTER TABLE`，手动补 |
-| **AI 总结一直"正在分析"但无任何事件** | `vip_expire_at` 是 naive datetime，`fromisoformat` 后与 `datetime.now(timezone.utc)` 比较直接 TypeError；异常发生在 SSE `try` 块**之前**，前端拿不到 error 事件就一直转圈 | 已修复：`database.py:is_vip_active` 与 `_fulfill_order` 都加了 `if expire.tzinfo is None: expire = expire.replace(tzinfo=timezone.utc)` 兜底。**根治方案**：所有 `vip_expire_at` 写入统一使用 `datetime.now(timezone.utc).isoformat()`（带 `+00:00`） |
+| **AI 总结一直"正在分析"但无任何事件** | `vip_expire_at` 是 naive datetime，与带时区的 `datetime.now(timezone.utc)` 比较抛 TypeError；异常发生在 SSE `try` 块**之前**，前端拿不到 error 事件就一直转圈 | 读取侧 `is_vip_active` / `_fulfill_order` 对 `tzinfo is None` 做兜底。**写入侧要求**：所有 `vip_expire_at` 统一用 `datetime.now(timezone.utc).isoformat()`（带 `+00:00`） |
 
 
 ---
@@ -627,7 +645,7 @@ VIDDIGEST_ADMIN_EMAILS=you@example.com,other@example.com
 
 | 项                          | 状态  | 建议                                 |
 | -------------------------- | :---: | ---------------------------------- |
-| `JWT_SECRET` 无默认值且必填      | ✅   | 已改为 fail-fast：缺失或纯空白即拒绝启动（工单 #11 / ADR 0010） |
+| `JWT_SECRET` 无默认值且必填      | ✅   | fail-fast：缺失或纯空白即拒绝启动（ADR 0010） |
 | `.env` 不入 git              | ✅   | `.gitignore` 已包含                   |
 | CORS `allow_origins=["*"]` | ⚠️  | 生产改为具体域名                           |
 | bcrypt 哈希密码                | ✅   | cost=12 默认                         |
@@ -710,7 +728,7 @@ hub restart --name backend-api
 
 - [ ] 备份 `data/app.db`
 - [ ] 备份 `.env`
-- [ ] 看 `CHANGELOG` / Git log 是否有破坏性变更
+- [ ] 看 `git log` 与 `docs/adr/` 是否有破坏性变更
 - [ ] 在 staging 环境跑通
 - [ ] 生产滚动升级（先停前端再停后端，避免半截状态）
 - [ ] 验证 `/api/health` + 主页 + 注册登录 + 一次完整下载 + 一次 AI 总结
@@ -731,4 +749,4 @@ hub restart --name backend-api
 
 ---
 
-<p align="center"><sub>文档版本 1.0 · 最后更新 2026-09-08</sub></p>
+<p align="center"><sub>设计决策见 <a href="adr/">docs/adr/</a></sub></p>

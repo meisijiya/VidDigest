@@ -42,6 +42,26 @@ if [ -x "$PY" ]; then
       -x '(^|[\\/])(\.?venv|env|node_modules|build|dist|__pycache__)([\\/]|$)' \
       -x 'venv[\\/]' . )
   RAN=$((RAN + 1))
+
+  # 敏感内容扫描（第 4 道关卡）。
+  #
+  # 为什么它必须在门禁里，而不是只写成 .gitignore 里的一条注释：
+  # .gitignore 是**文件名级**的。它挡得住 .env，挡不住「把 .env 里那条口令
+  # 抄进 docs/OPERATIONS.md」。本仓库真的发生过一次——TEST_ACCOUNTS.md 按
+  # 规矩移出了版本库，可同一批明文口令与本机用户名留在了运维手册和一个
+  # agent 日志目录里，直到推上 PUBLIC 远端。护栏必须在**内容**上。
+  #
+  # 这条检查自身有变异测试兜着：每种要抓的形态都故意放回去确认它转红，
+  # 否则「跑完是绿的」证明不了关卡有效。见 scripts/mutation_secrets_gate.py。
+  #
+  # 用 $PY（仓库根相对）而不是 ./venv/...：上面两关跑在 ( cd backend && … )
+  # 子 shell 里，cwd 改动不外泄，所以这一关仍在仓库根 —— 写 ./venv/Scripts
+  # 会得到 "No such file or directory"，退出码 127。检查脚本自己按 __file__
+  # 推算仓库根，与 cwd 无关。
+  echo ""
+  echo "=== secrets: content-level scan of tracked files ==="
+  "$PY" scripts/check_secrets.py
+  RAN=$((RAN + 1))
 else
   echo "ERROR: 找不到 $PY —— 后端虚拟环境没装好，门禁拒绝通过。"
   echo "在 backend/ 下重建 venv 后重跑。"
