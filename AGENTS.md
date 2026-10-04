@@ -93,6 +93,9 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
   - 微博 `weibo.com/tv/show/` 的 id 必须是 `<数字>:<32位hex>`；短 id 会被判 `Unsupported URL`。
   - 西瓜视频 extractor 明确要求 Cookie（不必登录）；**快手在这个构建里没有 extractor**。
   - **把「形态对不对」和「视频在不在」分开验**：格式正确但 id 不存在会拿到平台自己的错误（说明被认领并出网了）；形态错误才是 `Unsupported URL`，请求根本没出过进程。拿假 id 得出的「不支持」结论不可信——本仓已经因此错判过一次微博。
+- **别拿「时间戳变了」当判据，除非把时钟钉死。** 2026-10-04 实测本机：连续两次 `datetime.now()` 有 **199832/200000 次返回完全相同的值**（时钟量化到约 0.3ms，最小非零间隔 335us）。于是「改前看一眼、改后再看一眼、断言两个时间戳不同」是靠掷骰子过的——单跑 5 次全过、全量跑偶尔红，而**被测代码并没有错**（`test_only_tags_and_updated_at_change` 就是在 master 上第一次跑门禁时炸的）。钉时钟用 `monkeypatch` 掉模块里的 `datetime`，**假类要继承 `datetime` 而不是顶替它**（`database.py` 别处还在用 `fromisoformat`，只实现 `now` 的假类会让那些路径**因错误的原因**抛错）；钉完必须补一条变异「假时钟改成空操作」，否则「钉时钟」这件事本身没人守，将来会被悄悄改回掷骰子那条。
+- **门禁在功能分支上绿，不等于授权推送；要在合并后的树上再跑一次。** 同一个测试文件在 `feat/*` 上连过三次全绿，合并到 `master` 后第一次跑就红。**合并后的树才是要推出去的东西，它才是门禁的对象**——拿功能分支的绿证据去授权推送，是在为另一个提交历史背书。
+- **本仓库是 PUBLIC：推送前审计必须扫历史，`git rm --cached` 不等于清出历史。** `.gitignore` 只对**未跟踪**文件生效，而 `git rm --cached` 也只把文件移出**最新一次提交**——内容仍留在那个 commit 里，历史一推就公开了。`TEST_ACCOUNTS.md`（含明文口令）就是这么差点进去的：它当时**从未推送过**，所以 `filter-branch --index-filter` + 删 `refs/original/` + `gc --prune=now` 是安全的；**已经推送过的仓库就没这个便宜了**，只能改远端历史。审计清单：`.gitignore` 覆盖 + `git ls-files` 可疑名 + 全树密钥形态 + **全 ref 全历史**密钥形态 + `git log --all --diff-filter=A --name-only` 查有没有提交过 `.env`/`.db`。两条容易漏的：邮箱/口令不含密钥正则，**要靠人读**；结论用 `gh api` 从服务端独立确认，别只信本地 `git ls-tree`。
 
 ## 范围边界
 
