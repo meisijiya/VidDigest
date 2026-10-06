@@ -2172,7 +2172,12 @@ def _pending_is_stale(row: dict) -> bool:
     return age > VIDEO_PENDING_TTL_SECONDS
 
 
-def reserve_video(video_url: str, user_id: int | None) -> tuple[str, dict | None]:
+def reserve_video(
+    video_url: str,
+    user_id: int | None,
+    video_title: str = "",
+    cover_url: str = "",
+) -> tuple[str, dict | None]:
     """抢占一个链接的解析权。返回 (outcome, row)。
 
     outcome 只有三种，调用方必须分别处理——尤其是 "reserved"：
@@ -2184,15 +2189,31 @@ def reserve_video(video_url: str, user_id: int | None) -> tuple[str, dict | None
 
     写与读刻意分在两个事务里：插入被唯一索引拒绝之后，必须在一个
     **新的**事务里重读，否则读到的还是那个已被回滚的事务的快照。
+
+    `video_title` / `cover_url` 是**占位时**就带进去的（工单 #17 第 2 项）。
+
+    为什么不是等 ready 之后再回填：那条路（`publish_video_card`）
+    要求 `status = 'ready'`，而占位行在解析完成前一直是 pending。
+    前端 `publishCard` 紧跟 `/api/parse` 发出，那一刻 `videos` 行
+    **还不存在**（它要等用户点「AI 总结」才被本函数创建），
+    于是那次 UPDATE 永远匹配 0 行 —— 首次解析者填的标题/封面填不进去，
+    卡片实际由**第二个访问者**填。连带后果：`videos_fts` 索引
+    `video_title`，而绝大多数行该字段是空串 → 社区按标题搜索基本失效。
+
+    在占位时一并写入仍然遵守「只填空，不覆盖」：这里写的是
+    **自己刚建的行**，而 #7 的承诺是「ready 行谁都不能改写」，
+    pending 行还没到那个阶段。
     """
     now = datetime.now(timezone.utc).isoformat()
     try:
         with get_db() as conn:
             conn.execute(
                 """INSERT INTO videos
-                   (video_url, status, parsed_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (video_url, VIDEO_STATUS_PENDING, user_id, now, now),
+                   (video_url, status, parsed_by, created_at, updated_at,
+                    video_title, cover_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (video_url, VIDEO_STATUS_PENDING, user_id, now, now,
+                 video_title or "", cover_url or ""),
             )
         return "reserved", None
     except sqlite3.IntegrityError:
@@ -2211,11 +2232,15 @@ def reserve_video(video_url: str, user_id: int | None) -> tuple[str, dict | None
         if _pending_is_stale(row):
             now = datetime.now(timezone.utc).isoformat()
             with get_db() as conn:
+                # 同样只在**为空时**填：接管的是别人的占位行，
+                # 它可能已经带了卡片字段，不能覆盖。
                 cursor = conn.execute(
-                    """UPDATE videos SET parsed_by = ?, created_at = ?, updated_at = ?
+                    """UPDATE videos SET parsed_by = ?, created_at = ?, updated_at = ?,
+                              video_title = CASE WHEN COALESCE(video_title, '') = '' THEN ? ELSE video_title END,
+                              cover_url    = CASE WHEN COALESCE(cover_url, '')    = '' THEN ? ELSE cover_url    END
                        WHERE video_url = ? AND status = ? AND updated_at = ?""",
-                    (user_id, now, now, video_url,
-                     VIDEO_STATUS_PENDING, row["updated_at"]),
+                    (user_id, now, now, video_title or "", cover_url or "",
+                     video_url, VIDEO_STATUS_PENDING, row["updated_at"]),
                 )
                 if cursor.rowcount == 1:
                     return "reserved", None

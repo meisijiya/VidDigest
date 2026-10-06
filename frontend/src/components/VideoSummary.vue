@@ -587,7 +587,15 @@ function startSummarize(overwrite = false) {
         refreshQuota()
       }
     },
-  }, { overwrite, credential: getRequestCredential() })
+  }, {
+    overwrite,
+    credential: getRequestCredential(),
+    // 平台元数据跟着解析请求一起走（工单 #17 第 2 项）。
+    // 封面取 videoData.thumbnail —— /api/parse 的返回里它就叫 thumbnail，
+    // 而社区卡片那一列叫 cover_url，两个名字指的是同一个东西。
+    videoTitle: props.videoTitle || '',
+    coverUrl: props.videoData?.thumbnail || '',
+  })
 }
 
 /**

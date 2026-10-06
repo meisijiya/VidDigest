@@ -133,9 +133,27 @@ const CHAT_ROUTES = {
  *
  * `options.credential` 是自带凭据（来自 lib/byok）。逐字段列举而不展开整个
  * 对象：写成 `...options` 会让将来任何顺手加进 options 的东西跟着上车。
+ *
+ * `options.videoTitle` / `options.coverUrl` 是平台元数据（工单 #17 第 2 项）。
+ * 服务端在**抢到占位那一刻**就把它们写进社区卡片行；此前是前端事后打
+ * POST /api/community/cards 回填，而那条路要求 status='ready'——
+ * 首次解析的那一刻那一行还不存在，那次 UPDATE 永远匹配 0 行，
+ * 卡片标题/封面只能等第二个访问者来填。
+ *
+ * 两个字段一律归一成空串，不原样发出去：服务端那两列是 `str`，
+ * 收到 null 直接 422——而症状是「AI 解析整个坏了」，离真实原因很远。
+ * undefined 更麻烦：JSON.stringify 会把它悄悄丢掉，于是请求体的形状
+ * 取决于调用方写了什么。`videoData` 来自历史记录里存下来的 JSON，
+ * 老数据里出现 `"thumbnail": null` 是完全可能的。
  */
 export function summarizeVideo(url, language, callbacks, options = {}) {
-  const payload = { url, language, overwrite: !!options.overwrite }
+  const payload = {
+    url,
+    language,
+    overwrite: !!options.overwrite,
+    video_title: options.videoTitle || '',
+    cover_url: options.coverUrl || '',
+  }
   const cred = options.credential
   if (cred) {
     payload.user_api_key = cred.apiKey

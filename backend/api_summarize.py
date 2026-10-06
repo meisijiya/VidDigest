@@ -112,6 +112,14 @@ class SummarizeRequest(BaseModel):
     #: 只在 parsed_by 是本人时生效；否则服务端直接拒绝，不调模型不扣额度。
     #: 默认 False——绝大多数请求只是来看一眼或首次解析。
     overwrite: bool = False
+    # 平台元数据（工单 #17 第 2 项）：前端在 /api/parse 之后就拿到了标题与缩略图，
+    # 趁占位行还没建成就一起带过来。此前是靠前端事后打
+    # POST /api/community/cards 回填，而那条路要求 status='ready' ——
+    # 占位行在解析完成前一直是 pending，于是那次 UPDATE 永远匹配 0 行，
+    # 首次解析者填的卡片标题/封面填不进去。
+    # 都是可空字段，缺省不影响既有调用方。
+    video_title: str = ""
+    cover_url: str = ""
     # 自带凭据（BYOK）：用 SecretStr 让遮蔽从请求模型这一层就成立。
     # 裸 str 的模型 repr 与 model_dump() 都会带出真值，将来任何一句
     # logger.debug(f"{req}") 就会漏。进路由立刻包成 UserCredential，不落盘。
@@ -240,7 +248,12 @@ VIDEO_WAIT_TIMEOUT_SECONDS = 30.0
 VIDEO_POLL_INTERVAL_SECONDS = 0.05
 
 
-async def _claim_video(video_url: str, user_id: int):
+async def _claim_video(
+    video_url: str,
+    user_id: int,
+    video_title: str = "",
+    cover_url: str = "",
+):
     """抢占解析权；抢不到就等它完成，等不到就退回去。
 
     返回 ("owner", None) / ("reuse", row) / ("busy", None)。
@@ -248,10 +261,13 @@ async def _claim_video(video_url: str, user_id: int):
     **只有 "owner" 允许去调模型**——「只调一次模型」就落在这一个分支上。
     等待者的循环每轮都重新抢：占位者中途失败并释放位置时，等待者会在
     下一轮成为首次解析者，而不是卡在一个已经被还回去的位置上空等到超时。
+
+    `video_title` / `cover_url` 只在**抢到占位**那一刻起作用（工单 #17 第 2 项）：
+    趁自己建的行还没 ready 就把平台元数据写进去。复用与等待两条路不碰它们。
     """
     deadline = time.monotonic() + VIDEO_WAIT_TIMEOUT_SECONDS
     while True:
-        outcome, row = reserve_video(video_url, user_id)
+        outcome, row = reserve_video(video_url, user_id, video_title, cover_url)
         if outcome == "reserved":
             return "owner", None
         if outcome == "ready":
@@ -430,7 +446,9 @@ async def summarize_video(
     # 社区里已有的结果：既不扣额度也不调模型，因此**不受额度限制**——
     # 复用的成本是零，额度不该拦住「看别人已经解析好的东西」。
     if not regenerate:
-        claim, existing = await _claim_video(req.url, user["id"])
+        claim, existing = await _claim_video(
+            req.url, user["id"], req.video_title, req.cover_url
+        )
         if claim == "reuse":
             for event in _replay_events(user, existing):
                 yield event

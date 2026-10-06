@@ -377,12 +377,22 @@ describe('App.vue 接线', () => {
     assert.match(appCode, /cover_url: data\?\.thumbnail \|\| ''/)
   })
 
-  test('卡片回填失败不打断主流程', () => {
+  test('卡片回填失败要留痕迹，但不打断主流程', () => {
     const publish = appCode.slice(
       appCode.indexOf('function publishCard('),
       appCode.indexOf('function reparse('),
     )
-    assert.match(publish, /\.catch\(\(\) => \{\}\)/, '回填失败会打断解析流程')
+    // 这条原来断言的是 `.catch(() => {})` 这个**字面形状**——
+    // 它锁的是写法不是行为，于是「静默」本身被当成了要保护的东西。
+    // 工单 #17 第 2 项之后首次解析必然拿到 updated:0（那一行还没建），
+    // 那个 0 是预期结果，不必报；真正该留痕的是请求本身失败。
+    assert.doesNotMatch(publish, /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/,
+      '回填失败仍然完全静默：服务端为什么不填在控制台里一个字都没有')
+    // 非空但无声也要挡住：`.catch(() => null)` 同样什么都没留下。
+    assert.match(publish, /console\.(warn|error)/,
+      'catch 体里必须真的记一条，而不是随便返回点什么')
+    assert.doesNotMatch(publish, /\bthrow\b/,
+      '回填失败会打断解析流程')
   })
 })
 

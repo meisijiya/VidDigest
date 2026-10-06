@@ -451,14 +451,30 @@ async function handleParse(url) {
   }
 }
 
-/** 回填社区卡片展示信息（静默失败：卡片少个封面不该打断解析流程） */
+/**
+ * 回填社区卡片的标题与封面。
+ *
+ * 工单 #17 第 2 项之后，这条路只剩一个用途：**给老行补标题**——
+ * 修复前建出来的那些 `videos` 行，标题是空串。
+ *
+ * 首次解析时这里**必然**拿到 `updated: 0`：那一行还没建出来
+ * （要等用户点「AI 总结」才由 reserve_video 创建），
+ * 而标题与封面已经跟着那次 /api/summarize 请求写进去了。
+ * 所以 0 是预期结果，不是失败——报成错误只会让每一次首解析都吵一次。
+ *
+ * 真正该留痕迹的是**请求本身失败**（网络 / 401 / 500）。
+ * 原来 `.catch(() => {})` 把那也一起吞了，于是「服务端为什么不填」
+ * 在控制台里一个字都没有。这条路失败不该打断主流程，但必须看得见。
+ */
 function publishCard(url, data) {
   if (!isLoggedIn()) return
   publishCommunityCard({
     url,
     video_title: data?.title || '',
     cover_url: data?.thumbnail || '',
-  }).catch(() => {})
+  }).catch((err) => {
+    console.warn('[community] 卡片标题回填失败：', err)
+  })
 }
 
 /**
