@@ -265,15 +265,10 @@ describe('入口 · 只对管理员可见（前端隐藏是体验，不是边界
     assert.match(m[1], /pushPage\('admin'\)/, 'openAdmin 没有改 URL —— 刷新就掉回首页')
   })
 
-  test('管理员判据有两级：localStorage 渲染 + /api/auth/me 回查', () => {
-    // 第一级只决定这一帧显不显示（防闪），第二级才是服务端事实。
-    // 少了第二级，撤权要等 72 小时 token 过期才生效（ADR 0010）。
-    assert.match(appVue, /isAdmin\s*=\s*ref\([\s\S]{0,120}is_admin/,
-      'isAdmin 的初值没有读登录用户 —— 刷新后管理入口要闪一下才出现')
-    assert.match(appVue, /async function refreshAdminFlag\(\)/, '没有回查管理员身份')
-    assert.match(appVue, /await fetchMe\(\)[\s\S]{0,80}is_admin/,
-      'refreshAdminFlag 没有用 /api/auth/me 的 is_admin —— 服务端才是权威')
-  })
+  // 这条判据曾在工单 #33 收尾时删掉：它由 3 条文本断言组成，两条判别力≈0
+  // （掏空 refreshAdminFlag 的函数体后照样全绿），第三条只钉写法。
+  // 行为判据搬到挂载层，见 tests/app-admin-entry.mount.spec.mjs 的 E 用例：
+  // 「陈旧种子下 /me 未 resolve 时入口已渲染，/me 回来后以服务端为准」。
 })
 
 // ─────────────────────────────────────────────────────────
