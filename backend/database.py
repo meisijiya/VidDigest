@@ -287,7 +287,11 @@ def init_db():
             );
 
             CREATE INDEX IF NOT EXISTS idx_history_user ON parse_history(user_id, updated_at);
-            CREATE INDEX IF NOT EXISTS idx_history_user_url ON parse_history(user_id, video_url);
+            -- (user_id, video_url) 的唯一索引**不在这里建**，由
+            -- _migrate_parse_history_unique_url 拥有：建 UNIQUE 之前必须先把
+            -- 存量重复行合成掉，而那一步需要表已经存在（全新库这一刻还没建）。
+            -- 留在这段脚本里会与 executescript 的「对已存在的表是空操作」
+            -- 特性撞车——老库里那一条普通索引会让后面的 CREATE UNIQUE 静默失效。
             -- 「仅收藏」是历史页的一个档位，这条索引让它不必扫全表。
             CREATE INDEX IF NOT EXISTS idx_history_fav ON parse_history(user_id, is_favorite);
 
@@ -351,6 +355,10 @@ def init_db():
         _migrate_quota_override_columns(conn)
         _migrate_video_card_columns(conn)
         _migrate_admin_column(conn)
+        # 去重必须排在 _create_video_search_index 之前：它自己也会扫
+        # parse_history，而重复行会让社区搜索的候选集出现同一条内容两次。
+        # 排在 executescript 之后是因为表得先存在（全新库那一刻还没建）。
+        _migrate_parse_history_unique_url(conn)
         _create_video_search_index(conn)
         # 模型清单（工单 #13 / ADR 0011）是**另一张表**，DDL 与播种都在
         # model_catalog 里——那张表不属于 users 域，塞进来只会让两条不同的
@@ -495,6 +503,111 @@ def _migrate_video_card_columns(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+#: 合成历史重复行时，「空」的判定覆盖的 JSON 空壳。
+#: chat_history 的默认值是 '[]'，它与 '' 在「用户还没问过任何一句」这件事上同义。
+_PARSE_HISTORY_BLANK = (None, "", "[]")
+
+
+def _dedupe_parse_history(conn) -> int:
+    """把 parse_history 上已有的 (user_id, video_url) 重复行合成一行。
+
+    必须在建 UNIQUE 索引**之前**跑：老库里已经有重复行时，
+    ``CREATE UNIQUE INDEX`` 会直接失败，init_db 整段 abort——
+    表现是「本地好好的，一升级就打不开」。
+
+    合成规则（每一条都是为了不丢用户已经攒下的东西）：
+
+    - **幸存者是最新那条**（按 updated_at / created_at，再按 id）；
+    - 每一列取组内**最新的非空值**。两条重复行往往是互补的：
+      一条只有视频源信息（App.vue 的 persistParseRecord），
+      另一条只有 AI 产出（VideoSummary 的 persistHistory）。
+      只留最新那条会把另一半悄悄抹掉。
+    - ``is_favorite`` 取组内**或**。收藏是这个产品里唯一一处
+      「用户明说了别删它」的地方，合成时丢掉它等于替用户做了决定。
+    - ``created_at`` 取**最早**那条：它是「我第一次解析这个视频」的时间，
+      取最新会把老记录伪装成新记录，进而在滚动裁剪里多占一格。
+
+    返回被删掉的行数（0 表示库里本来就干净）。
+    """
+    groups: dict[tuple, list] = {}
+    for row in conn.execute(
+        """SELECT id, user_id, video_url, video_title, video_data, summary_md,
+                  mindmap_md, subtitle_data, chat_history, is_favorite,
+                  created_at, updated_at
+             FROM parse_history ORDER BY user_id, video_url, id"""
+    ).fetchall():
+        groups.setdefault((row["user_id"], row["video_url"]), []).append(row)
+
+    def newest_non_empty(group, column):
+        for row in reversed(group):
+            if row[column] not in _PARSE_HISTORY_BLANK:
+                return row[column]
+        return ""
+
+    removed = 0
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        survivor = group[-1]
+        conn.execute(
+            """UPDATE parse_history
+               SET video_title=?, video_data=?, summary_md=?, mindmap_md=?,
+                   subtitle_data=?, chat_history=?, is_favorite=?,
+                   created_at=?, updated_at=?
+               WHERE id=?""",
+            (
+                newest_non_empty(group, "video_title"),
+                newest_non_empty(group, "video_data"),
+                newest_non_empty(group, "summary_md"),
+                newest_non_empty(group, "mindmap_md"),
+                newest_non_empty(group, "subtitle_data"),
+                newest_non_empty(group, "chat_history") or "[]",
+                1 if any(r["is_favorite"] for r in group) else 0,
+                group[0]["created_at"] or survivor["created_at"],
+                survivor["updated_at"] or survivor["created_at"],
+                survivor["id"],
+            ),
+        )
+        conn.execute(
+            f"DELETE FROM parse_history WHERE id IN "
+            f"({','.join('?' * (len(group) - 1))})",
+            [r["id"] for r in group[:-1]],
+        )
+        removed += len(group) - 1
+    return removed
+
+
+def _migrate_parse_history_unique_url(conn) -> int:
+    """把 (user_id, video_url) 收敛成一键，并把那条索引升级成 UNIQUE。
+
+    为什么要 UNIQUE：``upsert_parse_history`` 原来是「先 SELECT 再 INSERT」的
+    读-改-写，两个并发请求各自查到「还没有这行」就各插一行——
+    docstring 承诺的「按 (user_id, video_url) 去重」在并发下并不成立
+    （实测 10 线程同时写同一对 → 2 行）。数据库层没有任何兜底：
+    ``idx_history_user_url`` 当时是**普通索引**，不是唯一索引。
+
+    触发条件现实存在：``App.vue`` 的 persistParseRecord 与
+    ``VideoSummary.vue`` 的 persistHistory 是两个互不相干的组件，
+    都会对同一 URL 发 save，用户连点或重试即可能并发。
+
+    顺序不能反：先合成重复行，再建唯一索引。返回被删掉的重复行数。
+    """
+    existing = conn.execute("PRAGMA index_list(parse_history)").fetchall()
+    if any(r["name"] == "idx_history_user_url" and r["unique"] for r in existing):
+        # 已经是 UNIQUE —— 有唯一索引就不可能有重复行，连表都不用扫。
+        return 0
+    removed = _dedupe_parse_history(conn)
+    # 老库里那条同名普通索引必须先删：CREATE UNIQUE INDEX IF NOT EXISTS
+    # 遇到同名索引是**空操作**，不删就会静默地留下一条普通索引，
+    # 而代码与注释都以为唯一性已经成立。
+    conn.execute("DROP INDEX IF EXISTS idx_history_user_url")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_history_user_url "
+        "ON parse_history(user_id, video_url)"
+    )
+    return removed
 
 
 def _migrate_history_favorite_column(conn) -> None:
@@ -1726,54 +1839,44 @@ def upsert_parse_history(
 
     合并语义：新值为空时保留旧值（视频源保存不覆盖 AI 结果，反之亦然），
     非空新值覆盖旧值。查询走 idx_history_user_url 复合索引。
+
+    去重由**唯一索引**兜底，不靠「先查再写」：原来那是读-改-写，
+    两个并发请求各自查到「还没有这行」就各插一行（实测 10 线程 → 2 行）。
+    现在一条 INSERT ... ON CONFLICT DO UPDATE 走完两条路，
+    冲突的那条直接就地合并，docstring 的承诺才在并发下成立。
     """
     now = datetime.now(timezone.utc).isoformat()
 
     with get_db() as conn:
+        # RETURNING 而不是 cursor.lastrowid：走 DO UPDATE 那条路时
+        # lastrowid 是未定义的（实测会给出别的行），而调用方要的是
+        # 「这一条」的 id —— 冲突路径上它必须仍然是**既有**那一行。
         row = conn.execute(
-            "SELECT id, video_title, video_data, summary_md, mindmap_md, subtitle_data"
-            " FROM parse_history WHERE user_id = ? AND video_url = ?",
-            (user_id, video_url),
+            """INSERT INTO parse_history
+               (user_id, video_url, video_title, video_data, summary_md,
+                mindmap_md, subtitle_data, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, video_url) DO UPDATE SET
+                   video_title   = COALESCE(NULLIF(excluded.video_title, ''),
+                                            parse_history.video_title),
+                   video_data    = COALESCE(NULLIF(excluded.video_data, ''),
+                                            parse_history.video_data),
+                   summary_md    = COALESCE(NULLIF(excluded.summary_md, ''),
+                                            parse_history.summary_md),
+                   mindmap_md    = COALESCE(NULLIF(excluded.mindmap_md, ''),
+                                            parse_history.mindmap_md),
+                   subtitle_data = COALESCE(NULLIF(excluded.subtitle_data, ''),
+                                            parse_history.subtitle_data),
+                   updated_at    = excluded.updated_at
+               RETURNING id""",
+            (user_id, video_url, video_title,
+             json.dumps(video_data, ensure_ascii=False) if video_data else "",
+             summary_md, mindmap_md,
+             json.dumps(subtitle_data, ensure_ascii=False) if subtitle_data else "",
+             now, now),
         ).fetchone()
-
-        def _merge(old_json: str, new_obj: dict | None) -> str:
-            new_json = json.dumps(new_obj, ensure_ascii=False) if new_obj else ""
-            return new_json or (old_json or "")
-
-        def _merge_text(old: str, new: str) -> str:
-            return new or (old or "")
-
-        if row:
-            conn.execute(
-                """UPDATE parse_history
-                   SET video_title=?, video_data=?, summary_md=?, mindmap_md=?,
-                       subtitle_data=?, updated_at=?
-                   WHERE id=?""",
-                (
-                    _merge_text(row["video_title"], video_title),
-                    _merge(row["video_data"], video_data),
-                    _merge_text(row["summary_md"], summary_md),
-                    _merge_text(row["mindmap_md"], mindmap_md),
-                    _merge(row["subtitle_data"], subtitle_data),
-                    now, row["id"],
-                ),
-            )
-            history_id = row["id"]
-        else:
-            cursor = conn.execute(
-                """INSERT INTO parse_history
-                   (user_id, video_url, video_title, video_data, summary_md,
-                    mindmap_md, subtitle_data, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, video_url, video_title,
-                 json.dumps(video_data, ensure_ascii=False) if video_data else "",
-                 summary_md, mindmap_md,
-                 json.dumps(subtitle_data, ensure_ascii=False) if subtitle_data else "",
-                 now, now),
-            )
-            history_id = cursor.lastrowid
         _trim_parse_history(conn, user_id)
-        return history_id
+        return row["id"]
 
 
 # ── 追问会话（工单 #8）────────────────────────────────────
