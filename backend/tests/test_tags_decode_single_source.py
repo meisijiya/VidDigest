@@ -32,8 +32,9 @@ AST 的写法不碰括号配对：`func.value.id == "json" and func.attr == "loa
 
 关于「只允许出现在 _decode_tags_text 内」
 ----------------------------------------
-工单原文这句判据在当前树上**不成立**，本文件按实测修正后的版本实现。`database.py`
-里共 6 处 `json.loads`，其中 2 处解的是**别的列**，与 tags 无关：
+工单原文那句判据**在本工单动手前就不成立**，本文件按实测修正后的版本实现。
+动手前 `database.py` 里共 6 处 `json.loads`：3 处是本工单收掉的内联副本，
+另 2 处解的是**别的列**，与 tags 无关——它们至今仍在：
 
   - `_legacy_chat_history`        → parse_history.chat_history（老列只读）
   - `get_parse_history_detail`    → parse_history.video_data / subtitle_data
