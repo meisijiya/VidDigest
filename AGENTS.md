@@ -83,6 +83,23 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
   实测删光三个触发器全绿——`with client:` 触发的 lifespan 会重建它们。**夹具会遮住护栏**，
   断言要能在「没有任何重建发生」的条件下成立。
 - **接缝优先于内部改动。** 桩按方法分别计数、HTTP 层真实客户端这两条接缝是工单 #2 建的，用它们，别绕过。
+- **一次性脚本有两个静默失败模式：空跑，和不还原。** 2026-10-06 工单 #17 连踩三次，
+  而这两种情况下「脚本跑完了」**都成立**，所以它们不会自己喊出来：
+  - **空跑**：`python -c` 里用了 `Path.read_text(newline=...)`——那是 **Python 3.13+**
+    才有的参数，本仓是 3.11，脚本直接抛 `TypeError`，目标文件一个字节都没被改，
+    而我以为已经改了。要保行尾一律 `open(path, encoding='utf-8', newline='')`。
+  - **不还原**：手工施加变异之后，**还原命令本身**语法报错
+    （`SyntaxError: unterminated string literal`，多行字符串塞进 `-c` 的老问题），
+    源文件就**留在变异态**里。发现它的是 `git diff --stat`，不是任何测试——
+    测试在变异态下本来就该红。**还原命令也是一次性脚本，它也会坏。**
+  - 顺带一条环境变量陷阱：`$env:PYTHONIOENCODING='utf-8'` 只改**子进程**的 I/O 编码，
+    不改父进程 `subprocess(text=True)` 的**解码**编码（那个走 locale，本机是 GBK）。
+    于是子进程吐 UTF-8、父进程按 GBK 解，`proc.stderr` 变 None，
+    一条在门禁里绿的测试（`test_admin_auth.py` 读子进程 stderr 的那条）
+    在我自己的 shell 里报红。**改环境变量前先问它会传染给谁；拿不准就别设——
+    门禁里是绿的。**
+  - 判据：凡是「改源码 → 跑 → 改回来」的一次性操作，收尾一律 `git diff --stat` 与
+    `git status --porcelain` 各看一眼。**不要相信脚本自己说它还原了。**
 - 改 Python 代码必须重启后端进程（`main.py` 没有 `--reload`）。
 - **前端测试别在 `describe` 体里做会抛异常的事。** node 对 **describe 体里抛出的异常**给出的退出码是 **0**，runner 还会报 `tests 0 / pass 0 / fail 0`——那个 suite 的测试一条都没注册、没运行，真正的 AssertionError 被埋在摘要下面，而 `init.sh` 只看退出码。实测（变异 F1）：把 `<template v-if="audioFormats.length">` 改成 `v-if="false"`，整份文件报「12 passed / 0 failed」、退出码 0，而那个 suite 的 5 条测试根本没跑。对照实验：模块顶层抛、测试体抛都给 1，**只有 describe 体这一处是隐形的**。`ui-fixes` / `community-tags` / `theme` / `admin-ui` / `quota` 目前都在 describe 体里做 `readFileSync` / `stripComments(read(...))`——源码一改名，那一整个 suite 就会静默消失。
 - **`db` 夹具会遮住升级路径。** 夹具每次 `init_db()` 出一个**全新**库，于是「老库缺列、靠迁移补上」那条路径一次都没被执行过——补列排错了顺序，全量绿，真库一升级就 `no such column` 打不开（2026-10-03 实测：索引 `ON parse_history(is_favorite)` 在 `executescript` 里，补列迁移排在它后面，老库直接 abort；**这条当时只在未提交的工作区草稿里，提交历史中没有**，所以它证明的是「新写迁移必须自己验升级路径」，不是「CI 能挡住回归」）。**给 `init_db` 加列时，测试必须从一个真缺列的库启动**：用 `legacy_db` 夹具（`conftest.py`，只换 `DB_PATH` + 清连接、不建表），它已进 `check_db_fixture.DB_FIXTURE_ARGS`。门禁豁免的是「自己管库结构」这一个理由，不取任何夹具照样被报出来。

@@ -1,6 +1,7 @@
 """测试夹具：每个测试用独立的临时 SQLite，绝不碰 backend/data/app.db。"""
 import os
 import sys
+from datetime import datetime, timezone
 
 # auth.py 在 JWT_SECRET 缺失时 **import 即失败**（工单 #11）。
 # conftest 是 pytest 收集阶段第一批执行的模块，早于任何 test_*.py，
@@ -140,4 +141,43 @@ def make_user(db):
                 )
         return user["id"]
     return _make
+
+
+#: 钉死时钟用的那一刻：一年里的**正午**。
+#:
+#: 正午而不是 00:00：午夜前后那一格最难躲——预置与判定只要有一次落在
+#: 跨午夜的十几毫秒里，日期就翻了一页，而被测代码并没有错。
+#: 正午离两端都最远，且与「跨天重置」那类逻辑隔着整整半天。
+FROZEN_MOMENT = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture()
+def frozen_clock(monkeypatch):
+    """把 ``database`` 看到的「现在」钉死，返回那一刻本身。
+
+    为什么需要：额度按「``last_*_date`` 等于今天」判重置，而**今天**
+    由两处各自算一次——测试预置的时候一次，被测代码判定的时候又一次。
+    两次之间跨过 UTC 午夜，预置的日期就变成了「昨天」，计数器被当成
+    「今天还没用过」而重置。症状是「额度明明用光了却还能用」，
+    而被测代码没有任何问题——**偶发红的门禁比没有门禁更糟**：
+    它会训练所有人忽略红色。
+
+    假类**继承** ``datetime`` 而不是顶替它：``database`` 别处还要用
+    ``fromisoformat``，一个只实现了 ``now`` 的替身会让那些路径
+    **因错误的原因**抛错——那种红不是护栏在响，是测错了东西。
+
+    配套的变异义务：把「假时钟改成空操作」这条要能转红，
+    否则「钉时钟」本身没人守，将来会被悄悄改回掷骰子。
+    """
+    moment = FROZEN_MOMENT
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return moment.replace(tzinfo=None)
+            return moment.astimezone(tz)
+
+    monkeypatch.setattr(database, "datetime", _Clock)
+    return moment
 

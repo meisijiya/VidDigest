@@ -157,9 +157,15 @@ def chat_count_of(uid):
     return row["daily_chat_count"]
 
 
-def exhaust_chat_quota(uid):
-    """把对话额度真的用光（计数与日期都要对，只改计数会被日期判成「今天还没用过」）。"""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def exhaust_chat_quota(uid, moment):
+    """把对话额度真的用光（计数与日期都要对，只改计数会被日期判成「今天还没用过」）。
+
+    ``moment`` 是**钉死**的那一刻（见 conftest 的 ``frozen_clock``），
+    不是 ``datetime.now()``：预置与被测判定读同一个钟，跨 UTC 午夜也不会
+    把「今天」翻成「昨天」——那时计数器被当成「今天还没用过」而重置，
+    症状是「额度明明用光了却还能用」，而被测代码没有任何问题。
+    """
+    today = moment.strftime("%Y-%m-%d")
     with database.get_db() as c:
         c.execute(
             "UPDATE users SET daily_chat_count=?, last_chat_date=? WHERE id=?",
@@ -300,7 +306,8 @@ class TestQuotaNotConsumed:
         remaining_after = database.check_quota_kind(uid, "chat")[1]
         assert remaining_after == remaining_before - 1
 
-    def test_still_works_when_quota_is_exhausted(self, db, make_user, app, fake_openai):
+    def test_still_works_when_quota_is_exhausted(self, db, make_user, app, fake_openai,
+                                                frozen_clock):
         """额度用光 + 带凭据 → 照常回答。
 
         这条最容易在重构时被「统一在函数入口做额度检查」盖掉，
@@ -308,29 +315,31 @@ class TestQuotaNotConsumed:
         """
         seed_community_video()
         uid = make_user()
-        exhaust_chat_quota(uid)
+        exhaust_chat_quota(uid, frozen_clock)
 
         r = post_chat(app, uid, api_key=SENTINEL)
 
         assert event_list(r.text) == ["quota", "answer", "done"], f"额度用完就放行了：{r.text}"
         assert chat_count_of(uid) == database.DAILY_CHAT_LIMIT, "额度耗尽时仍不该再扣（会扣成负数）"
 
-    def test_exhausted_quota_still_blocks_the_platform_path(self, db, make_user, app, fake_openai):
+    def test_exhausted_quota_still_blocks_the_platform_path(self, db, make_user, app,
+                                                           fake_openai, frozen_clock):
         """前提自检：额度真的用光了。不带凭据时必须被拒。"""
         seed_community_video()
         uid = make_user()
-        exhaust_chat_quota(uid)
+        exhaust_chat_quota(uid, frozen_clock)
 
         r = post_chat(app, uid)
 
         assert event_list(r.text) == ["error"], f"额度耗尽却放行了平台路径：{r.text}"
         assert chat_count_of(uid) == database.DAILY_CHAT_LIMIT
 
-    def test_anonymous_credential_request_is_refused(self, db, make_user, app, fake_openai):
+    def test_anonymous_credential_request_is_refused(self, db, make_user, app,
+                                                     fake_openai, frozen_clock):
         """仍要登录：额度豁免不是匿名可用的。"""
         seed_community_video()
         uid = make_user()
-        exhaust_chat_quota(uid)
+        exhaust_chat_quota(uid, frozen_clock)
 
         with make_client(app) as c:
             r = c.post("/api/chat", json={"url": URL, "question": "问题",
