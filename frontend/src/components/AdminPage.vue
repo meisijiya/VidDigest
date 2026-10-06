@@ -551,7 +551,6 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModelCatalog,
          updateAdminModel, createAdminUser, setUserAdmin, deleteAdminUser,
-         toAdminUser, toAdminCommunityItem,
          fetchTagVocabulary, updateCommunityTags, deleteCommunityVideo } from '../api/admin.js'
 
 const emit = defineEmits(['back'])
@@ -603,9 +602,15 @@ const totalPages = computed(() => Math.max(1, Math.ceil(view.value.total / PAGE_
  * 三份转换（用户 / 社区 / 模型）都在 `api/admin.js`，列表出口在 api 层就已经翻好，
  * 组件拿到的直接就是 camelCase（工单 #15 收口）。
  *
- * 本组件仍需要 `toAdminUser` / `toAdminCommunityItem` 的**只有回读路径** ——
- * `createAdminUser` / `setUserAdmin` / `updateCommunityTags` 返回的是服务端原文，
- * 组件要用回读的那份替换本地行。规则是 api 层定义、组件引用，不是组件另写一份。
+ * 组件自己**不 import 任何 `to*` 转换函数**。这条是**通则**，不是逐个列名字：
+ * 一旦组件再 import 转换函数，数据流里就有两种命名形态并存，而「读不到的键」
+ * 不会报错——只会退化成 `undefined` 或默认值。工单 #15 实测过两例：
+ * ① `enabled` 两种形态同名读得到，口径不一致时症状只是某几列显示异常；
+ * ② `sort_order` 已翻成 `sortOrder`，再翻一次读不到就退回 0，于是
+ *    **每保存一次就把该行排序号抹成 0**。两处单看都对，数据流上是错的。
+ *
+ * 列表出口在工单 #15 收口，回读出口在工单 #22 收口（`createAdminUser` /
+ * `setUserAdmin` / `setUserQuota` / `updateCommunityTags` 四个都在 api 层翻好）。
  */
 
 /**
@@ -993,14 +998,14 @@ async function saveCommunityTags(c) {
   }
 }
 
-function replaceCommunityItem(raw) {
-  if (!raw) return
-  const fresh = toAdminCommunityItem(raw)
+/** 用服务端回读的那份替换本地行：两个页签看到的都是同一份真实值。 */
+function replaceCommunityItem(item) {
+  if (!item) return
   const list = views.community.items
-  const i = list.findIndex((c) => c.id === fresh.id)
+  const i = list.findIndex((c) => c.id === item.id)
   if (i >= 0) {
-    list.splice(i, 1, fresh)
-    tagDrafts[fresh.id] = fresh.tags.slice()
+    list.splice(i, 1, item)
+    tagDrafts[item.id] = item.tags.slice()
   }
 }
 
@@ -1092,14 +1097,12 @@ function toQuotaValue(text) {
 }
 
 /** 用服务端回读的那份替换本地行：两个页签看到的都是同一份真实值。 */
-function replaceUser(raw) {
-  if (!raw) return
-  // 回读是服务端原文，所以这里仍要翻一次；翻的规则归 api 层那一份。
-  const fresh = toAdminUser(raw)
+function replaceUser(user) {
+  if (!user) return
   const list = views.users.items
-  const i = list.findIndex((u) => u.id === fresh.id)
-  if (i >= 0) list.splice(i, 1, fresh)
-  drafts[fresh.id] = { parse: draftText(fresh.parseLimitOverride), chat: draftText(fresh.chatLimitOverride) }
+  const i = list.findIndex((u) => u.id === user.id)
+  if (i >= 0) list.splice(i, 1, user)
+  drafts[user.id] = { parse: draftText(user.parseLimitOverride), chat: draftText(user.chatLimitOverride) }
 }
 
 /**
@@ -1194,7 +1197,7 @@ async function saveNewUser() {
   createFeedback.text = ''
   try {
     const res = await createAdminUser({ email, password, isAdmin: createDraft.isAdmin })
-    const fresh = toAdminUser(res.user)
+    const fresh = res.user
     // 列表按 id 升序，新号在末尾。直接 push 再排序，别指望后端重排。
     view.value.items.push(fresh)
     view.value.total += 1
@@ -1222,7 +1225,7 @@ async function toggleAdmin(u) {
     const res = await setUserAdmin(u.id, !u.isAdmin)
     replaceUser(res.user)
     opsFeedbackOf(u.id).kind = 'ok'
-    opsFeedbackOf(u.id).text = res.user.is_admin
+    opsFeedbackOf(u.id).text = res.user.isAdmin
       ? `${u.email} 现在是管理员`
       : `已撤销 ${u.email} 的管理员权限`
   } catch (err) {

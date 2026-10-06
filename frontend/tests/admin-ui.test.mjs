@@ -672,7 +672,7 @@ describe('键盘可达与 aria', () => {
 })
 
 describe('后端契约 · snake_case 转换收在一处', () => {
-  test('从 ../api/admin.js 导入十一个函数（不建这个文件，读它也不做断言）', () => {
+  test('从 ../api/admin.js 导入的名单与冻结契约一致，且不含任何 to* 转换', () => {
     // [^}]* 不是 [\s\S]*? —— 后者会从文件里第一个 import {（vue 那行）起吞到
     // 这里，名单里混进 'onMounted } from \'vue\'...' 这种垃圾。
     // [^}]* 天然锚定「最后一个 } 之前」的那条 import，同时照样能跨行。
@@ -682,18 +682,28 @@ describe('后端契约 · snake_case 转换收在一处', () => {
     // 契约从五个长到八个（ADR 0012 账号生命周期）再到十一个：fetchTagVocabulary /
     // updateCommunityTags / deleteCommunityVideo 是 ADR 0013 社区审核的前端出口。
     // 工单 #15 收口：fetchAdminModels（原文出口）删掉，换成 fetchAdminModelCatalog；
-    // 转换函数 toAdminModelItem **不进组件的 import**（模型列表已在 api 层转好，
-    // 组件不再需要翻它）。toAdminUser / toAdminCommunityItem 进 import 是另一回事：
-    // 组件要用它们翻**回读原文**（建号 / 提权 / 改标签的响应）。
+    // 工单 #22 收口：toAdminUser / toAdminCommunityItem 也从名单里删掉了——回读出口
+    // 现在在 api 层就翻好，组件一次都不需要自己翻。
     // **这份名单是冻结的**——少一个说明有路径绕过了 api 层，
     // 多一个说明有新的未审接口混进来了。
     assert.deepEqual(names.sort(),
       ['createAdminUser', 'deleteAdminUser', 'deleteCommunityVideo',
        'fetchAdminCommunity', 'fetchAdminModelCatalog', 'fetchAdminUsers',
        'fetchTagVocabulary', 'setUserAdmin', 'setUserQuota',
-       'toAdminCommunityItem', 'toAdminUser',
        'updateAdminModel', 'updateCommunityTags'],
       '导入的 API 名字与冻结的契约不一致')
+
+    // 名单删掉两个名字之后，逐个列名字的判据自己就漏了：将来新增第四份转换
+    // （比如 `toQuota`）时它不在名单里，上面那条 deepEqual 照样绿，而组件
+    // 已经在自己翻了。所以这条判据从「列名字」改成**通则**。
+    //
+    // 护栏本身没换：它守的仍然是同一件事——组件不得绕过 api 层自己处理形状。
+    // 换掉的只是**判据形式**。列名字的做法在收口前是成立的（那时组件确实该翻
+    // 回读原文），收口之后不再成立。
+    const converters = names.filter((n) => /^to[A-Z]/.test(n))
+    assert.deepEqual(converters, [],
+      `组件又 import 了转换函数：${converters.join(', ')} —— api 层出口返回的`
+      + '已经是 camelCase，组件再 import 转换就等于两份映射各改各的')
   })
 
   test('组件里不再自己定义转换函数（工单 #15 收口，同族项）', () => {
@@ -1018,23 +1028,6 @@ describe('saveModel 真跑 · 发出去的 payload', () => {
   })
 })
 // ── 账号生命周期 · 抽函数真跑（ADR 0012）────────────────────
-/**
- * toAdminUser 的替身。真身现在在 `api/admin.js`（工单 #15 收口搬过去的），
- * 而本沙箱是用 `new Function` 抽出组件函数单独跑的，没有模块作用域，
- * 所以这里注入一份。
- *
- * **必须**照抄 `!!r.is_admin` 这一步：「回读替换」那条断言要靠它——
- * 服务端回的是 0/1，替身若原样透传，那条断言就变成了在测替身自己。
- *
- * 替身只保留这几个用例关心的字段；本组测试的被测对象是
- * saveNewUser / toggleAdmin / confirmDelete，不是 toAdminUser 本身。
- */
-const toUserStub = (r) => ({
-  id: r.id,
-  email: r.email,
-  isAdmin: !!r.is_admin,
-  isVip: !!r.is_vip,
-})
 
 const USER_FN_BODY = [
   extractFn(adminCode, 'saveNewUser'),
@@ -1066,11 +1059,11 @@ function makeUserSandbox({ items = [], total = 0, api = {} } = {}) {
   const defaultApi = {
     async createAdminUser(payload) {
       calls.push({ op: 'create', payload })
-      return { user: { id: 99, email: payload.email, is_admin: payload.is_admin ? 1 : 0 } }
+      return { user: { id: 99, email: payload.email, isAdmin: !!payload.isAdmin } }
     },
     async setUserAdmin(id, flag) {
       calls.push({ op: 'admin', id, flag })
-      return { user: { id, is_admin: flag ? 1 : 0 } }
+      return { user: { id, isAdmin: !!flag } }
     },
     async deleteAdminUser(id) {
       calls.push({ op: 'delete', id })
@@ -1083,7 +1076,7 @@ function makeUserSandbox({ items = [], total = 0, api = {} } = {}) {
     'createOpen', 'creating', 'busyUserId', 'pendingDeleteId',
     'createDraft', 'createFeedback', 'opsFeedbacks', 'view',
     'opsFeedbackOf', 'createAdminUser', 'setUserAdmin', 'deleteAdminUser',
-    'replaceUser', 'toAdminUser', 'messageOf',
+    'replaceUser', 'messageOf',
     `${USER_FN_BODY}\nreturn { saveNewUser, toggleAdmin, askDelete, cancelDelete, confirmDelete }`,
   )
   const fns = factory(
@@ -1094,13 +1087,11 @@ function makeUserSandbox({ items = [], total = 0, api = {} } = {}) {
       return opsFeedbacks[id]
     },
     impl.createAdminUser, impl.setUserAdmin, impl.deleteAdminUser,
-    (raw) => {
-      // replaceUser 的替身：只做「把回读结果换成 camelCase 那一行」
-      const fresh = toAdminUser(raw)
-      const i = view.value.items.findIndex((x) => x.id === fresh.id)
-      if (i >= 0) view.value.items.splice(i, 1, fresh)
+    (user) => {
+      // replaceUser 的替身：api 层已翻好，这里只做「用回读结果替换本地行」
+      const i = view.value.items.findIndex((x) => x.id === user.id)
+      if (i >= 0) view.value.items.splice(i, 1, user)
     },
-    toUserStub,
     (e) => String((e && e.response && e.response.data && e.response.data.detail)
       || (e && e.message) || e),
   )
@@ -1206,8 +1197,10 @@ describe('账号生命周期 · 管理员标记（ADR 0012）', () => {
   test('成功用**回读**替换本地行，不做乐观更新', async () => {
     const box = makeUserSandbox({
       items: [userRow(1)], total: 1,
-      // 回读说「其实没提成」——本地行必须跟着回读走
-      api: { async setUserAdmin() { return { user: { id: 1, is_admin: 0 } } } },
+      // 回读说「其实没提成」——本地行必须跟着回读走。
+      // 回读的形状是 api 层出口的形状，也就是 camelCase（工单 #22 收口后
+      // setUserAdmin 已在 api 层翻好，沙箱里的替身模拟的正是它）。
+      api: { async setUserAdmin() { return { user: { id: 1, isAdmin: false } } } },
     })
     await box.toggleAdmin(box.view.value.items[0])
     assert.equal(box.view.value.items[0].isAdmin, false,

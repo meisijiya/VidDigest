@@ -78,35 +78,6 @@ export function modelRow(overrides = {}) {
   }
 }
 
-/**
- * 一条**服务端原文**的用户行（snake_case）。
- *
- * 与上面的 `userRow()` 刻意分开：列表出口 `fetchAdminUsers` 在 api 层已经
- * 转成 camelCase，而 `setUserQuota` 的 `user` 是**没转过的服务端原文**，
- * 由组件自己调 `toAdminUser` 翻一次。两种形状混用的话，回读那条路径上的
- * 字段全是 `undefined`，界面不报错，只是数字全变成 0 —— 正是 AGENTS.md
- * 记的「翻两次 / 形状不对」那一族静默故障。
- */
-export function rawUserRow(overrides = {}) {
-  return {
-    id: 1,
-    email: 'a@example.com',
-    is_admin: 0,
-    is_vip: 0,
-    vip_expire_at: null,
-    created_at: '2026-01-02 03:04:05',
-    parse_used: 2,
-    chat_used: 1,
-    parse_limit: 10,
-    chat_limit: 20,
-    parse_limit_override: null,
-    chat_limit_override: null,
-    parse_limit_source: 'global',
-    chat_limit_source: 'global',
-    ...overrides,
-  }
-}
-
 /** 标签词表，默认给两组、上限 3。 */
 export const VOCABULARY = {
   maxTags: 3,

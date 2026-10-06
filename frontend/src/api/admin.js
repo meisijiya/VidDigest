@@ -92,16 +92,17 @@ function toPage(data, what) {
  * **这个文件是转换的唯一发生地**（工单 #15 收口）。三份转换 —— 用户 / 社区 / 模型
  * —— 都在这里，组件里不再自己写第二份。
  *
- * 但「组件拿到的已经是转好的形状」**只对列表出口成立**，回读出口尚未统一：
- * 模型清单四条出口全都翻（含 `updateAdminModel` 的回读），而 `setUserQuota` /
- * `createAdminUser` / `setUserAdmin` / `updateCommunityTags` 返回的仍是服务端
- * 原文，由组件的 replaceUser / replaceCommunityItem 引用上面那两个函数翻一次。
+ * 列表出口与回读出口**现在都在这里翻**（工单 #15 收口列表侧，#22 收口回读侧）：
+ * `fetchAdminUsers` / `fetchAdminCommunity` 翻列表项，`setUserQuota` /
+ * `createAdminUser` / `setUserAdmin` 翻回读的 `user`，`updateCommunityTags` 翻
+ * 回读的 `item`，模型清单四条出口本来就连回读一起翻了。组件拿到的永远是
+ * camelCase，自己一次都不翻。
  *
- * 这一段状态必须写明而不是含糊过去。照着「统一」的直觉去给那四个出口补上转换，
- * AdminPage.vue 里 `res.user.is_admin` 那行就会读到 undefined——**提权成功却在
- * 界面上提示「已撤销管理员权限」，且不报错**。同一个 `res.user` 在下一行交给
- * replaceUser 翻成 camelCase、在这一行直接读 snake_case，能并存全靠「api 层
- * 恰好没翻」。收口之前先答一句：那份冻结的 import 名单还成不成立（工单 #22）。
+ * #22 收口前这四个出口是漏的，而漏法有具体后果：AdminPage.vue 里那行
+ * `res.user.is_admin` 读到 undefined——**提权成功却在界面上提示「已撤销管理员
+ * 权限」，且不报错**。同一个 `res.user` 在下一行交给 replaceUser 翻成 camelCase、
+ * 在这一行直接读 snake_case，能并存全靠「api 层恰好没翻」。这类 bug 的成因
+ * 永远是**读不到的键退化成默认值而不报错**，所以出口宁可多翻一次也不能少翻。
  *
  * 为什么非得收在一处：转换散进组件之后，同一份数据会有两种命名形态混在数据流里，
  * 而「读不到的键」不会报错、只会退化成 `undefined` 或默认值。工单 #15 实测过两例：
@@ -220,7 +221,7 @@ export async function setUserQuota(userId, { parseLimit = null, chatLimit = null
   if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
     throw new Error('额度调整响应形状不对')
   }
-  return { user: res.data.user, note: res.data.note ?? null, message: res.data.message ?? '' }
+  return { user: toAdminUser(res.data.user), note: res.data.note ?? null, message: res.data.message ?? '' }
 }
 /**
  * 改一个厂商行（ADR 0010「模型清单可改」）。**需管理员**。
@@ -283,7 +284,7 @@ export async function createAdminUser({ email, password, isAdmin = false } = {})
   if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
     throw new Error('建号响应形状不对')
   }
-  return { user: res.data.user }
+  return { user: toAdminUser(res.data.user) }
 }
 
 /**
@@ -301,7 +302,7 @@ export async function setUserAdmin(userId, isAdmin) {
   if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
     throw new Error('权限调整响应形状不对')
   }
-  return { user: res.data.user }
+  return { user: toAdminUser(res.data.user) }
 }
 
 /**
@@ -346,7 +347,7 @@ export async function updateCommunityTags(videoId, tags) {
   if (!res.data || !res.data.item || typeof res.data.item !== 'object') {
     throw new Error('改标签响应形状不对')
   }
-  return { item: res.data.item }
+  return { item: toAdminCommunityItem(res.data.item) }
 }
 
 /**

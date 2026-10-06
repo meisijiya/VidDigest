@@ -49,7 +49,7 @@ vi.mock('../src/api/admin.js', async (importOriginal) => ({
 import AdminPage from '../src/components/AdminPage.vue'
 import * as api from '../src/api/admin.js'
 import {
-  mountAdmin, userRow, rawUserRow, communityRow, modelRow, VOCABULARY, httpError,
+  mountAdmin, userRow, communityRow, modelRow, VOCABULARY, httpError,
   buttonByText, tabButtons, selectedTab, gotoTab, dataRowCount, screenText, tagCheckbox,
 } from './helpers/admin-fixtures.mjs'
 
@@ -256,7 +256,7 @@ describe('行内编辑器 · 展开、绑定、收起', () => {
     const w = await mountAdmin(AdminPage)
     await openEditor(w)
     await w.find('#quota-parse-1').setValue('5')
-    api.setUserQuota.mockResolvedValue({ user: rawUserRow(), note: null, message: '' })
+    api.setUserQuota.mockResolvedValue({ user: userRow(), note: null, message: '' })
 
     await buttonByText(w, '保存').trigger('click')
     await flushPromises()
@@ -288,7 +288,7 @@ describe('行内编辑器 · 展开、绑定、收起', () => {
     const w = await mountAdmin(AdminPage)
     await openEditor(w)
     api.setUserQuota.mockResolvedValue({
-      user: rawUserRow({ parse_limit_override: 5, parse_limit: 5, parse_limit_source: 'override' }),
+      user: userRow({ parseLimitOverride: 5, parseLimit: 5, parseLimitSource: 'override' }),
       note: null, message: '',
     })
 
@@ -304,7 +304,7 @@ describe('行内编辑器 · 展开、绑定、收起', () => {
     const w = await mountAdmin(AdminPage)
     await openEditor(w)
     api.setUserQuota.mockResolvedValue({
-      user: rawUserRow({ is_vip: 1 }), note: 'vip_not_effective', message: '已保存，但该用户是有效 VIP',
+      user: userRow({ isVip: true }), note: 'vip_not_effective', message: '已保存，但该用户是有效 VIP',
     })
 
     await w.find('#quota-parse-1').setValue('3')
@@ -698,7 +698,7 @@ describe('建号 · 展开、草稿、提交', () => {
   it('成功后新号进列表，total 加一', async () => {
     api.fetchAdminUsers.mockResolvedValue({ items: [userRow()], total: 1, page: 1, pageSize: 20 })
     api.createAdminUser.mockResolvedValue({
-      user: rawUserRow({ id: 99, email: 'new@example.com' }),
+      user: userRow({ id: 99, email: 'new@example.com' }),
     })
     const w = await mountAdmin(AdminPage)
     await openCreate(w)
@@ -722,7 +722,7 @@ describe('建号 · 展开、草稿、提交', () => {
     // 草稿不清的话，下一次点「新建用户」看到的是上一次填的邮箱，
     // 而反馈还写着「已创建 X」——管理员会以为刚才那次白建了。
     api.createAdminUser.mockResolvedValue({
-      user: rawUserRow({ id: 99, email: 'new@example.com' }),
+      user: userRow({ id: 99, email: 'new@example.com' }),
     })
     const w = await mountAdmin(AdminPage)
     await openCreate(w)
@@ -740,7 +740,7 @@ describe('建号 · 展开、草稿、提交', () => {
   it('成功反馈在表单**外面**：表单收起后确认文案还在', async () => {
     // 放在表单里的话，createOpen 一置 false 就把「已创建 X」一起收走了。
     api.createAdminUser.mockResolvedValue({
-      user: rawUserRow({ id: 99, email: 'new@example.com' }),
+      user: userRow({ id: 99, email: 'new@example.com' }),
     })
     const w = await mountAdmin(AdminPage)
     await openCreate(w)
@@ -786,7 +786,7 @@ describe('建号 · 展开、草稿、提交', () => {
 
   it('勾了管理员发 true，没勾发 false', async () => {
     api.createAdminUser.mockResolvedValue({
-      user: rawUserRow({ id: 99, email: 'new@example.com', is_admin: 1 }),
+      user: userRow({ id: 99, email: 'new@example.com', isAdmin: true }),
     })
     const w = await mountAdmin(AdminPage)
     await openCreate(w)
