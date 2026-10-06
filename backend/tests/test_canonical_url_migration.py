@@ -26,7 +26,12 @@ import database
 from url_canonical import canonical_video_url
 
 #: 三张带 video_url 且要能跨形态对上号的表。
-CANONICAL_TABLES = ("videos", "parse_history", "chat_messages")
+#:
+#: 直接用生产那个常量，不在这里手抄第二份：加表的人只改一处才不会出现
+#: 「一半真值」。⚠️ 但本文件守的是**正方向**（名单里的表**有**这一列）；
+#: **反方向**（所有该有的表**都在**名单里）由 `test_canonical_url_coverage.py` 守。
+#: 少了那边，删掉名单里一张表会让本文件安静地少覆盖一张而全绿。
+CANONICAL_TABLES = database._CANONICAL_URL_TABLES
 
 #: 同一个 B 站视频的三种形态，全部取自工单 #25 的实测矩阵。
 BV = "https://www.bilibili.com/video/BV1aa411c7mD"
