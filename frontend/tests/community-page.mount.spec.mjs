@@ -535,3 +535,73 @@ describe('未登录时搜索被挡、列表保留', () => {
   })
 })
 
+// ── 列表渲染的条数、顺序与归属 ─────────────────────────────────
+//
+// 变异探针（`.scratch/probe-card-click.mjs`，跑完即删、不入库）给出的结论与
+// 票面写的**相反**：票面第 3 项写「点社区卡片没有行为覆盖」，实测 7 条变异里
+// **6 条被既有文本断言守住** ——
+//   M1 点任意一张都开第一条（`openDetail(items[0])`）   KILLED
+//   M2 交出去的是重新拼的对象（只剩 video_url）           KILLED
+//   M3 把 $event 当视频发出去                              KILLED
+//   M6 事件名改成 openVideo，App.vue 监听器接空           KILLED
+//   M7 卡片丢了 type=button                                KILLED
+//   M5 退回 div（这一条是假 HARNESS_ERROR：`<button>`→`<div>` 破坏 SFC 括号
+//      配对，测出的是语法错；它另有 `mutation-ui-fixes.mjs` M1 守着）
+// 所以本组**刻意不补点击**——那只会把更强的文本判据抄一份。
+//
+// 唯一存活的是 **M4「只渲染第一条卡片」**（`items.slice(0, 1)`，零条变红）。
+// 顺着查下去发现问题不止于点击：整个社区列表**渲染出来的条数与归属**，
+// 全前端测试树里一条断言都没有——
+//   · `findAll('li img')` 只问「有没有 img」（缩略图那三条）
+//   · `findAll('li span')` 只问「某个标签有没有出现过」
+//   · 没有任何一条问「服务端给了 3 条，该不该渲染出 3 张卡」
+// 后果不是测试难看，是**用户看到列表少了一半而界面上没有任何东西变红**。
+
+describe('列表渲染的条数、顺序与归属', () => {
+  /** 三条各带互不相同的标题 / 链接 / 封面，才能分辨「哪条渲染成了哪条」。 */
+  const three = page({
+    items: [
+      card({ id: 1, video_title: '甲', video_url: 'https://v.example/a',
+        cover_url: '/u/a.jpg', tags: ['科普'] }),
+      card({ id: 2, video_title: '乙', video_url: 'https://v.example/b',
+        cover_url: '/u/b.jpg', tags: [] }),
+      card({ id: 3, video_title: '丙', video_url: 'https://v.example/c',
+        cover_url: '/u/c.jpg', tags: ['教程', '编程'] }),
+    ],
+    total: 3,
+    page: 1,
+    total_pages: 1,
+  })
+
+  // `li > button`：卡片是 li 的直接子 button。标签 chip 在 TagFilterRow 自己的
+  // div 里、翻页按钮在一个裸 div 里，两者都不在 li 内，所以这个选择器只命中卡片。
+  const cardBtns = (w) => w.findAll('li > button')
+
+  test('服务端给几条就渲染几张卡片', async () => {
+    const w = await mountPage(three)
+    expect(cardBtns(w).length,
+      '列表少渲染了 —— 用户看到的是社区不完整，而界面上没有任何东西会变红')
+      .toBe(3)
+  })
+
+  test('顺序与服务端给的顺序一致', async () => {
+    // 与上一条是**不同的坏法**：条数对、顺序错。后端按 created_at DESC 排序，
+    // 顺序本身是产品语义；用 toEqual 而不是「三条都在」——后者对
+    // 「渲染了甲乙甲」这种照样绿。
+    const w = await mountPage(three)
+    const titles = cardBtns(w).map((b) => b.find('h3').text().trim())
+    expect(titles).toEqual(['甲', '乙', '丙'])
+  })
+
+  test('每张卡片上的链接与封面都是它自己那一条的', async () => {
+    // 闭合在**读方向**的同款：v-for 里读错变量（`items[0]` 或某个被提到循环外
+    // 的常量），症状是所有卡片显示同一个链接。标题还在、链接全一样，
+    // 用户点哪张都开到同一条视频。既有判据只查「某条链接出现过」，恒真。
+    const w = await mountPage(three)
+    const urls = cardBtns(w).map((b) => b.find('p').text().trim())
+    expect(urls).toEqual(['https://v.example/a', 'https://v.example/b', 'https://v.example/c'])
+    const srcs = cardBtns(w).map((b) => b.find('img').attributes('src'))
+    expect(srcs).toEqual(['/u/a.jpg', '/u/b.jpg', '/u/c.jpg'])
+  })
+})
+
