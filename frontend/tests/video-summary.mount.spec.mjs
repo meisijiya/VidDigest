@@ -274,3 +274,50 @@ describe('VideoSummary 挂载 · 接口契约', () => {
     expect(badge).toContain('追问 7 / 10')
   })
 })
+
+// ── 开关的契约默认值 ──────────────────────────────────────
+
+/**
+ * `hasCommunityResult` / `regenerateRequested` 决定**用户会不会白扣额度**：
+ * 为真时 watch 的 immediate 自动发起，为假时保持手动触发。
+ *
+ * ## 这条测试守的是什么（先说清，免得后人误读成「生产里存在这条路径」）
+ *
+ * **当前唯一调用方 `App.vue:69` 总是显式传值**（`:hasCommunityResult="fromCache"`），
+ * 所以「不传」这个形状今天在生产里走不到。它守的是**契约默认值**：
+ * 把 `default: false` 改成 `true` 看起来是无害的改动（毕竟没有谁在显式传 false），
+ * 但未来任何一个新增的调用方省略这个 prop 时就会自动发起、白扣额度，
+ * 而今天**没有任何一条测试会响**。
+ *
+ * 既有那条「点开始 AI 解析」用的是 `mountSummary({ hasCommunityResult: false })` ——
+ * 显式传 false，`default` 根本没参与，所以它挡不住这类改动。这两处很容易被当成同一件事。
+ *
+ * ## 与本文件头部那三条「不可达」的区别
+ *
+ * V1 / V5 / V6 是**组件内部**的死代码，断言对象在产品里永远不会被执行。
+ * prop 默认值是**对外契约**的一部分，取决于谁调用、有没有传值 ——
+ * 所以为它写断言是前瞻性的，不是形式的。这个区别是本文件成立的前提。
+ *
+ * ## 对照不可省
+ *
+ * 只写「不传就不发起」的话，把 watch 的 `immediate` 摘掉（功能整体坏掉）
+ * 这条照样绿。下面两条必须成对读。
+ */
+describe('VideoSummary 挂载 · 开关的契约默认值', () => {
+  test('两个开关都不传时不自动发起（守住 default: false）', async () => {
+    await mountSummary()
+    expect(summarizeVideo, '两个开关都没传却自动发起了 —— 用户什么都没点就扣额度').not.toHaveBeenCalled()
+  })
+
+  test('对照：传 hasCommunityResult: true 时确实自动发起（immediate 在跑）', async () => {
+    await mountSummary({ hasCommunityResult: true })
+    expect(summarizeVideo, '对照不成立 —— watch 的 immediate 没在跑，下面那条「不传就不发起」就成了恒真')
+      .toHaveBeenCalled()
+  })
+
+  test('对照：regenerateRequested 单独为真也自动发起（|| 的另一半）', async () => {
+    await mountSummary({ regenerateRequested: true })
+    expect(summarizeVideo, 'regenerateRequested 这一支没生效 —— || 的后半段没人守')
+      .toHaveBeenCalled()
+  })
+})
