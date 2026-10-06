@@ -162,6 +162,7 @@ function clearAll() {
             <h2 class="text-base font-semibold text-gray-900">API Key 与调用端点</h2>
             <p class="text-xs text-gray-500 mt-1 leading-relaxed">
               解析与追问共用这一份设置。选「使用自己的 Key」后两者都不消耗平台额度。
+              <span class="text-gray-400">改用平台 Key 不会删掉已保存的那把，切回来仍可用。</span>
             </p>
           </div>
           <button type="button" @click="emit('close')" aria-label="关闭"

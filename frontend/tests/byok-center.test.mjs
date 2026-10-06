@@ -242,12 +242,6 @@ describe('一条状态，两个使用方式', () => {
     assert.equal(getRequestCredential().apiKey, SENTINEL)
   })
 
-  test('切回平台保留已存的 key（否则每次切换都要重填）', () => {
-    save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'm' })
-    usePlatform()
-    assert.equal(getPublicState().mode, 'platform')
-    assert.equal(getRequestCredential().apiKey, SENTINEL, '切一次就把用户的 key 扔了')
-  })
 
   test('切回平台保留端点设置', () => {
     chooseProvider('ollama', OLLAMA)
@@ -273,36 +267,70 @@ describe('一条状态，两个使用方式', () => {
     assert.equal(getPublicState().mode, 'platform')
   })
 
-  test('切到平台模式会**保留**已存的 key（切回来不用重填一遍）', () => {
+  test('切到平台模式**保留**已存的 key（切回来不用重填一遍）', () => {
     save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
     usePlatform()
     assert.equal(getPublicState().mode, MODE_PLATFORM, '模式没切到平台')
-    assert.equal(getRequestCredential().apiKey, SENTINEL,
-      'usePlatform 把 key 一起清了 —— 切回来还得重填，是纯粹的折磨')
+    // 「保留」要验在**存储层**，不能验 getRequestCredential 的返回值 ——
+    // 那条现在按 mode 返回 null，而那正是本单要修的东西；验它等于验修复没生效。
+    // 「保留」这句话对应的就是「切回来还能用」，所以验 key 还在不在盘上。
+    assert.equal(globalThis.localStorage._dump().viddigest_user_api_key, SENTINEL,
+      'usePlatform 把 key 从存储里清了 —— 切回来还得重填，是纯粹的折磨')
   })
 
-  test('【已知缺口】切到平台模式后，请求**仍然**带着用户自己的 key', () => {
-    // 这条断言的是**当前的真实行为**，不是期望行为。
-    //
-    // 它原来叫「切到平台模式时请求层拿不到凭据」，而断言写的是
-    // `user_api_key === SENTINEL`（凭据照发）—— 名与断言相反，而且一直绿。
-    // 查证结果：**不是测试写错，是实现从未实现用例名所描述的语义**：
-    //   - getRequestCredential()（byok.js:141）只判 `state.apiKey`，不看 mode
-    //   - api/summarize.js:157 只判 `options.credential` 真值，也不看 mode
-    //   - VideoSummary.vue:592/:651 直接把凭据塞进去，全链路没有一处拿 mode 决定发不发
-    // 而 UI 那侧 ByokDialog 会把 mode 渲染成「用平台额度」——
-    // 用户选了 A、系统默默做了 B，界面上还看不出差别。
-    //
-    // 两种改法都说得通（凭据出口判 mode ／ UI 改口径），牵涉真实扣费，
-    // 是产品语义决策，已开单跟踪，不在这里顺手改。这里只把现状钉死：
-    // 谁动了这条链路，测试会响。
+  test('切回自带模式**不需要重填** key', () => {
+    save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
+    usePlatform()
+    chooseProvider('deepseek', DEEPSEEK)
+    assert.equal(getRequestCredential().apiKey, SENTINEL,
+      '切回自带模式后拿不到已存的 key —— 用户被迫重填一遍')
+    // 这条同时是「功能整体坏掉」的反例守护：
+    // getRequestCredential() 恒返回 null 时它必须转红，否则上面那条 AC 是空的。
+  })
+
+  test('切到平台模式后，**解析**请求不带用户自己的 key', () => {
+    save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
+    usePlatform()
+    assert.equal(getRequestCredential(), null, '平台模式下凭据出口还放行')
+    const sent = []
+    globalThis.fetch = async (u, o) => { sent.push(JSON.parse(o.body)); return fakeStream(DONE_STREAM) }
+    return summarizeVideo('u', 'zh', noop, { credential: getRequestCredential() }).done.then(() => {
+      assert.equal('user_api_key' in sent[0], false,
+        `请求体里仍然带着用户自己的 key：${sent[0].user_api_key}`)
+      assert.equal('base_url' in sent[0], false, '端点也一起退场')
+    })
+  })
+
+  test('切到平台模式后，**追问**请求也不带（两条出口各自守）', () => {
+    // 解析与追问是两条独立路径。一条绿不代表另一条绿 ——
+    // 这次缺口正好是两条都漏，所以更要各自钉一遍。
     save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
     usePlatform()
     const sent = []
     globalThis.fetch = async (u, o) => { sent.push(JSON.parse(o.body)); return fakeStream(DONE_STREAM) }
+    return chatWithVideo('u', 'q', noop, { credential: getRequestCredential() }).done.then(() => {
+      assert.equal('user_api_key' in sent[0], false, '追问请求里仍然带着用户自己的 key')
+    })
+  })
+
+  test('自带模式下请求带 key，端点与模型跟着走（mode 守卫不能把自带一起堵掉）', () => {
+    save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
+    const sent = []
+    globalThis.fetch = async (u, o) => { sent.push(JSON.parse(o.body)); return fakeStream(DONE_STREAM) }
     return summarizeVideo('u', 'zh', noop, { credential: getRequestCredential() }).done.then(() => {
       assert.equal(sent[0].user_api_key, SENTINEL)
+      assert.equal(sent[0].base_url, 'https://x.test')
+      assert.equal(sent[0].model, 'm')
     })
+  })
+
+  test('clear() 之后两种模式都拿不到凭据', () => {
+    save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
+    clear()
+    assert.equal(getRequestCredential(), null, 'clear 之后自带模式还拿得到凭据')
+    save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
+    usePlatform()
+    assert.equal(getRequestCredential(), null, 'clear 之后平台模式还拿得到凭据')
   })
 })
 

@@ -178,6 +178,17 @@ describe('BYOK 前端接线（集中管理后）', () => {
     assert.match(script, /const credential = getRequestCredential\(\)/)
   })
 
+  test('弹窗说清「改用平台 Key 不会删掉已保存的那把」', () => {
+    // 工单 #26 之后 mode 变成真开关：平台模式下请求不带用户自己的 key，
+    // 而 key 仍然留在盘上。这两件事用户只能从文案里知道，界面上没有别的地方会说 ——
+    // key 输入区整个被 `v-if="state.provider !== 'platform'"` 藏掉了。
+    // 于是这句删掉就没人知道了，而它删掉没有任何测试会红。
+    //
+    // 这条是 KEEP_TEXT：判据对象**就是**源码文本本身，没有对应的运行时行为可挂载。
+    assert.match(dialogTemplate, /改用平台 Key 不会删掉已保存的那把/,
+      '弹窗没说清「切到平台模式不清 key」—— 用户会以为这把 Key 没了')
+  })
+
   test('输入框提交后立刻清空', () => {
     // 现在输入框住在 ByokDialog：明文活到点「保存」为止。
     const body = sliceBetween(dialogScript, 'function saveAndClose()', 'function usePlatformMode',

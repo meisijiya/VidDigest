@@ -123,10 +123,13 @@ function notify() {
  * mode 只反映**用户的显式选择**（选了哪个厂商），不反映「有没有填 key」——
  * 这两件事合成一个字段的话，「选了自带但还没填」会被渲染成「用平台」，
  * 用户于是以为自己没选过。`hasKey` 单独给，UI 负责把这两条拼成一句话。
+ *
+ * mode 同时是**请求侧的开关**（见 getRequestCredential）：渲染成「用平台额度」
+ * 时请求里就不会带用户自己的 key。两边必须一致 —— 它们本来就是同一个决定。
  */
 export function getPublicState() {
   return {
-    mode: state.config.provider === 'platform' ? MODE_PLATFORM : MODE_BYOK,
+    mode: state.config.provider === MODE_PLATFORM ? MODE_PLATFORM : MODE_BYOK,
     provider: state.config.provider,
     baseUrl: state.config.baseUrl,
     model: state.config.model,
@@ -136,10 +139,22 @@ export function getPublicState() {
 
 /**
  * 给请求层用的真值。**只该被 api/summarize.js 调用**。
+ *
+ * mode 是**开关**，不只是显示：用户在弹窗里选了「用平台额度」，
+ * 请求就不该带他自己的 key —— 否则界面上写着走平台、实际扣的是他自己的额度，
+ * 而两边对不上时用户没有任何线索能发现（工单 #26）。
+ * 以前这条只判「有没有 key」，于是「有 key ≠ 这次会用它」这个承诺没人兑现。
+ *
+ * 代价要说清：切到平台模式时已存的 key **仍在 localStorage 里**，
+ * 只是这条链路上看不见它。所以 `usePlatform()` 用 save 而不是 clear ——
+ * 切回自带模式不用重填（那条语义在 byok-center.test.mjs 里有两条断言守着：
+ * 一条验存储层没被清，一条验切回来拿得到）。
+ *
  * 没有 key 时返回 null，让调用方走平台路径（而不是发一个空 key 过去）。
  */
 export function getRequestCredential() {
   if (!state.apiKey) return null
+  if (state.config.provider === MODE_PLATFORM) return null
   return {
     apiKey: state.apiKey,
     baseUrl: state.config.baseUrl,
@@ -200,6 +215,10 @@ export function clear() {
  * 切到平台模式。**保留已存的 key**——切回来还得再填一遍是纯粹的折磨。
  * 用 save 而不是 clear：clear 会连端点一起抹掉，而用户很可能只是这一次
  * 想用平台额度。
+ *
+ * 「保留」是**存储层**的语义，挡路的是另一处：`getRequestCredential()`
+ * 看到 provider 已是 platform 就返回 null（工单 #26）。这两件事必须分开理解 ——
+ * 留在盘上 ≠ 这次会用。合成一处的话，切回来要么重填、要么模式压根不起作用。
  */
 export function usePlatform() {
   save({
