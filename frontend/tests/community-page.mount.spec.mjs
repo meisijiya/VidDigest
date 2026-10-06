@@ -97,8 +97,16 @@ async function clickChip(w, name) {
 const callArg = (n) => searchCommunity.mock.calls[n][0]
 
 beforeEach(() => {
+  // ⚠️ clearAllMocks 只清**调用历史**，不清**实现**。所以每个 mock 都必须在这里
+  // 设一次默认实现 —— 否则某条用例会悄悄用着前面某条留下的实现，
+  // 表现为「全量跑绿、单跑 `-t` 红」的形状差异（本文件踩过一次：
+  // 少了 fetchCommunityTags 的默认值，模板里 tagOptions.length 直接抛 TypeError）。
+  //
+  // 补充的纪律：一条用例要的非默认数据，都在自己体内设，不要指望同文件里别的用例。
   vi.clearAllMocks()
   fetchCommunityVideos.mockResolvedValue(page())
+  fetchCommunityTags.mockResolvedValue(TAGS)
+  searchCommunity.mockResolvedValue(page())
 })
 
 // ── C2：空态文案跟着「有没有筛选」走 ─────────────────────────
@@ -412,3 +420,118 @@ describe('标签清单加载失败', () => {
     expect(w.text(), '重试后的失败原因没更新 —— 用户看到的还是上一次那句').toContain('还是不行')
   })
 })
+
+// ── clearSearch 与 needLogin ─────────────────────────────────
+//
+// 社区页的 mount 此前只点过标签 chip 与翻页按钮。这两条是剩下最显眼的两个：
+// 「清除」把三种筛选状态一次归零，needLogin 把搜索挡掉但**保留**公开列表。
+//
+// 两者都各带一条反向判据：没有筛选时不该出现「清除」；
+// 未登录时列表不该变成空的（搜索被挡 ≠ 整个页面不能用）。
+
+describe('清除筛选', () => {
+  const oneCard = page({ items: [card()], total: 1, page: 1, total_pages: 1 })
+  const clearBtn = (w) => w.findAll('button').find((b) => b.text().trim() === '清除')
+
+  test('没有任何筛选时不出现「清除」', async () => {
+    const w = await mountPage(oneCard)
+    expect(clearBtn(w), '没有筛选却摆着一个「清除」—— 用户点了什么都不会变').toBeFalsy()
+  })
+
+  test('只按标签筛选时「清除」出现，点完三种状态一起归零并重取', async () => {
+    const w = await mountPage(oneCard)
+    await clickChip(w, '科普')
+    expect(clearBtn(w), '已经在筛选了却没有「清除」入口').toBeTruthy()
+
+    searchCommunity.mockResolvedValue(oneCard)
+    await clearBtn(w).trigger('click')
+    await flushPromises()
+
+    expect(chipNamed(w, '科普').attributes('aria-pressed'), '清除后 chip 还按着').toBe('false')
+    expect(clearBtn(w), '清除之后按钮自己不该还留着').toBeFalsy()
+    // 三种筛选状态归零之后的那次请求：既不带 q 也不带 tag
+    const last = callArg(searchCommunity.mock.calls.length - 1)
+    expect(last.q, '清除之后请求里还带着关键词').toBe('')
+    expect(last.tag, '清除之后请求里还带着标签').toBe('')
+  })
+
+  test('按关键词搜索后「清除」也归零输入框', async () => {
+    const w = await mountPage(oneCard)
+    const input = w.find('input[type="search"]')
+    await input.setValue('机器学习')
+    await input.trigger('submit')
+    await flushPromises()
+    expect(clearBtn(w), '搜过了却没有「清除」入口').toBeTruthy()
+
+    searchCommunity.mockResolvedValue(oneCard)
+    await clearBtn(w).trigger('click')
+    await flushPromises()
+
+    expect(w.find('input[type="search"]').element.value, '输入框里还留着上次的关键词')
+      .toBe('')
+  })
+})
+
+describe('未登录时搜索被挡、列表保留', () => {
+  test('searchCommunity 回 needLogin：显示登录提示，且仍能看到公开列表', async () => {
+    searchCommunity.mockResolvedValue({ needLogin: true })
+    fetchCommunityVideos.mockResolvedValue(page({
+      items: [card()], total: 1, page: 1, total_pages: 1,
+    }))
+    const w = mount(CommunityPage)
+    await flushPromises()
+
+    expect(w.text(), '访客搜索失败后界面上什么都没说').toContain('搜索与视频详情需要登录后使用')
+    // 关键：搜索被挡不等于整个页面不能用 —— 公开列表必须还在。
+    expect(w.text(), '未登录把整个社区页也弄空了 —— 访客什么都看不到')
+      .toContain('机器学习入门')
+    expect(w.text()).not.toContain('社区列表加载失败')
+    expect(w.text(), '被挡之后不该还渲染空状态').not.toContain('社区还是空的')
+  })
+
+  test('未登录时点提示里的按钮会 emit need-login', async () => {
+    searchCommunity.mockResolvedValue({ needLogin: true })
+    fetchCommunityVideos.mockResolvedValue(page({
+      items: [card()], total: 1, page: 1, total_pages: 1,
+    }))
+    const w = mount(CommunityPage)
+    await flushPromises()
+
+    const btn = w.findAll('button').find((b) => b.text().includes('登录'))
+    expect(btn, '提示里没有可点的登录入口 —— 用户只能自己去顶栏找').toBeTruthy()
+    await btn.trigger('click')
+    expect(w.emitted('need-login'), '点了却没 emit need-login —— 登录框不会开').toBeTruthy()
+  })
+
+  test('被挡时自动退回公开列表，并清掉已经填进去的关键词', async () => {
+    searchCommunity.mockResolvedValue({ needLogin: true })
+    fetchCommunityVideos.mockResolvedValue(page({
+      items: [card()], total: 1, page: 1, total_pages: 1,
+    }))
+    const w = mount(CommunityPage)
+    await flushPromises()
+    expect(fetchCommunityVideos, '被挡之后没有退回公开列表').toHaveBeenCalled()
+
+    // ⚠️ 必须先把关键词填进去，再触发一次 load。
+    // 这一条第一版写错了：mount 之后用户从没填过任何东西，于是输入框本来就是空的，
+    // needLogin 分支清不清它都一样 —— 变异删掉那行 `keyword.value = ''` 照样绿，
+    // 断言恒真（实测 SURVIVED）。判据必须跑在**能区分两种实现的状态**上。
+    const input = w.find('input[type="search"]')
+    await input.setValue('机器学习')
+    expect(input.element.value, '前提不成立：关键词没填进输入框，后面那条就成了恒真')
+      .toBe('机器学习')
+
+    // ⚠️ 必须对 `<form>` 触发 submit，不能点那个 `type="submit"` 的按钮。
+    // jsdom 里 click 不会走 submit 的默认行为，于是 `doSearch()` 压根没被调用
+    // （探针实测：点完按钮后 `searchCommunity` 的调用次数仍是 1，而断言看的是
+    // 「关键词还在」——看起来像组件没清，实际是这次交互根本没发生）。
+    // 这类形状的特征是：**断言的红是真的，但原因在测试自己身上**。
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(searchCommunity.mock.calls.length, '触发了 submit 却没发出第二次搜索').toBe(2)
+
+    expect(w.find('input[type="search"]').element.value,
+      '关键词还挂在输入框里 —— 用户会反复点搜索、再被挡一次').toBe('')
+  })
+})
+
