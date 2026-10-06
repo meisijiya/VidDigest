@@ -600,13 +600,34 @@ function showAuthModal(mode) {
   authModalVisible.value = true
 }
 
+/**
+ * 登录 / 注册成功后统一走这里（AuthModal 的 @success）。
+ *
+ * 管理员入口的可见性必须在这里重新算一次：isAdmin 只在 setup 时按 localStorage
+ * 求值一次（:185），而 SPA 内登录**不刷新页面**，那份 localStorage 里原本是
+ * 空的——于是登录成管理员之后入口一直不出现，要按 F5 才有（工单 #33）。
+ *
+ * 走 refreshAdminFlag() 回查 /api/auth/me，而不是直接读 `user.is_admin`：
+ *   1. 登录与注册共用这一个 handler，而**注册响应里没有 is_admin**
+ *      （backend/api_auth.py:77 手写字典），直接读会让注册路径拿不到管理员态；
+ *   2. localStorage 与响应体都不是安全边界，服务端才是权威（ADR 0010），
+ *      撤权要即时生效。
+ * 它是 async，入口因此晚一拍出现——这是有意的取舍，见 refreshAdminFlag 的注释。
+ */
 function handleAuthSuccess(user) {
   currentUser.value = user
+  refreshAdminFlag()
 }
 
+/**
+ * 登出。isAdmin 必须**同步**清掉：AppHeader 的入口是裸的 v-if="isAdmin"
+ *（AppHeader.vue:59），没有并联 user，所以只清 currentUser 的话登出后入口
+ * 还亮着，要 F5 才消失（工单 #33）。
+ */
 function handleLogout() {
   logoutApi()
   currentUser.value = null
+  isAdmin.value = false
 }
 
 async function handleOpenVip() {
