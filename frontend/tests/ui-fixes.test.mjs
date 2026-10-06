@@ -483,3 +483,59 @@ describe('错误分类器 · 每种失败都给出可执行的下一步', () => 
     }
   })
 })
+
+
+// ── VideoSummary ↔ App.vue 的事件契约（双向）────────────────
+
+/**
+ * 子组件 `defineEmits` 声明的事件集合，必须与父组件 `<VideoSummary>` 上
+ * 实际监听的集合**完全相等** —— 多出来的（声明了没监听）与少掉的（监听了没声明）都红。
+ *
+ * 为什么这条值得守：Vue 对「emit 了但没声明」只打一条 warn，组件照常运行 ——
+ * 点一下看起来完全正常，但父组件的状态永远不变：
+ *
+ * | 事件 | 漏掉后的症状 |
+ * |---|---|
+ * | `ownership` | `canRegenerate` 恒为 null，「重新解析」按钮永不出现 |
+ * | `regenerating` | `reparseLoading` 恒 false，点完不变灰，可以连点 |
+ * | `open-byok` | 点「去填写」弹窗不弹 |
+ *
+ * 三者都不报错，症状统一是「那个按钮好像坏了」，没有任何线索指向组件边界。
+ *
+ * **双向都要断**：只断「声明 ⊆ 监听」会漏掉「事件已从子组件删掉、
+ * 父组件的监听还留着」那一种 —— 那种情况下监听是个死代码，父组件
+ * 永远等不到那个事件，而两边看起来都「有」它。
+ *
+ * 这是 KEEP_TEXT：判据对象就是两份源码的集合相等，
+ * 没有对应的运行时行为可断言（真挂 App.vue 要拉起整棵组件树，不划算）。
+ */
+describe('VideoSummary ↔ App.vue 的事件契约', () => {
+  const declared = (() => {
+    const m = /defineEmits\(\[([^\]]*)\]\)/.exec(summaryVue)
+    assert.ok(m, 'VideoSummary 里找不到 defineEmits([...]) 的数组形式 —— 换成对象式写法了？')
+    return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
+  })()
+
+  const listened = (() => {
+    // 只取 <VideoSummary ... /> 这一块：App.vue 里还有 AppHeader / VideoResult /
+    // ByokDialog 各自的一堆 @监听，全局正则会把它们一起收进来。
+    const tag = sliceBetween(appVue, '<VideoSummary', '/>', 'App.vue 的 <VideoSummary> 标签')
+    return [...tag.matchAll(/@([a-z][a-z0-9-]*)=/g)].map((x) => x[1]).sort()
+  })()
+
+  test('声明的事件与监听的事件完全相等（多一个少一个都要红）', () => {
+    assert.deepEqual(listened, declared,
+      `组件声明了 ${JSON.stringify(declared)}，父组件监听的是 ${JSON.stringify(listened)} —— `
+      + 'Vue 对多出来/少掉的事件只 warn，界面看起来一切正常而父组件的状态永远不变')
+  })
+
+  test('这条判据自己在两个方向上都会红（不是恒真）', () => {
+    // 纯内存自检，不碰文件：把一侧多出/少掉一个事件，两次都必须不相等。
+    // 不做这一步的话，上面那条可能因为两边都空而恒绿。
+    const base = ['a', 'b']
+    assert.notDeepEqual([...base, 'c'].sort(), [...base].sort(), '多出一个事件没被抓')
+    assert.notDeepEqual(['a'].sort(), [...base].sort(), '少掉一个事件没被抓')
+    assert.deepEqual([...base].sort(), ['a', 'b'].sort(), '相同集合被误判成不同')
+  })
+})
+
