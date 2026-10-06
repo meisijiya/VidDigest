@@ -2,8 +2,16 @@
  * 社区页接线（工单 #7 的前端部分）。运行：node --test tests/
  *
  * 测法与本仓既有的 community-tags.test.mjs 一致：.js 里的路由/行为用假 fetch
- * 真跑一遍，.vue 部分只做源码接线断言——渲染结果验证需要挂载环境，
- * 超出本仓「node --test 零额外依赖」的约定。
+ * 真跑一遍，.vue 部分只做源码接线断言——**因为本文件里的判据对象就是源码
+ * 文本**：「某个字段从未被引用」「某个分支排在另一个之前」「不许写死 3」
+ * 这三类挂载后全部退化成「界面上没出现那串字」，而模板写了只是没渲染到
+ * 恰恰是要抓的回归。
+ *
+ * 渲染层面另有 `community-page.mount.spec.mjs`（vitest 真挂载，工单 #24），
+ * 守的是「界面上真的渲染出了什么」。两层互补，不互相替代。
+ *
+ * ⚠️ 原注释写「渲染结果验证需要挂载环境，超出本仓『node --test 零额外
+ * 依赖』的约定」——自工单 #18 起挂载 runner 已存在，那句话当时就过期了。
  *
  * 这个文件真正要守住的是一条**接线**约定：
  * 详情内容只能来自 /api/summarize（社区视频表），不能再有一条
@@ -176,6 +184,10 @@ describe('CommunityPage 列表只渲染卡片字段', () => {
   })
 
   test('列表区不碰总结 / 字幕 / 思维导图', () => {
+    // 守卫必须在本用例内。上一条有 `cardBlock.length != 0`，但那是**用例内**
+    // 的，跨用例不共享——锚点一旦重构消失，切片得空串，而 doesNotMatch
+    // 对空串恒真，这条负向断言就静默变成一段死条文。
+    assert.notEqual(cardBlock.length, 0, '卡片列表区切片是空的（锚点变了？）')
     for (const field of ['summary', 'mindmap', 'subtitle']) {
       assert.doesNotMatch(
         cardBlock, new RegExp(`item\\.${field}`),
@@ -187,6 +199,16 @@ describe('CommunityPage 列表只渲染卡片字段', () => {
   test('翻页与标签筛选都接到了 load 上', () => {
     assert.match(pageCode, /function goPage\(n\)/)
     assert.match(pageCode, /@click="goPage\(page \+ 1\)"/, '下一页按钮没接上')
+
+    // goPage 的两条也得落到函数体里。只查函数名等于什么都没断——
+    // 删掉 goPage 里的 load()，界面的形态是「点了下一页没反应」：
+    // 不报错、页码不动、内容也不换。那与「onTagsChange 忘了 load」
+    // 是同一类失败，而 onTagsChange 那三条是落到函数体的，goPage 不是。
+    const goPageAt = pageCode.indexOf('function goPage(n)')
+    const goPageBody = pageCode.slice(goPageAt, pageCode.indexOf('}', goPageAt))
+    assert.notEqual(goPageBody.length, 0, 'goPage 的函数体没找到')
+    assert.match(goPageBody, /page\.value = n/, '翻页没把页码写回去')
+    assert.match(goPageBody, /\bload\(\)/, '翻页没有重新加载')
 
     // 标签改成多选后，页面这边不再有单选时代的 selectTag：选中集合由共享的
     // TagFilterRow 通过 update:selected 交回来，由 onTagsChange 收口。
@@ -246,6 +268,9 @@ describe('CommunityPage 把故障与空结果分开', () => {
       pageCode.indexOf('} catch'),
       pageCode.indexOf('} finally'),
     )
+    // 同上：切片为空时 doesNotMatch 恒真，守卫必须跟着切片走，
+    // 不能指望别处有一条替它守着。
+    assert.notEqual(catchBlock.length, 0, 'catch 块切片是空的（锚点变了？）')
     assert.doesNotMatch(
       catchBlock, /emptyText|emptyHint/,
       'catch 里动了空状态文案：故障与「真的没有」会显示同一句话',

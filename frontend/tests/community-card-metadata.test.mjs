@@ -12,7 +12,12 @@
  *
  * 测法与本仓既有几条一致（见 community-tags.test.mjs / reparse-owner.test.mjs）：
  * 请求体用假流真跑一遍（行为断言）；.vue 部分只做源码接线检查——
- * 渲染验证需要挂载环境，超出本仓「node --test 零额外依赖」的约定（工单 #18）。
+ * 判据的对象是**源码文本**（「实参表里有没有这个键名」），挂载后看不到
+ * 模板源码，迁过去会退化成「界面上没出现那串字」。
+ *
+ * ⚠️ 原注释写的是「渲染验证需要挂载环境，超出本仓『node --test 零额外
+ * 依赖』的约定（工单 #18）」——而工单 #18 **正是创建 npm run test:mount 的
+ * 那张票**。拿 #18 当不能挂载的理由，自相矛盾，那句话当时就是错的。
  */
 import { test, describe, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
