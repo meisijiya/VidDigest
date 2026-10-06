@@ -456,10 +456,15 @@ class TestRegenerateSqlSemantics:
                 (URL, now, now),
             )
 
-        touched = db.regenerate_video(URL, None, summary_md="匿名者写的")
+        touched = db.regenerate_video(
+            URL, None, subtitle_text="匿名者的字幕", summary_md="匿名者写的")
 
         assert touched == 1, "NULL 属主行不该被 NULL 调用者改写"
         assert db.get_video_by_url(URL)["summary_md"] == "匿名者写的"
+        # 成功写进来的字幕必须是调用方给的那份。这一列在此之前是
+        # 「调用方忘了传就静默清空」，而本文件四条断言没有一条看它——
+        # subtitle_text 提成必填就是要让「忘了传」变成 TypeError（工单 #21）。
+        assert db.get_video_by_url(URL)["subtitle_text"] == "匿名者的字幕"
 
     def test_a_logged_in_user_cannot_touch_a_null_owned_row(self, db, make_user):
         """反向：NULL 属主的行不能被任何登录用户顺手改掉。"""
@@ -471,7 +476,8 @@ class TestRegenerateSqlSemantics:
                 (URL, now, now),
             )
 
-        touched = db.regenerate_video(URL, make_user(), summary_md="顺手改的")
+        touched = db.regenerate_video(
+            URL, make_user(), subtitle_text="不该写进去", summary_md="顺手改的")
 
         assert touched == 0, "登录用户改写了无主的内容"
         assert db.get_video_by_url(URL)["summary_md"] == ""
@@ -481,8 +487,10 @@ class TestRegenerateSqlSemantics:
         owner = make_user()
         db.reserve_video(URL, owner)
 
-        assert db.regenerate_video(URL, owner, summary_md="抢跑") == 0
+        assert db.regenerate_video(
+            URL, owner, subtitle_text="抢跑的字幕", summary_md="抢跑") == 0
         assert db.get_video_by_url(URL)["status"] == "pending"
 
     def test_a_missing_row_is_a_zero_not_a_crash(self, db, make_user):
-        assert db.regenerate_video(URL, make_user(), summary_md="x") == 0
+        assert db.regenerate_video(
+            URL, make_user(), subtitle_text="x 的字幕", summary_md="x") == 0

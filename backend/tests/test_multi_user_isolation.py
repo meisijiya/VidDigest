@@ -213,10 +213,20 @@ class TestOnlyTheOwnerMayRegenerate:
         a, b, _c = trio
         seed_owned(db, a, summary="A 的原话")
 
-        assert database.regenerate_video(URL, a, summary_md="A 改的") == 1
-        assert db.get_video_by_url(URL)["summary_md"] == "A 改的"
-        assert database.regenerate_video(URL, b, summary_md="B 改的") == 0
-        assert db.get_video_by_url(URL)["summary_md"] == "A 改的", "B 绕过了路由"
+        assert database.regenerate_video(
+            URL, a, subtitle_text="A 改的字幕", summary_md="A 改的") == 1
+        row = db.get_video_by_url(URL)
+        assert row["summary_md"] == "A 改的"
+        # 字幕逐字取调用方给的那份。两个值必须**真的不同**——seed_owned 种下的是
+        # 「字幕」，这里传的是「A 改的字幕」；若两者相同这条断言恒真、没有判别力。
+        # 补上它之前，这个用例漏传了 subtitle_text，把社区共用字幕清空了，
+        # 而断言只看 summary_md，于是照样绿（工单 #21）。
+        assert row["subtitle_text"] == "A 改的字幕", "字幕被静默丢弃了"
+        assert database.regenerate_video(
+            URL, b, subtitle_text="B 改的字幕", summary_md="B 改的") == 0
+        row = db.get_video_by_url(URL)
+        assert row["summary_md"] == "A 改的", "B 绕过了路由"
+        assert row["subtitle_text"] == "A 改的字幕", "被拒的写入不该碰任何一列"
 
 
 # ── 2. 追问会话按人 ─────────────────────────────────────────
