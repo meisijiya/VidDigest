@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.js'
+import { sliceBetween } from './helpers/source-slice.mjs'
 
 /** 只在这个文件里出现、任何服务商都不会签发的哨兵 */
 const SENTINEL = 'sk-agent-bytok-9f3c1a7e-ZZUNIQUEZZ'
@@ -167,8 +168,11 @@ describe('BYOK 前端接线（集中管理后）', () => {
   test('提交时把凭据交给 chatWithVideo', () => {
     // 只断言「同一个调用里传了进去」，不绑回调块有多长——
     // 写成 chatWithVideo(...) … 的距离上限，改个回调就假红。
-    const call = script.slice(script.indexOf('const stream = chatWithVideo'))
-    const head = call.slice(0, call.indexOf('chatStream = stream'))
+    // 原写法是 `script.slice(indexOf(x))` 再 `.slice(0, indexOf(y))`：
+    // 任一 indexOf 给出 -1，另一段就一路切到文件末尾，于是脚本里**任何位置**
+    // 的 chatWithVideo 调用都能让这条通过。
+    const head = sliceBetween(script, 'const stream = chatWithVideo', 'chatStream = stream',
+      'VideoSummary 的 chatWithVideo 调用')
     assert.match(head, /chatWithVideo\(\s*props\.videoUrl,\s*question,[\s\S]*?\{\s*credential\s*\}\s*\)/)
     // 真值必须是从共享出口取的，不是组件自己存的
     assert.match(script, /const credential = getRequestCredential\(\)/)
@@ -176,8 +180,8 @@ describe('BYOK 前端接线（集中管理后）', () => {
 
   test('输入框提交后立刻清空', () => {
     // 现在输入框住在 ByokDialog：明文活到点「保存」为止。
-    const save = dialogScript.slice(dialogScript.indexOf('function saveAndClose()'))
-    const body = save.slice(0, save.indexOf('function usePlatformMode'))
+    const body = sliceBetween(dialogScript, 'function saveAndClose()', 'function usePlatformMode',
+      'ByokDialog 的 saveAndClose')
     assert.match(body, /apiKeyInput\.value = ''/)
   })
 

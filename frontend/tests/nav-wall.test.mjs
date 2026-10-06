@@ -17,6 +17,7 @@
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
+import { sliceBetween } from './helpers/source-slice.mjs'
 import { readFileSync } from 'node:fs'
 
 function read(...parts) {
@@ -366,10 +367,11 @@ describe('城墙 · 凸起像海浪一样向右滑', () => {
   })
 
   test('漂移和浮动分属**嵌套两层** <g>（同一个元素上写两条 animation 只会活一条）', () => {
-    const driftIdx = heroVue.indexOf('<g class="wall-drift">')
-    assert.ok(driftIdx >= 0, '模板里没有 <g class="wall-drift">')
-    const after = heroVue.slice(driftIdx)
-    const inner = after.slice(0, after.indexOf('</g>'))
+    // 不能写成 `after.slice(0, after.indexOf('</g>'))`。
+    // `</g>` 一个都不剩时 indexOf 给出 -1，而 slice(0, -1) 会一路切到文件末尾，
+    // 于是模板里**任何位置**的 `v-for="s in wallSteps"` 都能让这条通过。
+    // 闭合标签整体消失是最平常的重构，而它恰好让这条守卫静默变成永真。
+    const inner = sliceBetween(heroVue, '<g class="wall-drift">', '</g>', '漂移层 <g>')
     assert.match(inner, /v-for="s in wallSteps"/,
       'wall-drift 是空的 —— 漂移和浮动是并列的两个 <g> 而不是嵌套，'
       + '那两条 transform 不相乘，凸起不会「边上下边向右」')

@@ -17,9 +17,11 @@ import { readFileSync } from 'node:fs'
 
 import {
   getPublicState, getRequestCredential, save, updateConfig, clear,
-  usePlatform, chooseProvider, validateBaseUrl, normalizeBaseUrl, subscribe,
+  usePlatform, chooseProvider, validateBaseUrl, normalizeBaseUrl, normalizeModel, subscribe,
 } from '../src/lib/byok.js'
 import { summarizeVideo, chatWithVideo } from '../src/api/summarize.js'
+import { MODE_PLATFORM } from '../src/lib/byok.js'
+import { extractFn } from './helpers/source-slice.mjs'
 
 const SENTINEL = 'sk-byok-central-ZZUNIQUEZZ'
 
@@ -271,10 +273,30 @@ describe('一条状态，两个使用方式', () => {
     assert.equal(getPublicState().mode, 'platform')
   })
 
-  test('切到平台模式时请求层拿不到凭据', () => {
-    // 有 key ≠ 这次会用它。usePlatform 之后请求必须走平台路径。
+  test('切到平台模式会**保留**已存的 key（切回来不用重填一遍）', () => {
     save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
-    assert.ok(getRequestCredential())
+    usePlatform()
+    assert.equal(getPublicState().mode, MODE_PLATFORM, '模式没切到平台')
+    assert.equal(getRequestCredential().apiKey, SENTINEL,
+      'usePlatform 把 key 一起清了 —— 切回来还得重填，是纯粹的折磨')
+  })
+
+  test('【已知缺口】切到平台模式后，请求**仍然**带着用户自己的 key', () => {
+    // 这条断言的是**当前的真实行为**，不是期望行为。
+    //
+    // 它原来叫「切到平台模式时请求层拿不到凭据」，而断言写的是
+    // `user_api_key === SENTINEL`（凭据照发）—— 名与断言相反，而且一直绿。
+    // 查证结果：**不是测试写错，是实现从未实现用例名所描述的语义**：
+    //   - getRequestCredential()（byok.js:141）只判 `state.apiKey`，不看 mode
+    //   - api/summarize.js:157 只判 `options.credential` 真值，也不看 mode
+    //   - VideoSummary.vue:592/:651 直接把凭据塞进去，全链路没有一处拿 mode 决定发不发
+    // 而 UI 那侧 ByokDialog 会把 mode 渲染成「用平台额度」——
+    // 用户选了 A、系统默默做了 B，界面上还看不出差别。
+    //
+    // 两种改法都说得通（凭据出口判 mode ／ UI 改口径），牵涉真实扣费，
+    // 是产品语义决策，已开单跟踪，不在这里顺手改。这里只把现状钉死：
+    // 谁动了这条链路，测试会响。
+    save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
     usePlatform()
     const sent = []
     globalThis.fetch = async (u, o) => { sent.push(JSON.parse(o.body)); return fakeStream(DONE_STREAM) }
@@ -312,15 +334,35 @@ describe('存储与降级', () => {
     assert.equal(getRequestCredential().apiKey, SENTINEL, '存不进去也不该让这次会话失效')
   })
 
-  test('配置是坏 JSON 时当作没配过', () => {
-    globalThis.localStorage = {
-      _v: { viddigest_user_api_key: SENTINEL, viddigest_byok_config: '{坏掉的' },
-      getItem(k) { return this._v[k] ?? null },
-      setItem(k, v) { this._v[k] = String(v) },
-      removeItem(k) { delete this._v[k] },
-    }
-    // 模块已在 beforeEach 里初始化过；这里只验证解析函数本身不抛
-    assert.equal(typeof getPublicState().mode, 'string')
+  test('配置是坏 JSON 时当作没配过（真跑一次 read，不靠模块加载时机）', () => {
+    // 原来的写法是「换掉 globalThis.localStorage，再断 getPublicState().mode 是字符串」，
+    // 那是**恒真**的：byok.js:86 的 `let state = read()` 只在模块加载时执行一次，
+    // 而本文件顶部是静态 import —— 模块早在 beforeEach 之前就加载完了。
+    // 于是这里摆的坏 JSON 从来没被解析过，断言由 byok.js:129 的三元式恒保证。
+    // 把整个坏 JSON 夹具删掉，这一条照样绿。
+    //
+    // 改成把 read() 抠出来真跑 —— 这是「解析不出时回落默认值」唯一能红的形状。
+    const byokSrc = stripComments(read('../src/lib/byok.js'))
+    const readFn = extractFn(byokSrc, 'read')
+    // 键名从源码里抠，不在测试里重写一份：重写就等于允许它漂移。
+    const [, keyStore] = /const KEY_STORE = '([^']+)'/.exec(byokSrc) ?? []
+    const [, configStore] = /const CONFIG_STORE = '([^']+)'/.exec(byokSrc) ?? []
+    assert.ok(keyStore && configStore, 'byok.js 里抠不出两个存储键常量')
+
+    const runRead = new Function(
+      'localStorage', 'KEY_STORE', 'CONFIG_STORE', 'normalizeBaseUrl', 'normalizeModel',
+      `${readFn}; return read()`)
+    const store = { [keyStore]: SENTINEL, [configStore]: '{坏掉的' }
+    const ls = { getItem: (k) => store[k] ?? null }
+
+    let out = null
+    assert.doesNotThrow(() => {
+      out = runRead(ls, keyStore, configStore, normalizeBaseUrl, normalizeModel)
+    }, '坏 JSON 竟然抛了 —— 用户存一次坏数据，整个面板就白屏')
+    assert.equal(out.apiKey, SENTINEL,
+      '坏的是 config，key 是单独一个键，不该被连坐清掉')
+    assert.deepEqual(out.config, { provider: 'platform', baseUrl: '', model: '' },
+      '坏 JSON 没有回落到默认值 —— mode 会变成 undefined，UI 跟着崩')
   })
 })
 

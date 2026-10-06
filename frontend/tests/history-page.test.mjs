@@ -18,6 +18,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { tagsToQuery, toggleTag, needsExpand, shouldShowToggle, parseTagQuery } from '../src/lib/tag-filter.js'
+import { extractFn, sliceBetween } from './helpers/source-slice.mjs'
 
 function read(...parts) {
   return readFileSync(new URL(...parts, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -39,22 +40,6 @@ function stripComments(src) {
 const vue = read('../src/components/HistoryPage.vue')
 const code = stripComments(vue)
 const api = read('../src/api/history.js')
-
-/** 抽出 `function NAME(...) {...}`。 */
-function extractFn(src, name) {
-  const at = src.indexOf(`function ${name}(`)
-  assert.ok(at > 0, `抽不出 ${name}`)
-  const i = src.indexOf('{', at)
-  let depth = 0
-  for (let j = i; j < src.length; j += 1) {
-    if (src[j] === '{') depth += 1
-    else if (src[j] === '}') {
-      depth -= 1
-      if (depth === 0) return src.slice(at, j + 1)
-    }
-  }
-  throw new Error(`${name} 的大括号不配对`)
-}
 
 /**
  * 真跑组件里的 `params()`。它引用了一堆 ref，这里用同名形参把 scope 补上 ——
@@ -283,15 +268,21 @@ describe('收藏项的删除有第二道确认', () => {
     assert.ok(code.includes('deleteHistory(item.id, { force: true })'))
   })
 
+  // 这三条原来都只查 api **全文**包含某个子串 —— 同一个串出现在别的函数里
+  // 一样算通过。deleteHistory 哪天不再翻译 409，只要文件别处碰巧有
+  // `status === 409`，这三条仍然全绿。改成大括号配对抽真正的函数体。
+  const deleteHistorySrc = () => extractFn(api, 'deleteHistory')
+
   test('服务端 409 被翻译成「被拦住」，不是抛异常', () => {
-    assert.ok(api.includes("status === 409"))
-    assert.ok(api.includes("refused: true"))
+    const fn = deleteHistorySrc()
+    assert.match(fn, /status === 409/, 'deleteHistory 里没有 409 分支')
+    assert.match(fn, /refused: true/, '没有把 409 翻译成 refused')
     assert.ok(code.includes('if (res.refused)'),
       '组件没处理 refused，会直接当删除成功')
   })
 
   test('不是 409 的错误照常抛出', () => {
-    assert.ok(api.includes('throw e'), '非 409 的失败被吞了')
+    assert.match(deleteHistorySrc(), /throw e/, '非 409 的失败被吞了')
   })
 
   test('收藏星标的失败不能被当成成功', () => {
@@ -310,8 +301,12 @@ describe('收藏项的删除有第二道确认', () => {
 
 describe('列表用的是完整信封', () => {
   test('fetchHistories 返回整个信封', () => {
-    assert.ok(api.includes('return res.data'), '只剩 items 就拿不到 total 了')
-    assert.ok(!/return res\.data\.items\b/.test(api.split('fetchHistoryFacets')[0]),
+    const fn = extractFn(api, 'fetchHistories')
+    assert.match(fn, /return res\.data\b/, '只剩 items 就拿不到 total 了')
+    // 原来用 `api.split('fetchHistoryFacets')[0]` 划范围，那是**位置型守卫**：
+    // fetchHistoryFacets 一旦改名或挪位置，split 找不到就返回整份文件，
+    // 断言退化成「全仓没有 return res.data.items」，观察范围悄悄放大而不报错。
+    assert.doesNotMatch(fn, /return res\.data\.items\b/,
       'fetchHistories 退回了只返回 items')
   })
 })

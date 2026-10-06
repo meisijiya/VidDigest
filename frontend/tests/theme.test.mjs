@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sliceBetween } from './helpers/source-slice.mjs'
 
 function read(...parts) {
   return readFileSync(new URL(...parts, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -47,8 +48,14 @@ const indexHtml = read('../index.html')
 const headerVue = stripComments(read('../src/components/AppHeader.vue'))
 const useTheme = read('../src/composables/useTheme.js')
 
-/** @theme 块本体（不含明亮覆盖） */
-const themeBlock = css.slice(css.indexOf('@theme {'), css.indexOf('\n}', css.indexOf('@theme {')))
+/** @theme 块本体（不含明亮覆盖）。
+ *
+ *  两端都必须真的找到。原写法是裸 slice，而 `indexOf` 找不到时返回 -1、
+ *  `slice` 把负数当「从末尾倒数」—— 于是 @theme 块改名或整块挪走之后，
+ *  themeBlock 会退化成扫大半个 style.css，下面两条断言照样全绿：
+ *  「色值里没有蓝紫」在全文里也确实没有蓝紫。
+ *  同文件的 lightStart 有守卫、这里没有，是同一件事两套纪律。 */
+const themeBlock = sliceBetween(css, '@theme {', '\n}', 'style.css 的 @theme 块')
 
 /**
  * 明亮主题覆盖块。
@@ -188,7 +195,17 @@ describe('主题切换 · 首帧之前就定下来', () => {
     assert.match(headerVue, /aria-pressed/, '切换按钮没有 aria-pressed，屏幕阅读器读不出当前主题')
     const toggleAt = headerVue.indexOf('@click="toggleTheme"')
     const loginBranch = headerVue.indexOf('v-if="user"')
-    assert.ok(loginBranch === -1 || toggleAt < loginBranch,
+    // 先确认登录分支**存在**，再比位置。
+    //
+    // 原写法 `loginBranch === -1 || toggleAt < loginBranch` 的左支是恒真的：
+    // 哪天 AppHeader 的 `v-if="user"` 改名（v-if="isLoggedIn" 之类），
+    // indexOf 给出 -1，整条断言直接短路成 true —— 于是**把切换按钮整个挪进
+    // 登录分支里也照样绿**。护栏在自己的锚点消失时自动失效，是最坏的一种
+    // 失效：不是没测，是测了个不存在的东西还一直报通过。
+    assert.ok(loginBranch >= 0,
+      'AppHeader.vue 里找不到 v-if="user" —— 这条守的是「切换按钮在登录分支之外」，'
+      + '登录分支改名或消失后它就无从比较了，先确认 AppHeader 的结构再改判据')
+    assert.ok(toggleAt < loginBranch,
       '切换按钮落在 v-if="user" 里面 —— 游客看不到，也就没有明亮主题可用')
   })
 

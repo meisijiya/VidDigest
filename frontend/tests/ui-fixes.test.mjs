@@ -16,6 +16,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { classifyError } from '../src/lib/errors.js'
+import { sliceBetween } from './helpers/source-slice.mjs'
 
 /** 归一化行尾符 */
 function read(...parts) {
@@ -35,6 +36,20 @@ function stripComments(src) {
 }
 
 const appVue = stripComments(read('../src/App.vue'))
+
+/**
+ * App.vue 的 handleOpenRecord 函数体，模块顶层只切一次。
+ *
+ * 原先有两条用例各切一遍同样的区间、且都没有边界守卫。两条都不止是重复 ——
+ * `appVue.slice(indexOf(start), indexOf(end))` 在任一锚点消失时会切到文件末尾，
+ * 于是「handleOpenRecord 没查社区」和「失败时没退回手动」这两条断言
+ * 实际在扫整个 App.vue，而 handleOpenRecord 前后总有能匹配上的东西。
+ */
+const openRecordBody = () => sliceBetween(
+  appVue,
+  'async function handleOpenRecord(detail) {',
+  'async function handleDownload',
+  'App.vue 的 handleOpenRecord')
 const headerVue = stripComments(read('../src/components/AppHeader.vue'))
 const footerVue = stripComments(read('../src/components/AppFooter.vue'))
 const communityVue = stripComments(read('../src/components/CommunityPage.vue'))
@@ -82,9 +97,13 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
   })
 
   test('开关由服务端事实驱动（by-url），不是本地状态', () => {
+    // 只断言实际那一种写法。这里曾写成 /:has-community-result="|hasCommunityResult/，
+    // 那是一个**析取**：kebab 分支在 App.vue 里压根不存在（模板编译后绑定的
+    // 仍是 :hasCommunityResult），真正兜住它的是弱得多的裸标识符 ——
+    // 于是「属性名拼错了」这类回归照样绿。一条断言看着守两处，实际只守了一处。
     assert.match(
-      appVue, /:has-community-result="|hasCommunityResult/,
-      'App.vue 没把开关传给 VideoSummary',
+      appVue, /:hasCommunityResult=/,
+      'App.vue 没把开关传给 VideoSummary（属性名是 :hasCommunityResult=）',
     )
     // 关键：这个开关的值必须来自 by-url（查**社区视频表**）。
     // 用「点过了解析」这种本地状态去推断，会在结果其实不存在时扣额度；
@@ -102,11 +121,7 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
   })
 
   test('从历史页打开时会去查社区（原来压根没查， 自动展示永远不触发）', () => {
-    const fn = appVue.slice(
-      appVue.indexOf('async function handleOpenRecord(detail) {'),
-      appVue.indexOf('async function handleDownload'),
-    )
-    assert.notEqual(fn.length, 0, '没找到 handleOpenRecord')
+    const fn = openRecordBody()
     assert.match(
       fn, /fetchCommunityByUrl/,
       'handleOpenRecord 没有查社区 —— fromCache 恒为 false，自动展示在历史页这条路上永远不触发',
@@ -114,10 +129,7 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
   })
 
   test('查询失败一律当作「没有」，退回手动触发', () => {
-    const fn = appVue.slice(
-      appVue.indexOf('async function handleOpenRecord(detail) {'),
-      appVue.indexOf('async function handleDownload'),
-    )
+    const fn = openRecordBody()
     // 宁可多点一次，也不能在结果不存在时自动发起并扣额度。
     assert.match(
       fn, /catch\s*\{\s*fromCache\.value = false/,
@@ -212,11 +224,12 @@ describe('问题3 · 失败要有统一弹窗，且说清下一步', () => {
 
   test('请求前先本地校验链接，不把明显错误丢给后端', () => {
     assert.match(appVue, /function validateUrlInput/, '没有本地 URL 校验')
-    const fn = appVue.slice(
-      appVue.indexOf('function validateUrlInput'),
-      appVue.indexOf('async function handleParse'),
-    )
-    assert.match(fn, /还没有填链接|https\?/, '校验没覆盖空输入 / 非链接')
+    const fn = sliceBetween(appVue, 'function validateUrlInput', 'async function handleParse',
+      'App.vue 的 validateUrlInput')
+    // 这两条曾合成一条 `/还没有填链接|https?/` —— 同样是析取：
+    // 只写了空输入检查、没写格式检查，也会因为命中「还没有填链接」而通过。
+    assert.match(fn, /还没填链接/, '校验没覆盖空输入 —— 用户什么都没填就点了解析')
+    assert.match(fn, /https\?/, '校验没覆盖「填了但不是链接」的输入')
   })
 
   test('校验失败时不发请求', () => {
@@ -311,10 +324,8 @@ describe('问题6 · 历史列表显示封面', () => {
 
   test('后端列表接口真的返回 cover_url', () => {
     const db = read('../../backend/database.py')
-    const fn = db.slice(
-      db.indexOf('def get_parse_histories'),
-      db.indexOf('def get_parse_history_detail'),
-    )
+    const fn = sliceBetween(db, 'def get_parse_histories', 'def get_parse_history_detail',
+      'database.py 的 get_parse_histories')
     assert.match(fn, /cover_url/, 'get_parse_histories 没返回 cover_url')
     // 必须有 json_valid 守卫：实测一行非法 JSON 会让整条查询抛
     // malformed JSON，也就是**一条坏记录足以让整个历史列表 500**。
