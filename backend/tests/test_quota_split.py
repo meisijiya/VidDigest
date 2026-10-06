@@ -107,8 +107,9 @@ class TestTwoIndependentCounters:
 
     def test_unknown_user_refused(self, db):
         assert db.check_quota(9999) == {"parse": (False, 0), "chat": (False, 0)}
-        assert db.consume_quota(9999, "parse") == 0
-        assert db.consume_quota(9999, "chat") == 0
+        # 拒扣返回 None（工单 #17：0 是「扣成功且刚好用完」的 remaining）
+        assert db.consume_quota(9999, "parse") is None
+        assert db.consume_quota(9999, "chat") is None
 
     def test_check_never_writes(self, db, make_user):
         """判定是只读的——扣减与判定拆开是「字幕失败不扣额度」的前提。"""

@@ -490,7 +490,24 @@ async def summarize_video(
         # 就是撒谎。只报「本次没消耗」，余额由前端原样留着——
         # 与 /api/chat 的 BYOK 分支同一个形状，前端一条 applyQuotaEvent 通吃。
         if not using_byok:
-            consume_quota(user["id"], "parse")
+            # 扣减自带守卫（工单 #17）：上面的 `check_quota_kind` 与此刻之间
+            # 隔着字幕提取（可能几十秒），并发请求会全部通过那次只读判定。
+            # 现在判定与扣减在同一条 SQL 里完成，返回 0 = 额度已满。
+            # **必须处理这个 0**：忽略它就等于「额度满了照样调模型」，
+            # 而那正是白送平台付费资源（模型调用费）。
+            remaining = consume_quota(user["id"], "parse")
+            if remaining is None:
+                yield ServerSentEvent(
+                    raw_data=json.dumps(
+                        {
+                            "message": "今日次数已用完",
+                            "reason": "quota_exhausted",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    event="error",
+                )
+                return
             quota_spent = True
             # 额度尽早下发，前端在流式开始前就能显示剩余次数。
             # 顶层字段由 _quota_payload 统一产出——在这里手写会被末尾展开的
@@ -709,7 +726,16 @@ async def chat_with_video(
 
         # 即将调用 AI，此刻才扣额度（无字幕 / 未登录 / 超额都不扣）
         if credential is None:
-            consume_quota(user["id"], "chat")
+            # 同上：扣减自带守卫，返回 0 = 额度已满，必须中止（工单 #17）。
+            if consume_quota(user["id"], "chat") is None:
+                yield ServerSentEvent(
+                    raw_data=json.dumps({
+                        "message": "今日追问次数已用完",
+                        "reason": "quota_exhausted",
+                    }, ensure_ascii=False),
+                    event="error",
+                )
+                return
             quota_spent = True
 
         # 问答也显式回报额度，和总结走同一套展示。顶层数字跟 chat 走——

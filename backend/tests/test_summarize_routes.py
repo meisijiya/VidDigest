@@ -223,6 +223,56 @@ class TestSummarizeQuotaTiming:
         assert quota["unlimited"] is False
         assert s.calls == 1
 
+    def test_guard_refusal_costs_zero_even_when_check_passed(self, db, make_user, stub, monkeypatch):
+        """扣减阶段的守卫说满了，就**不许调模型**——工单 #17。
+
+        与 `test_fourth_use_refused_without_llm` 守的是**不同的东西**：
+        那条是「只读判定 `check_quota_kind` 判死」，本条是
+        「只读判定放行、扣减处的守卫拒绝」。
+
+        真实漏洞窗口正在两者之间那几十秒（字幕提取 + 模型调用准备）：
+        并发请求全部通过只读判定，然后全部挤到扣减处。
+
+        造法：在 `_get_extractor`（**只读判定之后、扣减之前**的窗口）里
+        偷跑一次 consume 把额度用满。
+
+        **判据必须盯住模型调用次数**——这是「白送平台付费资源」的直接后果。
+        只断「最后一个事件是 error」不够：守卫失效时后面仍有别的失败路径
+        会产出 error 事件（本例实测：守卫失效该用例仍绿），
+        真正区分两种实现的是「模型有没有被调」。
+        """
+        s = stub(has_subtitle=True)
+        uid = make_user()
+        # 压到只剩 1 次：只读判定会放行
+        with database.get_db() as c:
+            today = database.datetime.now(database.timezone.utc).strftime("%Y-%m-%d")
+            c.execute(
+                "UPDATE users SET daily_parse_count = ?, last_parse_date = ? WHERE id = ?",
+                (database.DAILY_PARSE_LIMIT - 1, today, uid),
+            )
+
+        real_get_extractor = api_summarize._get_extractor
+        state = {"stolen": False}
+
+        def stealing_get_extractor():
+            if not state["stolen"]:
+                state["stolen"] = True
+                database.consume_quota(uid, "parse")
+            return real_get_extractor()
+
+        monkeypatch.setattr(api_summarize, "_get_extractor", stealing_get_extractor)
+
+        collect(api_summarize.summarize_video(summarize_req(), user={"id": uid}))
+
+        assert state["stolen"], "前提没成立：提取器没被取过，窗口没造出来"
+        assert parse_count_of(uid) == database.DAILY_PARSE_LIMIT, (
+            f"窗口里偷的那次额度没生效（计数 {parse_count_of(uid)}），用例前提不成立"
+        )
+        assert s.calls == 0, (
+            f"额度已满却调了 {s.calls} 次模型 —— 白送平台付费资源。"
+            "扣减处的守卫必须在这一步中止请求。"
+        )
+
     def test_quota_event_arrives_before_any_token(self, db, make_user, stub):
         """额度必须早于正文下发，否则前端拿不到。"""
         stub(has_subtitle=True)

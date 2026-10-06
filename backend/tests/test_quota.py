@@ -71,8 +71,10 @@ class TestOnlyConsumeSpends:
 
     def test_unknown_user_refused(self, db):
         assert db.check_quota(9999) == {"parse": (False, 0), "chat": (False, 0)}
-        assert db.consume_quota(9999, "parse") == 0
-        assert db.consume_quota(9999, "chat") == 0
+        # 未知用户**拒扣**。工单 #17 之后拒扣返回 None（与「remaining=0」区分开，
+        # 0 是「扣成功且刚好用完」）；两种写法都表示「没扣成」。
+        assert db.consume_quota(9999, "parse") is None
+        assert db.consume_quota(9999, "chat") is None
 
 
 class TestTwoCountersShareNothing:

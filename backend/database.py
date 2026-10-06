@@ -1071,7 +1071,32 @@ def check_quota(user_id: int) -> dict:
 
 
 def consume_quota(user_id: int, kind: str) -> int:
-    """扣减一次额度，返回扣减后的 remaining。调用前须已通过 check_quota_kind。"""
+    """扣减一次额度，返回扣减后的 remaining。
+
+    **判定与扣减必须在同一条 SQL 里**（工单 #17）。
+
+    原来这里是读-改-写：先 SELECT 拿到 `current`，再无条件 `count + 1`。
+    而调用方的 `check_quota_kind` 是**只读**判定，且与本次扣减之间隔着字幕提取
+    与整个模型调用（几十秒）。2026-10-06 实测：8 线程同时起跑、上限 3、
+    预置已用 2，最终 `daily_parse_count = 5` —— 超限 2 次，
+    白送的是平台付费资源（模型调用费）。
+
+    现在改成守卫式：`WHERE ... AND count < limit` 由数据库在写锁内判定，
+    靠 rowcount 区分「扣成功」与「额度已满」。这样无论多少并发同时进来，
+    成功的次数不会超过 limit —— 判定与扣减之间**没有可被穿插的窗口**。
+
+    **为什么「没扣成」用 `None` 而不是 0**（2026-10-06 实测踩过）：
+    remaining 恰好用完时**就是 0**（上限 3，第 3 次扣成功后 `3-2-1=0`）。
+    拿 0 表示「没扣成」会把「刚好用完」误判成「额度已满」——
+    实测症状是「上限 3 只调了 2 次模型，第 3 次被 quota_exhausted 拒掉，
+    而库里计数已经是 3」。两种含义撞车，且**不报错**。
+    所以第三态必须与 remaining 的值域不相交。
+
+    返回值语义（**注意 0 不表示「没扣成」**——见下方那段说明）：
+      · `QUOTA_UNLIMITED` (-1) = 无限额度用户，本次不计入上限判定
+      · `>= 0`               = 扣减后的 remaining（**恰好用完时就是 0**）
+      · `None`               = **本次没扣成**（额度已满）。这是新增的第三态。
+    """
     count_col, date_col, _, _ = _quota_spec(kind)
     limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1079,25 +1104,62 @@ def consume_quota(user_id: int, kind: str) -> int:
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if not user:
-            return 0
+            return None
         if is_vip_active(user):
-            return -1
+            return QUOTA_UNLIMITED
 
-        if user[date_col] != today:
+        # 上限为负 = 无限。计数照扣（后台要看今日用量），但不参与判定。
+        if limit < 0:
             conn.execute(
-                f"UPDATE users SET {count_col} = 1, {date_col} = ? WHERE id = ?",
+                f"UPDATE users SET {count_col} = COALESCE({count_col}, 0) + 1, "
+                f"{date_col} = ? WHERE id = ?",
                 (today, user_id),
             )
-            return QUOTA_UNLIMITED if limit < 0 else limit - 1
+            return QUOTA_UNLIMITED
 
-        current = user[count_col] or 0
-        conn.execute(
-            f"UPDATE users SET {count_col} = {count_col} + 1 WHERE id = ?",
-            (user_id,),
+        # 跨天（或今天还没用过）：今天第一次用。
+        #
+        # **不能用 `SET count = 1`**（2026-10-06 实测）：那是绝对值赋值。
+        # 8 个线程同时进来时都判定「日期不是今天」，于是都把计数设成 1——
+        # 只有 1 次被记录，其余 7 次的扣减被静默吞掉。症状是
+        # 「额度只扣了 1 次，用户却发了 8 个请求」：**丢额度**，
+        # 比超限更难发现（用户觉得额度消耗慢，平台白送）。
+        #
+        # 正确写法：先判「日期不是今天」再原子地置 1，判据与赋值在同一条
+        # 语句的 WHERE 里，SQLite 在写锁内求值，只有一个线程能改成 1；
+        # 其余线程 WHERE 不成立（date 已经是今天）落到下面的同一天分支。
+        if user[date_col] != today:
+            if limit == 0:
+                return None
+            cur = conn.execute(
+                f"UPDATE users SET {count_col} = 1, {date_col} = ? "
+                f"WHERE id = ? AND {date_col} IS NOT ?",
+                (today, user_id, today),
+            )
+            if cur.rowcount == 1:
+                return limit - 1
+            # 没改成 → 别人刚把日期拨到今天。**不返回**：继续走同一天分支，
+            # 那一支会用守卫式扣减给出正确结果。
+
+        # 同一天：守卫式扣减。`count < limit` 与 `+1` 在同一条语句里，
+        # SQLite 在写锁内求值，所以并发线程里只有 limit 次能改到 1。
+        cur = conn.execute(
+            f"UPDATE users SET {count_col} = COALESCE({count_col}, 0) + 1 "
+            f"WHERE id = ? AND COALESCE({count_col}, 0) < ?",
+            (user_id, limit),
         )
-        # 计数照扣（后台要看今日用量），报出的 remaining 仍是 -1：
-        # 无限额度的用户不该因为扣了一次就少一个数。
-        return QUOTA_UNLIMITED if limit < 0 else limit - current - 1
+        if cur.rowcount != 1:
+            # 没扣成 = 额度已满。刻意不 raise：调用方已有
+            # 「扣减返回 None 就发额度用完事件并中止」的分支，
+            # 改成抛异常会让那条路径变成 500。
+            return None
+        # remaining 从**库里重读**，不用本事务开头那次 SELECT 的 `user`。
+        # 走到这里可能是从跨天分支掉下来的（别人刚把日期拨到今天），
+        # 那时 `user[count_col]` 还是旧值，拿它算会报出一个错的余额。
+        fresh = conn.execute(
+            f"SELECT {count_col} FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        return limit - (fresh[count_col] or 0)
 
 
 def refund_quota(user_id: int, kind: str) -> int:
