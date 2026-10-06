@@ -12,7 +12,9 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "release:build": "npm run clean && vite build",
     "preview": "vite preview",
-    "test": "node --test --test-timeout=10000 \"tests/**/*.test.mjs\""
+    "test": "node --test --test-timeout=10000 \"tests/**/*.test.mjs\"",
+    "test:mount": "vitest run",
+    "test:all": "npm test && npm run test:mount"
   },
   "dependencies": {
     "@vueuse/core": "^14.3.0",
@@ -26,7 +28,10 @@
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.2.4",
     "@vitejs/plugin-vue": "^6.0.6",
+    "@vue/test-utils": "^2.5.1",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.2.4",
-    "vite": "^8.0.10"
+    "vite": "^8.0.10",
+    "vitest": "^5.0.3"
   }
 }

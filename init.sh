@@ -71,8 +71,21 @@ fi
 # ── 前端：测试 ──────────────────────────────────────────────
 if [ -f frontend/package.json ]; then
   echo ""
-  echo "=== frontend: npm test ==="
+  echo "=== frontend: npm test (静态 / 契约断言) ==="
   ( cd frontend && npm test )
+  RAN=$((RAN + 1))
+
+  # 挂载层（工单 #18）。**单独一关**，不是上面那条的一部分：
+  # 两套 runner 守的是两类判据，混在一处就看不出是哪一类红了——
+  # 而「绿色的那一层」是哪一层，正是工单 #18 要回答的问题。
+  #
+  # 只收 tests/*.spec.mjs（vitest.config.js 的 include 写死了）。默认
+  # include 会顺手吃掉 node:test 的 *.test.mjs，而 node:test 的
+  # describe 体抛异常时 vitest 仍退出 0 —— 那会让这一关**恒绿**。
+  # 「一条都没跑却报绿」不是可能性，是已实测过的形态。
+  echo ""
+  echo "=== frontend: npm run test:mount (真挂载) ==="
+  ( cd frontend && npm run test:mount )
   RAN=$((RAN + 1))
 else
   echo "ERROR: 找不到 frontend/package.json，门禁拒绝通过。"
