@@ -2,7 +2,7 @@ import os
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
@@ -320,6 +320,12 @@ def init_db():
                 tags TEXT DEFAULT '[]',
                 subtitle_text TEXT DEFAULT '',
                 parsed_by INTEGER,
+                -- 覆盖闸门（工单 #20）。NULL = 此刻没人正在覆盖。
+                -- 为什么落在 videos 上而不是单开一张锁表：抢锁要判的条件是
+                -- 「这一行归我 + 没人占着」，前者是 videos 上的列、后者也是
+                -- videos 上的列，拆成两张表就多一次跨表竞态。
+                regenerating_by INTEGER,
+                regenerating_at TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
@@ -354,6 +360,7 @@ def init_db():
         _migrate_quota_columns(conn)
         _migrate_quota_override_columns(conn)
         _migrate_video_card_columns(conn)
+        _migrate_regenerate_columns(conn)
         _migrate_admin_column(conn)
         # 去重必须排在 _create_video_search_index 之前：它自己也会扫
         # parse_history，而重复行会让社区搜索的候选集出现同一条内容两次。
@@ -479,6 +486,26 @@ def seed_admin_emails_from_env() -> int:
 # 可见性是这个工单的全部难点：社区列表对**任何人**开放，而字幕、总结、
 # 思维导图只对已登录的人开放。两条规则一旦写反就是真实的隐私事故，
 # 所以下面的实现有一条硬约定——对外响应**按字段白名单投影**，不靠逐个剔除。
+
+
+def _migrate_regenerate_columns(conn) -> None:
+    """给 videos 补上覆盖闸门的两列（工单 #20）。
+
+    与 _migrate_video_card_columns 同一套路：`CREATE TABLE IF NOT EXISTS`
+    对已存在的表是空操作，老库里不会凭空多出列，不补列则代码一 SELECT 就报
+    `no such column`。
+
+    刻意**不碰 status**：ADR 0007 要求覆盖期间旧内容继续对所有人可见，
+    把行改回 pending 会让复用者突然看到空白。所以这个闸门是**并行的**第二套
+    占用语义，与 pending 状态机互不影响。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
+    for column, ddl in (
+        ("regenerating_by", "ALTER TABLE videos ADD COLUMN regenerating_by INTEGER"),
+        ("regenerating_at", "ALTER TABLE videos ADD COLUMN regenerating_at TEXT"),
+    ):
+        if column not in existing:
+            conn.execute(ddl)
 
 
 def _migrate_video_card_columns(conn) -> None:
@@ -2273,6 +2300,62 @@ def _pending_is_stale(row: dict) -> bool:
         updated = updated.replace(tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - updated).total_seconds()
     return age > VIDEO_PENDING_TTL_SECONDS
+
+
+#: 覆盖闸门的过期阈值（秒）。语义与 :data:`VIDEO_PENDING_TTL_SECONDS` 同：
+#: 持闸者只在 finally 里还闸——进程被杀、机器断电、模型挂死时它跑不到那里，
+#: 那一行就永远锁着，**这个链接从此没人能覆盖**。
+#:
+#: ⚠️ 必须大于一次正常覆盖的最长耗时（字幕提取 + 一次模型调用）。调小它会在
+#: 持闸者还在好好干活时把锁偷走，于是两个人同时调模型、同时扣额度——
+#: 正好是这个闸门要防的那件事。取值与 pending 同量级，但它是独立的环境变量：
+#: 覆盖与首次解析的耗时分布不同，不该共用一个旋钮。
+VIDEO_REGENERATE_TTL_SECONDS = _env_int("VIDDIGEST_VIDEO_REGENERATE_TTL_SECONDS", 1800)
+
+
+def acquire_regenerate_gate(video_url: str, user_id: int) -> bool:
+    """抢一次覆盖权。抢到返回 True，被别人占着或不归他返回 False。
+
+    **跨进程安全的关键在「一条语句」**：抢锁是单条带条件的 UPDATE，而 SQLite
+    串行化写事务，于是两个进程同时抢时只有一个拿到 `rowcount == 1`。这与
+    :func:`reserve_video` 依赖唯一索引裁决首次解析是同一套机制——不是新发明，
+    是把已经在这套代码里成立的那件事用到第二条路径上。
+
+    过期判定刻意写在 SQL 的 WHERE 里而不是「先读后判」：先读后判会在两个
+    进程之间留一个窗口，而那个窗口正是工单 #20 要消灭的那类静默失效
+    （两个进程都判定「没人占着」，都进去，两次调模型、两次扣额度）。
+
+    同样刻意**不**改 status：见 :func:`_migrate_regenerate_columns`。
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(seconds=VIDEO_REGENERATE_TTL_SECONDS)).isoformat()
+    with get_db() as conn:
+        cursor = conn.execute(
+            """UPDATE videos
+                  SET regenerating_by = ?, regenerating_at = ?
+                WHERE video_url = ?
+                  AND status = ?
+                  AND parsed_by = ?
+                  AND (regenerating_by IS NULL
+                       OR regenerating_at IS NULL
+                       OR regenerating_at <= ?)""",
+            (user_id, now.isoformat(), video_url, VIDEO_STATUS_READY, user_id, cutoff),
+        )
+        return cursor.rowcount == 1
+
+
+def release_regenerate_gate(video_url: str, user_id: int) -> None:
+    """放掉覆盖闸门。必须与 :func:`acquire_regenerate_gate` 成对，且放在 finally 里。
+
+    WHERE 里带上 `regenerating_by = ?`：一个过期后迟到醒来的持闸者放闸时，
+    不能把**别人**的锁清掉——那会让第三个人以为没人占着而同时进来。
+    """
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE videos SET regenerating_by = NULL, regenerating_at = NULL
+                WHERE video_url = ? AND regenerating_by = ?""",
+            (video_url, user_id),
+        )
 
 
 def probe_video(video_url: str) -> str:

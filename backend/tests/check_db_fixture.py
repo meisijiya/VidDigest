@@ -34,6 +34,9 @@ DB_FUNCS = {
     # 闭包算出来是「传递地触库」而不是直接调，所以手查极易漏——
     # 漏了它，一条直接调它的测试就会静默连上真实 app.db。
     "probe_video",
+    # 覆盖闸门（工单 #20）：跨进程安全全靠它那条带条件的 UPDATE，漏登记的话
+    # 一条直接调它的测试会静默连上真实 app.db —— 而跨进程用例正是那条测试。
+    "acquire_regenerate_gate", "release_regenerate_gate",
     # _paginate 是社区列表与搜索共用的分页信封助手，它自己 `with get_db()`。
     # 上面那两个补进来的名字由 test_db_fixture_gate.py 从源码闭包算出来，
     # 不是手查的 —— 那道元测试存在的意义就是别再靠手查。

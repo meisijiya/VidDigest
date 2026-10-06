@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-import threading
+
 import time
 from collections.abc import AsyncIterable
 
@@ -14,6 +14,7 @@ from pydantic import BaseModel, SecretStr
 from auth import get_optional_user
 from credentials import CredentialError, UserCredential
 from database import (
+    acquire_regenerate_gate,
     append_chat_turn,
     check_quota_kind,
     complete_video,
@@ -24,6 +25,7 @@ from database import (
     quota_limit,
     refund_quota,
     regenerate_video,
+    release_regenerate_gate,
     release_video,
     reserve_video,
 )
@@ -308,32 +310,22 @@ async def _claim_video(
 
 # ── 覆盖自己那一份（ADR 0007）──────────────────────────────
 #
-# 覆盖**不占位**：重新解析的那几十秒里旧内容仍然对所有人有效，
-# 把它改回 pending 会让复用者突然看到空白。代价是同一个作者可以并发发起
-# 两次覆盖、两次都调模型、两次都扣额度。下面这个进程内闸门挡掉后一次。
+# 覆盖**不占位**：重新解析的那几十秒里旧内容仍然对所有人有效，把它改回
+# pending 会让复用者突然看到空白。代价是同一个作者可以并发发起两次覆盖、
+# 两次都调模型、两次都扣额度。闸门挡掉后一次。
 #
-# ⚠️ 所以它同时是一道**部署硬约束**：后端必须单进程。`--workers 2` 会把
-# 这一个 set 劈成两份互不可见的副本，两个请求各自看见空 set、都判定「可以
-# 覆盖」，然后两次调模型、两次扣额度、后写的那份覆盖先写的那份——**不报错、
-# 不告警**。首次解析路径不受影响：那条路的占位行在数据库里，跨进程可见。
-# 这正是 database.py:2256-2259 用「不重复扣费优先」换来的那条取舍所防的事。
-# 详见 docs/OPERATIONS.md 5.1.1。
+# 这道闸门**曾经**是进程内的一个 `set[str]`（工单 #20 之前），于是它同时是
+# 一道部署硬约束：`--workers 2` 会把那一个 set 劈成两份互不可见的副本，
+# 两个请求各自看见空 set、都判定「可以覆盖」，然后两次调模型、两次扣额度、
+# 后写的那份覆盖先写的那份——**不报错、不告警**。
 #
-# 想横向扩容，先把这个闸门换成数据库级实现（落一条占位行，或在唯一索引上做
-# 原子插入），**再**加 worker——顺序反了就是上面那个静默失效。
+# 现在它是 `videos` 上的两列（`regenerating_by` / `regenerating_at`），抢锁是
+# 一条带条件的 UPDATE。SQLite 串行化写事务，跨进程同样只有一个能拿到。
+# 于是「后端必须单进程」从**部署约束**降级成 SQLite 的写入串行化这一条已知
+# 性质——横向扩容不再有顺序上的前提。详见 docs/adr/0015。
 #
-# 这里刻意没有「多进程下失效」的行为测试：单进程测试里这个闸门本来就有效，
-# 要复现失效得起子进程，那是给一个已知缺陷记档、不是护栏，加了只会变成会
-# 腐烂的注释。约束的载体是这段注释与 OPERATIONS.md 5.1.1。
-#
-# 用 threading.Lock 而不是 asyncio.Lock：后者在 3.10 之后绑定了创建它的
-# 事件循环，同一个进程里跑第二个 loop（测试的每次 asyncio.run 就是）会抛
-# "bound to a different event loop"。这里只保护一个 set 的读写，持有时间
-# 是微秒级，同步锁不会成为瓶颈。
-_REGENERATE_INFLIGHT: set[str] = set()
-_REGENERATE_GUARD = threading.Lock()
-
-
+# 首次解析路径一直就是跨进程安全的（占位行在数据库里，跨进程可见）；现在
+# 两条路径用的是同一种机制：单条条件写 + 唯一裁决。
 async def _begin_regenerate(video_url: str, user_id: int):
     """判定这次请求能不能覆盖，返回 (outcome, row)。
 
@@ -341,23 +333,40 @@ async def _begin_regenerate(video_url: str, user_id: int):
     - "forbidden" 这一行属于别人，直接拒绝（不调模型、不扣额度）
     - "busy"     同一个链接已有一次覆盖在跑，再点一次只会白烧一遍额度
     - "skip"     这一行还没 ready，压根没有可覆盖的东西，按首次解析走
+
+    抢锁本身是**一条带条件的 UPDATE**（`database.acquire_regenerate_gate`），
+    而 SQLite 串行化写事务 —— 所以两个 worker 同时进来时只有一个拿到
+    `rowcount == 1`。这就是跨进程的那道保证，不再依赖「后端只有一个进程」
+    这个部署事实。
+
+    前两次读仍然是读：它们要区分「不归我」和「没人占着」这两种 outcome，
+    而它们**不是**判据——判据在 UPDATE 的 WHERE 里，那一句把 status / parsed_by
+    / 锁是否过期一起判掉。所以这里不存在「先读后判」的窗口。
     """
     row = get_video_by_url(video_url)
     if row is None or row.get("status") != "ready":
         return "skip", row
     if row.get("parsed_by") != user_id:
         return "forbidden", row
-    with _REGENERATE_GUARD:
-        if video_url in _REGENERATE_INFLIGHT:
-            return "busy", row
-        _REGENERATE_INFLIGHT.add(video_url)
-    return "regenerate", row
+    if acquire_regenerate_gate(video_url, user_id):
+        return "regenerate", row
+    # 抢不到。重读一次来区分「别人占着」与「这一行刚被别人改掉 / 删了」——
+    # 两者要报的 outcome 不同，而只有重读能分。失败路径才多这一次读。
+    fresh = get_video_by_url(video_url)
+    if fresh is None or fresh.get("status") != "ready":
+        return "skip", fresh
+    if fresh.get("parsed_by") != user_id:
+        return "forbidden", fresh
+    return "busy", row
 
 
-def _end_regenerate(video_url: str) -> None:
-    """放掉覆盖闸门。必须与 _begin_regenerate 成对，且放在 finally 里。"""
-    with _REGENERATE_GUARD:
-        _REGENERATE_INFLIGHT.discard(video_url)
+def _end_regenerate(video_url: str, user_id: int) -> None:
+    """放掉覆盖闸门。必须与 _begin_regenerate 成对，且放在 finally 里。
+
+    `user_id` 不是摆设：`release_regenerate_gate` 的 WHERE 靠它判断「这个锁
+    还是不是我的」，过期后迟到醒来的持闸者不该把别人的锁清掉。
+    """
+    release_regenerate_gate(video_url, user_id)
 
 
 def _replay_events(user: dict, video: dict) -> list[ServerSentEvent]:
@@ -714,7 +723,7 @@ async def summarize_video(
         # 覆盖闸门必须无条件放掉，异常路径也不能漏——漏一次，
         # 这个链接此后就再也覆盖不了了（而内容明明还在）。
         if regenerate:
-            _end_regenerate(req.url)
+            _end_regenerate(req.url, user["id"])
         # 唯一回滚点：except 分支和「客户端中途断开」共用它，不会重复退款。
         # 断流时抛的是 GeneratorExit / CancelledError，两者都继承 BaseException
         # 而非 Exception，上面的 except 抓不到——实测额度就停在扣减后的值。

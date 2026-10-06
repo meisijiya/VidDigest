@@ -50,7 +50,7 @@ graph LR
 | `frontend-dev` | 5173 | Node 20.19+ / 22.12+                  | 仅开发期使用，生产替换为静态文件  |
 
 
-**生产部署时**：前端 `npm run build` → `dist/` 由 Nginx 托管；后端用单进程 Uvicorn + 反向代理。**不要上多 worker** —— 理由见 [5.1.1](#511-️-后端必须单进程)。
+**生产部署时**：前端 `npm run build` → `dist/` 由 Nginx 托管；后端用单进程 Uvicorn + 反向代理。理由见 [5.1.1](#511-后端单进程性能建议不再是正确性约束)。
 
 ---
 
@@ -238,26 +238,30 @@ hub restart --name backend-api
 hub stop --name backend-api
 ```
 
-### 5.1.1 ⚠️ 后端必须单进程
+### 5.1.1 后端单进程（性能建议，不再是正确性约束）
 
-**不要加 `--workers`，也不要上 Gunicorn 多 worker。** 这不是「SQLite 扛不住并发」
-那种性能建议，是**正确性硬约束**。
+**当前仍建议单进程**，但它的理由变了：SQLite 的**写入是串行**的，多 worker 不
+能提升写吞吐，只会让写锁竞争与 `database is locked` 更频繁。
 
-`backend/api_summarize.py` 的 `_REGENERATE_INFLIGHT`（`:319`）是一个**进程内**
-的 `set[str]`，它挡住「同一个作者同时点两次重新解析」——否则会两次调模型、两次
-扣额度、两次结果互相覆盖。`--workers 2` 把它劈成两份互不可见的副本，闸门于是
-**静默失效**：不报错、不告警，只是额度被多扣一次、结果被后写的那份覆盖。
+⚠️ **这一节以前是正确性硬约束，工单 #20 已解除。** 留着这段历史是因为「不能加
+worker」这句话仍在多处出现，而它的理由已经换了——照着旧理由做判断会得出
+「闸门还在内存里、所以绝对不能多进程」的错误结论。
 
-`database.py:2256-2259` 已经把这条取舍写死了：「两个人同时调模型、同时扣额度——
-正好是本设计要防的那件事」，而那是为了「不重复扣费」优先换来的。
+旧约束的来源：覆盖闸门曾是 `api_summarize.py` 里的一个**进程内 `set[str]`**，
+`--workers 2` 会把它劈成两份互不可见的副本，于是同一个作者并发点两次覆盖时两个
+进程都判定「可以覆盖」——两次调模型、两次扣额度、结果互相覆盖，**不报错、
+不告警**。
 
-注意首次解析路径**不受影响**：那条路的占位行在**数据库**里（`reserve_video`），
-跨进程可见，多 worker 下仍然安全。出问题的只有覆盖路径。
+现在闸门是 `videos` 表上的两列（`regenerating_by` / `regenerating_at`），抢锁是
+一条带条件的 UPDATE，而 SQLite 串行化写事务——两个 worker 同时抢只有一个拿到。
+**两条路径（首次解析与覆盖）现在用的是同一种机制**：单条条件写 + 唯一裁决。
+设计取舍与代价见 [ADR 0015](adr/0015-regenerate-gate-in-db.md)。
 
-`backend/main.py` 用 `uvicorn.run(app, ...)`、不带 workers 参数，与本节一致。
+要加 worker 时真正要盯的：
 
-真要横向扩容，顺序是「先把覆盖闸门换成数据库级的」（落占位行，或在唯一索引上做
-原子插入），**再**加 worker——不是反过来。
+- **SQLite 写入串行**：写并发不会变快，且单次写事务超过 5 秒时会 `database is locked`。
+- **覆盖闸门的 TTL**：`VIDDIGEST_VIDEO_REGENERATE_TTL_SECONDS`（默认 1800 秒）
+  必须大于一次覆盖的最长耗时，否则会在持闸者还在干活时把锁偷走。
 
 关于 SQLite 本身：`database.py:196` 的 `sqlite3.connect(get_db_path())` 没传
 `timeout`，走 Python 默认的 **5.0 秒**等待窗口（2026-10-06 实测：持锁 2s 的写者
@@ -322,7 +326,8 @@ User=www-data
 WorkingDirectory=/opt/<app>/backend
 EnvironmentFile=/opt/<app>/backend/.env
 ExecStart=/opt/<app>/backend/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
-# 不要加 --workers：后端必须单进程，理由见 5.1.1
+# 不要加 --workers：SQLite 写入串行，加 worker 不提升写吞吐（工单 #20 后
+# 这已不是正确性约束——覆盖闸门落库了，理由见 5.1.1 与 ADR 0015）
 Restart=on-failure
 RestartSec=5
 
@@ -597,7 +602,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 
 | 症状                   | 原因               | 解决                                    |
 | -------------------- | ---------------- | ------------------------------------- |
-| `database is locked` | 某次写事务持有写锁**超过 5 秒**（Python `sqlite3.connect` 默认等待窗口，见 5.1.1）；常见来源是备份、批量删除、schema 迁移 | 先确认后端确实是单进程（多进程本身就是 bug，见 5.1.1）；再查是不是有长事务——加 `--workers` 既治不了它，还会引入静默失效的覆盖闸门 |
+| `database is locked` | 某次写事务持有写锁**超过 5 秒**（Python `sqlite3.connect` 默认等待窗口，见 5.1.1）；常见来源是备份、批量删除、schema 迁移 | 查是不是有长事务。加 `--workers` 既治不了它（SQLite 写入串行），也不再有静默失效风险——覆盖闸门已落库（ADR 0015）；但也**不会**因此变快 |
 | 用户列表错乱               | 升级数据库 schema 没迁移 | 看 `database.py` 是否有 `ALTER TABLE`，手动补 |
 | **AI 总结一直"正在分析"但无任何事件** | `vip_expire_at` 是 naive datetime，与带时区的 `datetime.now(timezone.utc)` 比较抛 TypeError；异常发生在 SSE `try` 块**之前**，前端拿不到 error 事件就一直转圈 | 读取侧 `is_vip_active` / `_fulfill_order` 对 `tzinfo is None` 做兜底。**写入侧要求**：所有 `vip_expire_at` 统一用 `datetime.now(timezone.utc).isoformat()`（带 `+00:00`） |
 
