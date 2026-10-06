@@ -5,6 +5,10 @@ import threading
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 
+# 视频链接的查询侧归一（工单 #25）。这个模块不 import 本项目的任何东西，
+# 所以顶层引入不会绕成环——与 model_catalog 那个刻意延迟的 import 不同。
+from url_canonical import canonical_video_url
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
 
 # 线程本地连接缓存（uvicorn 线程池复用线程，连接随之复用）
@@ -270,6 +274,10 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 video_url TEXT NOT NULL,
+                -- 同 videos：比较用，不回显。带它是因为下面那句
+                -- `LEFT JOIN videos v ON v.video_url = h.video_url`
+                -- 按**原文** JOIN，两个人粘了不同形态就谁也 join 不上。
+                canonical_url TEXT DEFAULT '',
                 video_title TEXT DEFAULT '',
                 video_data TEXT DEFAULT '',
                 summary_md TEXT DEFAULT '',
@@ -314,6 +322,11 @@ def init_db():
             CREATE TABLE IF NOT EXISTS videos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 video_url TEXT NOT NULL,
+                -- 归一值（工单 #25）。video_url 保持「用户粘进来的原文」不变，
+                -- 它要回显；这一列只用于**比较**，让同一个视频的多种形态
+                -- （无 www / 移动域名 / 跟踪参数 / 分享文案）收敛成同一个 key。
+                -- 写入后从不被 UPDATE：全库没有一条 UPDATE 会改 video_url。
+                canonical_url TEXT DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'pending',
                 summary_md TEXT DEFAULT '',
                 mindmap_md TEXT DEFAULT '',
@@ -347,6 +360,8 @@ def init_db():
             -- 用户注销后会话记录应随该用户一起消失，而不是变成孤儿行。
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                -- 同上：追问记录也要能跨形态对上号。
+                canonical_url TEXT DEFAULT '',
                 user_id INTEGER NOT NULL,
                 video_url TEXT NOT NULL,
                 role TEXT NOT NULL,
@@ -362,6 +377,11 @@ def init_db():
         _migrate_video_card_columns(conn)
         _migrate_regenerate_columns(conn)
         _migrate_admin_column(conn)
+        # canonical_url（工单 #25）：补列 + 回填 + 建普通索引。
+        # 排在 executescript 之后是因为表得先存在（全新库那一刻还没建）；
+        # 排在 _migrate_parse_history_unique_url 之前是因为那条也要扫
+        # parse_history，而回填会 UPDATE 那张表。
+        _migrate_canonical_url_columns(conn)
         # 去重必须排在 _create_video_search_index 之前：它自己也会扫
         # parse_history，而重复行会让社区搜索的候选集出现同一条内容两次。
         # 排在 executescript 之后是因为表得先存在（全新库那一刻还没建）。
@@ -530,6 +550,56 @@ def _migrate_video_card_columns(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+#: 需要 canonical_url 的三张表。顺序无关，每张都独立判存在性。
+_CANONICAL_URL_TABLES = ("videos", "parse_history", "chat_messages")
+
+
+def _migrate_canonical_url_columns(conn) -> int:
+    """给三张表补 canonical_url 列，并把存量行回填成它的归一值（工单 #25）。
+
+    为什么必须单独一步：`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作，
+    #6 建的老库里不会凭空多出列，而下面那条 CREATE INDEX 一建就 no such column，
+    整段脚本直接 abort —— 症状是「本地好好的，一升级就打不开」。
+
+    回填而不是「只对新行生效」：库里已经躺着的那些行才是要救的那批，
+    而新行由三个 INSERT 路径自己填（见 reserve_video / upsert_parse_history /
+    append_chat_turn）。只对新行生效的话，升级后的老数据会永远落空——
+
+    而且是**静默**落空：列存在、有索引、查得到行，只是值全是空的。
+
+    幂等：只在值为空时才回填，所以重复跑 init_db 不会覆盖任何已经算好的值，
+    也不会与将来某个 UPDATE 抢同一列（目前全库没有 UPDATE 会碰它）。
+
+    返回被回填的行数（0 表示库里本来就干净，或已经是新结构）。
+    """
+    filled = 0
+    for table in _CANONICAL_URL_TABLES:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "canonical_url" not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN canonical_url TEXT DEFAULT ''")
+        rows = conn.execute(
+            f"SELECT id, video_url FROM {table} WHERE COALESCE(canonical_url, '') = ''"
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                f"UPDATE {table} SET canonical_url = ? WHERE id = ?",
+                (canonical_video_url(row["video_url"]), row["id"]),
+            )
+        filled += len(rows)
+
+    # 索引**不**放在这三张表上：chat_messages 与 parse_history 的读出口在第 4 片
+    # 才切过来，现在建索引只是给一个还不会被查的列建索引。
+    # videos 那条必须在这里建——它是社区去重的主查询路径（`WHERE canonical_url = ?`），
+    # 而 videos 刻意不做条数裁剪，全表扫会随社区增长线性变慢。
+    #
+    # 这里只建**普通**索引：唯一化必须排在去重之后（第 3 片），
+    # 否则老库里已有的重复行会让 CREATE UNIQUE 直接失败。
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_videos_canonical ON videos(canonical_url)"
+    )
+    return filled
 
 
 #: 合成历史重复行时，「空」的判定覆盖的 JSON 空壳。
@@ -1880,9 +1950,9 @@ def upsert_parse_history(
         # 「这一条」的 id —— 冲突路径上它必须仍然是**既有**那一行。
         row = conn.execute(
             """INSERT INTO parse_history
-               (user_id, video_url, video_title, video_data, summary_md,
-                mindmap_md, subtitle_data, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (user_id, video_url, canonical_url, video_title, video_data,
+                summary_md, mindmap_md, subtitle_data, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(user_id, video_url) DO UPDATE SET
                    video_title   = COALESCE(NULLIF(excluded.video_title, ''),
                                             parse_history.video_title),
@@ -1896,7 +1966,7 @@ def upsert_parse_history(
                                             parse_history.subtitle_data),
                    updated_at    = excluded.updated_at
                RETURNING id""",
-            (user_id, video_url, video_title,
+            (user_id, video_url, canonical_video_url(video_url), video_title,
              json.dumps(video_data, ensure_ascii=False) if video_data else "",
              summary_md, mindmap_md,
              json.dumps(subtitle_data, ensure_ascii=False) if subtitle_data else "",
@@ -1925,9 +1995,10 @@ def append_chat_turn(user_id: int, video_url: str, question: str, answer: str) -
     with get_db() as conn:
         for role, content in (("user", question), ("assistant", answer)):
             conn.execute(
-                """INSERT INTO chat_messages (user_id, video_url, role, content)
-                   VALUES (?, ?, ?, ?)""",
-                (user_id, video_url, role, content),
+                """INSERT INTO chat_messages
+                   (user_id, video_url, canonical_url, role, content)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, video_url, canonical_video_url(video_url), role, content),
             )
 
 
@@ -2429,10 +2500,11 @@ def reserve_video(
         with get_db() as conn:
             conn.execute(
                 """INSERT INTO videos
-                   (video_url, status, parsed_by, created_at, updated_at,
-                    video_title, cover_url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (video_url, VIDEO_STATUS_PENDING, user_id, now, now,
+                   (video_url, canonical_url, status, parsed_by, created_at,
+                    updated_at, video_title, cover_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (video_url, canonical_video_url(video_url),
+                 VIDEO_STATUS_PENDING, user_id, now, now,
                  video_title or "", cover_url or ""),
             )
         return "reserved", None
