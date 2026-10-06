@@ -49,6 +49,13 @@ const headerVue = stripComments(read('../src/components/AppHeader.vue'))
 const css = read('../src/style.css')
 
 /**
+ * api/admin.js 的源码。**声明在模块顶层**，不在某个 describe 体里——
+ * 三份转换（toAdminUser / toAdminCommunityItem / toAdminModelItem）都在这个
+ * 文件里断言，而它们分散在多个 describe 组，作用域外的变量会直接 TDZ 报错。
+ */
+const apiAdmin = stripComments(read('../src/api/admin.js'))
+
+/**
  * <template> 段。转换点收在一处要靠它来验。
  *
  * 必须用 lastIndexOf：模板里还有 <template v-for> 这种同名标签，
@@ -674,36 +681,55 @@ describe('后端契约 · snake_case 转换收在一处', () => {
     const names = m[1].split(',').map((s) => s.trim()).filter(Boolean)
     // 契约从五个长到八个（ADR 0012 账号生命周期）再到十一个：fetchTagVocabulary /
     // updateCommunityTags / deleteCommunityVideo 是 ADR 0013 社区审核的前端出口。
-    // 工单 #15 收口：fetchAdminModels（原文出口）删掉，换成 fetchAdminModelCatalog。
-    // 转换函数 toAdminModelItem **不进组件的 import** —— 它归 api 层独有，
-    // 组件拿到的已经是转好的形状（多导一个就多一条重复转换的路）。
+    // 工单 #15 收口：fetchAdminModels（原文出口）删掉，换成 fetchAdminModelCatalog；
+    // 转换函数 toAdminModelItem **不进组件的 import**（模型列表已在 api 层转好，
+    // 组件不再需要翻它）。toAdminUser / toAdminCommunityItem 进 import 是另一回事：
+    // 组件要用它们翻**回读原文**（建号 / 提权 / 改标签的响应）。
     // **这份名单是冻结的**——少一个说明有路径绕过了 api 层，
     // 多一个说明有新的未审接口混进来了。
     assert.deepEqual(names.sort(),
       ['createAdminUser', 'deleteAdminUser', 'deleteCommunityVideo',
        'fetchAdminCommunity', 'fetchAdminModelCatalog', 'fetchAdminUsers',
        'fetchTagVocabulary', 'setUserAdmin', 'setUserQuota',
+       'toAdminCommunityItem', 'toAdminUser',
        'updateAdminModel', 'updateCommunityTags'],
       '导入的 API 名字与冻结的契约不一致')
   })
 
-  test('两个转换函数都在组件里（用户 / 社区），模型那份已收进 api 层', () => {
-    // 模型清单的转换在 `api/admin.js` 的 toAdminModelItem（工单 #15 收口），
-    // 组件里曾有一份重复的 toModel，两处逐字段重复且 enabled 口径还不一致。
-    for (const fn of ['toUser', 'toCommunityItem']) {
-      assert.ok(adminCode.includes(`const ${fn} =`), `没有 ${fn} —— 转换点散出去了`)
+  test('组件里不再自己定义转换函数（工单 #15 收口，同族项）', () => {
+    // 三份转换（用户 / 社区 / 模型）都在 `api/admin.js` 定义。组件若另写一份，
+    // 同一份数据就有两种转换归属——而「读不到的键」不报错、只退化成默认值：
+    // `enabled` 键名两种形态相同所以读得到（症状是某几列显示异常），
+    // 而 `sort_order` 已翻成 `sortOrder`，再读旧键读不到就退回 0。
+    for (const fn of ['toUser', 'toCommunityItem', 'toModel']) {
+      assert.ok(!new RegExp(`const\\s+${fn}\\s*=`).test(adminCode),
+        `组件里又出现了一份 ${fn} —— 转换该归 api 层独有，`
+        + '组件留一份就等于两份映射各改各的')
     }
-    assert.ok(!/\bconst toModel =/.test(adminCode),
-      '组件里又出现了一份 toModel —— 转换该归 api 层，'
-      + '组件留一份就等于两份映射各改各的')
+    // 数字助手是转换的一部分，也跟着搬走了。
+    assert.ok(!/const num =/.test(adminCode),
+      '组件里又有 num 助手 —— 它只服务于那三份转换，应随转换一起在 api 层')
+  })
+
+  test('三个 loader 都不再 .map（列表出口已经在 api 层转好）', () => {
+    // 对**已经转好的**数据再翻一次不会报错：`isAdmin` 键名两种形态相同读得到，
+    // 而 `parse_limit_override` 已翻成 `parseLimitOverride`，`num()` 读到
+    // undefined 就退回 0 —— 于是「清空覆盖（null）」和「设成 0」在界面上
+    // 变得一模一样，管理员改完看不出到底改没改成。
+    for (const m of adminCode.matchAll(/v\.items\s*=\s*([^\n]+)/g)) {
+      assert.ok(!/\.map\(/.test(m[1]),
+        `loaders 里又出现了一次转换：${m[1].trim()}\n`
+        + '  —— 列表出口返回的已经是 camelCase，组件再翻一次就是第二份映射，'
+        + '而读不到的键只会退化成默认值、永远不报错')
+    }
   })
 
   test('模板里不出现 snake_case 取值（转换必须已经发生）', () => {
     const hits = [...adminTemplate.matchAll(/[A-Za-z_$][\w$]*\.[a-z]+_[a-z]+/g)].map((m) => m[0])
     assert.deepEqual(hits, [],
       `模板里直接读了 snake_case 字段：${hits.join(' ')}\n`
-      + '  —— 契约是 snake_case，camelCase 由 toUser / toCommunityItem / '
-      + 'api 层的 toAdminModelItem 一次性转好。'
+      + '  —— 契约是 snake_case，camelCase 由 api 层那三份转换（toAdminUser / '
+      + 'toAdminCommunityItem / toAdminModelItem）一次性转好。'
       + '模板里混着两种命名，后端一改字段，报错会散落在整份模板里。')
   })
 
@@ -718,17 +744,16 @@ describe('后端契约 · snake_case 转换收在一处', () => {
   })
 
   test('解析上限与上限来源都读了（override 决定回填，source 决定解释）', () => {
-    const m = adminCode.match(/const toUser = \(([\s\S]*?)\n\}\)/)
-    assert.ok(m, '取不到 toUser')
+    // 转换搬到 api 层后（工单 #15 收口），这条断言的目标也跟着搬过去。
+    const m = apiAdmin.match(/export function toAdminUser\(([\s\S]*?)\n\}/)
+    assert.ok(m, '取不到 api/admin.js 的 toAdminUser')
     for (const f of ['parse_limit_override', 'chat_limit_override', 'parse_limit_source', 'chat_limit_source']) {
-      assert.ok(m[1].includes(f), `toUser 没有读 ${f} —— 改完额度看不到有没有真的落成 override`)
+      assert.ok(m[1].includes(f), `toAdminUser 没有读 ${f} —— 改完额度看不到有没有真的落成 override`)
     }
   })
 })
 
 describe('AI 服务页签 · 模型清单可改（ADR 0010）', () => {
-  const apiAdmin = stripComments(read('../src/api/admin.js'))
-
   test('页签不再自称「只读」—— 文案必须与实现对得上', () => {
     // ADR 0010 写的是「AI 服务（模型清单可改）」，ADR 0011 更把
     // 「只读展示」明确列为**被否决**的方案（理由：等于诊断页）。
@@ -994,14 +1019,15 @@ describe('saveModel 真跑 · 发出去的 payload', () => {
 })
 // ── 账号生命周期 · 抽函数真跑（ADR 0012）────────────────────
 /**
- * toUser 的替身。它在组件里是真实存在的，但本文件从来没求值过它
- * （只 includes 过名字），所以这里自己实现一份。
+ * toAdminUser 的替身。真身现在在 `api/admin.js`（工单 #15 收口搬过去的），
+ * 而本沙箱是用 `new Function` 抽出组件函数单独跑的，没有模块作用域，
+ * 所以这里注入一份。
  *
  * **必须**照抄 `!!r.is_admin` 这一步：「回读替换」那条断言要靠它——
  * 服务端回的是 0/1，替身若原样透传，那条断言就变成了在测替身自己。
  *
  * 替身只保留这几个用例关心的字段；本组测试的被测对象是
- * saveNewUser / toggleAdmin / confirmDelete，不是 toUser 本身。
+ * saveNewUser / toggleAdmin / confirmDelete，不是 toAdminUser 本身。
  */
 const toUserStub = (r) => ({
   id: r.id,
@@ -1057,7 +1083,7 @@ function makeUserSandbox({ items = [], total = 0, api = {} } = {}) {
     'createOpen', 'creating', 'busyUserId', 'pendingDeleteId',
     'createDraft', 'createFeedback', 'opsFeedbacks', 'view',
     'opsFeedbackOf', 'createAdminUser', 'setUserAdmin', 'deleteAdminUser',
-    'replaceUser', 'toUser', 'messageOf',
+    'replaceUser', 'toAdminUser', 'messageOf',
     `${USER_FN_BODY}\nreturn { saveNewUser, toggleAdmin, askDelete, cancelDelete, confirmDelete }`,
   )
   const fns = factory(
@@ -1070,7 +1096,7 @@ function makeUserSandbox({ items = [], total = 0, api = {} } = {}) {
     impl.createAdminUser, impl.setUserAdmin, impl.deleteAdminUser,
     (raw) => {
       // replaceUser 的替身：只做「把回读结果换成 camelCase 那一行」
-      const fresh = toUser(raw)
+      const fresh = toAdminUser(raw)
       const i = view.value.items.findIndex((x) => x.id === fresh.id)
       if (i >= 0) view.value.items.splice(i, 1, fresh)
     },
@@ -1306,8 +1332,9 @@ describe('社区审核 · 静态契约', () => {
   })
 
   test('列表带上状态，pending 占位与真实内容分得开', () => {
-    assert.match(adminCode, /status: r\.status,/,
-      'toCommunityItem 没有把 status 映射过来 —— 组件分不出空壳与真内容')
+    // 转换搬到 api 层后（工单 #15 收口），status 的映射跟着搬过去了。
+    assert.match(apiAdmin, /status: r\.status,/,
+      'toAdminCommunityItem 没有把 status 映射过来 —— 组件分不出空壳与真内容')
     assert.match(adminTemplate, /c\.status === 'ready'/,
       '模板没有按 status 区分渲染')
     assert.match(adminTemplate, /占位中/, '没有「占位中」的文案')

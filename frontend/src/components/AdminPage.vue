@@ -551,6 +551,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModelCatalog,
          updateAdminModel, createAdminUser, setUserAdmin, deleteAdminUser,
+         toAdminUser, toAdminCommunityItem,
          fetchTagVocabulary, updateCommunityTags, deleteCommunityVideo } from '../api/admin.js'
 
 const emit = defineEmits(['back'])
@@ -597,41 +598,15 @@ const empty = computed(() => EMPTY[tab.value] || EMPTY.users)
 const totalPages = computed(() => Math.max(1, Math.ceil(view.value.total / PAGE_SIZE)))
 
 /**
- * snake_case → camelCase 的**唯一**转换点。
+ * snake_case → camelCase 的转换**不在这个文件里**。
  *
- * 后端契约是 snake_case（工单 #14 冻结的响应形状），而本组件是唯一渲染
- * 它们的地方。转换若散进模板（`item.parse_limit`），模板里会同时出现
- * 两种命名约定，半年后没人说得清哪个是服务端形状——而后端一改字段，
- * 报错的位置会散布在整份模板里。
+ * 三份转换（用户 / 社区 / 模型）都在 `api/admin.js`，列表出口在 api 层就已经翻好，
+ * 组件拿到的直接就是 camelCase（工单 #15 收口）。
+ *
+ * 本组件仍需要 `toAdminUser` / `toAdminCommunityItem` 的**只有回读路径** ——
+ * `createAdminUser` / `setUserAdmin` / `updateCommunityTags` 返回的是服务端原文，
+ * 组件要用回读的那份替换本地行。规则是 api 层定义、组件引用，不是组件另写一份。
  */
-const num = (v) => (typeof v === 'number' ? v : Number(v) || 0)
-
-const toUser = (r) => ({
-  id: r.id,
-  email: r.email,
-  isAdmin: !!r.is_admin,
-  isVip: !!r.is_vip,
-  vipExpireAt: r.vip_expire_at,
-  createdAt: r.created_at,
-  parseUsed: num(r.parse_used),
-  chatUsed: num(r.chat_used),
-  parseLimit: num(r.parse_limit),
-  chatLimit: num(r.chat_limit),
-  parseLimitOverride: r.parse_limit_override,
-  chatLimitOverride: r.chat_limit_override,
-  parseLimitSource: r.parse_limit_source,
-  chatLimitSource: r.chat_limit_source,
-})
-
-const toCommunityItem = (r) => ({
-  id: r.id,
-  videoUrl: r.video_url,
-  title: r.title,
-  authorEmail: r.author_email,
-  tags: Array.isArray(r.tags) ? r.tags : [],
-  status: r.status,
-  createdAt: r.created_at,
-})
 
 /**
  * 模型清单的 snake_case → camelCase 转换**不在这里**。
@@ -864,7 +839,7 @@ async function loadUsers() {
   v.loading = true; v.error = ''; v.forbidden = false
   try {
     const res = await fetchAdminUsers({ page: v.page, pageSize: PAGE_SIZE, q: query.value.trim() })
-    v.items = (res.items || []).map(toUser)
+    v.items = res.items || []
     v.total = res.total || 0
     v.page = res.page || v.page
     primeDrafts(v.items)
@@ -881,7 +856,7 @@ async function loadCommunity() {
   v.loading = true; v.error = ''; v.forbidden = false
   try {
     const res = await fetchAdminCommunity({ page: v.page, pageSize: PAGE_SIZE })
-    v.items = (res.items || []).map(toCommunityItem)
+    v.items = res.items || []
     v.total = res.total || 0
     v.page = res.page || v.page
   } catch (err) {
@@ -1020,7 +995,7 @@ async function saveCommunityTags(c) {
 
 function replaceCommunityItem(raw) {
   if (!raw) return
-  const fresh = toCommunityItem(raw)
+  const fresh = toAdminCommunityItem(raw)
   const list = views.community.items
   const i = list.findIndex((c) => c.id === fresh.id)
   if (i >= 0) {
@@ -1119,7 +1094,8 @@ function toQuotaValue(text) {
 /** 用服务端回读的那份替换本地行：两个页签看到的都是同一份真实值。 */
 function replaceUser(raw) {
   if (!raw) return
-  const fresh = toUser(raw)
+  // 回读是服务端原文，所以这里仍要翻一次；翻的规则归 api 层那一份。
+  const fresh = toAdminUser(raw)
   const list = views.users.items
   const i = list.findIndex((u) => u.id === fresh.id)
   if (i >= 0) list.splice(i, 1, fresh)
@@ -1218,7 +1194,7 @@ async function saveNewUser() {
   createFeedback.text = ''
   try {
     const res = await createAdminUser({ email, password, isAdmin: createDraft.isAdmin })
-    const fresh = toUser(res.user)
+    const fresh = toAdminUser(res.user)
     // 列表按 id 升序，新号在末尾。直接 push 再排序，别指望后端重排。
     view.value.items.push(fresh)
     view.value.total += 1

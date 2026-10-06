@@ -205,6 +205,66 @@ describe('snake_case → camelCase：只在这一处发生一次', () => {
 })
 
 describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer', () => {
+  // ── 工单 #15 收口（同族项）：用户 / 社区列表的转换也在 api 层做完 ──
+  // 组件曾拿到 snake_case 再自己 .map(toUser)。现在出口直接给 camelCase。
+  const USER_WIRE = {
+    id: 7,
+    email: 'u7@example.com',
+    is_admin: 1,
+    is_vip: 0,
+    vip_expire_at: null,
+    created_at: '2026-01-02T03:04:05+00:00',
+    parse_used: '2',
+    chat_used: 1,
+    parse_limit: -1,
+    chat_limit: 10,
+    parse_limit_override: null,
+    chat_limit_override: 0,
+    parse_limit_source: 'global',
+    chat_limit_source: 'override',
+  }
+  const COMM_WIRE = {
+    id: 3,
+    video_url: 'https://example.com/v/abc',
+    title: '标题',
+    author_email: 'a@example.com',
+    tags: ['编程', '架构设计'],
+    status: 'pending',
+    created_at: '2026-01-02T03:04:05+00:00',
+  }
+
+  test('用户列表出口已经转成 camelCase（组件不再自己 .map）', async () => {
+    const calls = spyFetch({ items: [USER_WIRE], total: 1, limit: 20, offset: 0 })
+    const { fetchAdminUsers } = await import('../src/api/admin.js')
+    const data = await fetchAdminUsers({ page: 1, pageSize: 20 })
+    assert.ok(calls[0].url.startsWith('http://catalog.test/api/admin/users?'),
+      `用户列表端点不对：${calls[0].url}`)
+    const u = data.items[0]
+    assert.equal(u.isAdmin, true, 'is_admin 必须是布尔 —— 模板判真假用')
+    assert.equal(u.isVip, false, '0 要翻成 false，不是 0')
+    assert.equal(u.parseUsed, 2, "字符串 '2' 要翻成数字")
+    assert.equal(u.parseLimit, -1, '-1 = 无限，必须保住符号')
+    assert.equal(u.chatLimitOverride, 0,
+      'override = 0（一条都不能用）不能被当成 falsy 丢掉 —— 它与 null 是两种状态')
+    assert.equal(u.parseLimitOverride, null, 'null = 回落全局，与 0 语义不同，不能混')
+    assert.equal(u.chatLimitSource, 'override')
+    assert.ok(!('is_admin' in u), '出口里还留着 snake_case 键 —— 组件读 camelCase 会全读不到')
+  })
+
+  test('社区列表出口已经转成 camelCase，status 原样透传', async () => {
+    const calls = spyFetch({ items: [COMM_WIRE], total: 1, limit: 20, offset: 0 })
+    const { fetchAdminCommunity } = await import('../src/api/admin.js')
+    const data = await fetchAdminCommunity({ page: 1, pageSize: 20 })
+    assert.ok(calls[0].url.startsWith('http://catalog.test/api/admin/community?'),
+      `社区列表端点不对：${calls[0].url}`)
+    const c = data.items[0]
+    assert.equal(c.videoUrl, COMM_WIRE.video_url)
+    assert.equal(c.authorEmail, COMM_WIRE.author_email)
+    assert.equal(c.status, 'pending',
+      'status 必须原样透传 —— 组件靠它分「占位中」与「已就绪」，翻成布尔会把两个状态压成一个')
+    assert.deepEqual(c.tags, ['编程', '架构设计'])
+  })
+
   test('公开端点打 /api/models，不带 Authorization，返回已转好的清单', async () => {
     const calls = spyFetch({ items: WIRE })
     const data = await fetchPublicModelCatalog()

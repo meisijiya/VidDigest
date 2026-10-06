@@ -87,10 +87,68 @@ function toPage(data, what) {
 }
 
 /**
+ * 后端契约是 snake_case，前端只用 camelCase。
+ *
+ * **这个文件是转换的唯一发生地**（工单 #15 收口）。三份转换 —— 用户 / 社区 / 模型
+ * —— 都在这里，组件拿到的已经是转好的形状。
+ *
+ * 为什么非得收在一处：转换散进组件之后，同一份数据会有两种命名形态混在数据流里，
+ * 而「读不到的键」不会报错、只会退化成 `undefined` 或默认值。工单 #15 实测过两例：
+ * ① `enabled` 两种形态同名读得到，所以布尔/数字口径不一致时**症状只是某几列显示异常**；
+ * ② `sort_order` 已翻成 `sortOrder`，`toAdminModelItem` 再读 `sort_order` 读不到就
+ * 退回 0，于是**每保存一次就把该行排序号抹成 0**。两处单看都对，数据流上是错的。
+ */
+const num = (v) => (typeof v === 'number' ? v : Number(v) || 0)
+
+/**
+ * 后台用户行 → camelCase。
+ *
+ * `is_admin` / `is_vip` 翻成布尔（模板只判真假）；额度那几项翻成数字
+ * （`-1` 无限、`0` 停用，数字判定比布尔更直接）；`*_override` 保持原值，
+ * 因为 `null`（=回落全局）与 `0`（=一条都不能用）是**两种不同状态**。
+ */
+export function toAdminUser(r) {
+  return {
+    id: r.id,
+    email: r.email,
+    isAdmin: !!r.is_admin,
+    isVip: !!r.is_vip,
+    vipExpireAt: r.vip_expire_at,
+    createdAt: r.created_at,
+    parseUsed: num(r.parse_used),
+    chatUsed: num(r.chat_used),
+    parseLimit: num(r.parse_limit),
+    chatLimit: num(r.chat_limit),
+    parseLimitOverride: r.parse_limit_override,
+    chatLimitOverride: r.chat_limit_override,
+    parseLimitSource: r.parse_limit_source,
+    chatLimitSource: r.chat_limit_source,
+  }
+}
+
+/**
+ * 后台社区行 → camelCase。
+ *
+ * `status` 原样透传：组件要靠它分「占位中」与「已就绪」，
+ * 翻成布尔会把两个状态压成一个。
+ */
+export function toAdminCommunityItem(r) {
+  return {
+    id: r.id,
+    videoUrl: r.video_url,
+    title: r.title,
+    authorEmail: r.author_email,
+    tags: Array.isArray(r.tags) ? r.tags : [],
+    status: r.status,
+    createdAt: r.created_at,
+  }
+}
+
+/**
  * 后台用户列表（只读）。**需管理员**。
  *
- * 返回**服务端原文**（snake_case），字段映射由 `AdminPage.vue` 的 `toUser`
- * 负责。
+ * 返回 **items 已转成 camelCase**（`toAdminUser`）。转换在 api 层做完，
+ * 组件拿到就能直接用——不再自己 `.map(toUser)`。
  *
  * @param {object} o
  * @param {number} [o.page=1]      从 1 起
@@ -103,7 +161,8 @@ export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' } = {}) 
   const res = await client().get('/api/admin/users', {
     params: { limit, offset, q: String(q || '').trim() },
   })
-  return toPage(res.data, '用户列表')
+  const page1 = toPage(res.data, '用户列表')
+  return { ...page1, items: page1.items.map(toAdminUser) }
 }
 
 /**
@@ -112,13 +171,16 @@ export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' } = {}) 
  * 不过滤 status：pending 占位行恰恰是后台最该看的（谁占了位没解析完）。
  * status 现已在契约里，组件据此显示「占位中」——管理员要能分辨一条空壳与
  * 一条真内容，删之前才知道自己在删什么。
+ *
+ * 返回 **items 已转成 camelCase**（`toAdminCommunityItem`）。
  */
 export async function fetchAdminCommunity({ page = 1, pageSize = 20 } = {}) {
   const { limit, offset } = toLimitOffset(page, pageSize)
   const res = await client().get('/api/admin/community', {
     params: { limit, offset },
   })
-  return toPage(res.data, '社区记录')
+  const p = toPage(res.data, '社区记录')
+  return { ...p, items: p.items.map(toAdminCommunityItem) }
 }
 
 /**
