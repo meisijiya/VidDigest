@@ -87,9 +87,21 @@ export async function fetchChatSession(url) {
   return res.data.chat_history || []
 }
 
-/** 保存/更新解析历史（同一视频去重，空字段不覆盖已有数据） */
+/**
+ * 保存/更新解析历史（同一视频去重，空字段不覆盖已有数据）。
+ *
+ * 失败**不打断**主流程：用户已经拿到总结了，为一条历史记录弹窗是本末倒置。
+ * 但不能一个字都不留——这条请求失败的后果是「刷新一次页面，那次解析就不见了」，
+ * 而这个症状与「根本没解析成功」在界面上完全同形，不留痕迹就永远查不出来。
+ * 而且 `/api/summarize` 从不写这张表（个人历史由前端驱动是刻意的职责收窄），
+ * 这一条是**唯一**的写入途径，它没了就真的没了。
+ *
+ * 与上面 fetchChatSession 同一口径：读要能被上游看见，写也要能被上游看见。
+ */
 export async function saveHistory(payload) {
   try {
     await client().post('/api/history/save', payload)
-  } catch { /* 历史保存失败不影响主流程 */ }
+  } catch (err) {
+    console.warn('[history] 保存解析历史失败：', err)
+  }
 }

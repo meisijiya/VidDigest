@@ -620,7 +620,13 @@ function stopSummarize() {
   summaryStream?.cancel()
 }
 
-/** AI 解析完成后保存到解析历史（仅登录用户；失败静默，不影响主流程） */
+/**
+ * AI 解析完成后保存到解析历史（仅登录用户）。
+ *
+ * 失败不打断主流程，但**不留白**：saveHistory 内部会记一条 warn。
+ * 这条请求是个人历史唯一的写入途径（`/api/summarize` 刻意不写这张表），
+ * 它静默失败时用户刷新一次页面，那次解析就凭空消失了。
+ */
 function persistHistory() {
   if (!props.user || !props.videoUrl) return
   if (!summaryMd.value && !mindmapMd.value) return
