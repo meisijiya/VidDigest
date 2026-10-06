@@ -22,6 +22,7 @@
 - [9. 故障排查手册](#9-故障排查手册)
 - [10. 性能与限流](#10-性能与限流)
 - [11. 安全清单](#11-安全清单)
+- [11.5 生产静态托管（SPA rewrite）](#115-生产静态托管spa-rewrite)
 - [12. 升级与维护](#12-升级与维护)
 
 ---
@@ -46,7 +47,7 @@ graph LR
 | 进程             | 端口   | 依赖                                   | 备注                |
 | :--------------: | :----: | ------------------------------------ | ----------------- |
 | `backend-api`  | 8000 | Python 3.10+ / yt-dlp / DeepSeek Key | FastAPI + Uvicorn |
-| `frontend-dev` | 5173 | Node 18+                             | 仅开发期使用，生产替换为静态文件  |
+| `frontend-dev` | 5173 | Node 20.19+ / 22.12+                  | 仅开发期使用，生产替换为静态文件  |
 
 
 **生产部署时**：前端 `npm run build` → `dist/` 由 Nginx 托管；后端用 Gunicorn + Uvicorn worker 或单进程 Uvicorn + 反向代理。
@@ -59,11 +60,15 @@ graph LR
 | 组件      | 最低版本 | 推荐         | 验证命令                |
 | ------- | :----: | :----------: | ------------------- |
 | Python  | 3.10 | 3.11       | `python --version`  |
-| Node.js | 18   | 20 / 22    | `node --version`    |
-| npm     | 9    | 10+        | `npm --version`     |
+| Node.js | 20.19 或 22.12 | 22 / 24 | `node --version`    |
+| npm     | 10    | 10+        | `npm --version`     |
 | ffmpeg  | 任意   | 最新稳定       | `ffmpeg -version`   |
 | SQLite  | 3.x  | 系统自带       | `sqlite3 --version` |
 | 磁盘      | —    | ≥ 10 GB 可用 | `downloads/` 会持续增长  |
+
+> **Node 版本不是建议，是硬要求**：Vite 8 的 `engines` 写的是
+> `^20.19.0 || >=22.12.0`，Node 18 会在 `npm install` 阶段直接失败。
+> `frontend/package.json` 的 `engines` 字段与这张表同源。
 
 
 **系统级依赖**
@@ -130,9 +135,12 @@ npm install
 # 后端
 curl http://127.0.0.1:8000/api/health        # → {"status":"ok"}
 
-# 前端（开发期）
-curl -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/   # → 200
+# 前端（开发期）—— 必须用 localhost：Vite 只监听 IPv6 回环
+curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 ```
+
+> `127.0.0.1:5173` **连不上**（Vite 绑的是 IPv6 回环 `::1`）。这是本项目最常见的
+> 「前端起不来」误判来源。后端 `:8000` 不受此限，用 `127.0.0.1` 或 `localhost` 都可以。
 
 ---
 
@@ -443,11 +451,11 @@ hub logs --name backend-api --follow
 # 1) 后端存活
 curl -fs http://127.0.0.1:8000/api/health || alert "Backend down"
 
-# 2) 前端可达
-curl -fs -o /dev/null http://127.0.0.1:5173/ || alert "Frontend down"
+# 2) 前端可达（注意：Vite 只监听 IPv6 回环，127.0.0.1 连不上）
+curl -fs -o /dev/null http://localhost:5173/ || alert "Frontend down"
 
 # 3) 代理链路
-curl -fs http://127.0.0.1:5173/api/health || alert "Vite proxy broken"
+curl -fs http://localhost:5173/api/health || alert "Vite proxy broken"
 
 # 4) 磁盘空间（downloads 增长快）
 du -sh backend/downloads/ && df -h backend/
@@ -685,6 +693,146 @@ server {
 
 ---
 
+## 11.5 生产静态托管（SPA rewrite）
+
+> **这一节是工单 #15 补的。** 之前 §1 写「`dist/` 由 Nginx 托管」，
+> 但没给配置 —— 而托管这份产物**必须**带 rewrite，否则生产上用户刷新 `/admin`
+> 直接 404。
+
+### 11.5.1 为什么必须有 rewrite
+
+前端是**轻路由**：`App.vue` 的 `pageFromPath` 靠 `location.pathname` 判断，
+`/admin` 与 `/admin/` 落到 admin 页，其余落首页。这条路径只在浏览器里跑，
+静态服务器看到 `/admin` 会当成一个真实文件去找，找不到就 404。
+
+Vite dev 有 history fallback，所以**开发期完全正常** —— 这个 bug 只在生产暴露。
+同理 `npm run preview` 也有 fallback，**不能用它验证 rewrite 配置对不对**
+（它会把缺失的 rewrite 掩盖掉）。
+
+### 11.5.2 发布前：先做一次干净构建
+
+`vite build` 默认会清空 `outDir`（`emptyOutDir` 对 `outDir` 在 `root` 内时默认开），
+但本地开发时反复构建会在 `dist/assets/` 留下**多代哈希产物**（文件名带内容哈希，
+旧的不会被自动清掉，除非整目录重建）。发布整个 `dist/` 就等于把陈旧 bundle 一起推上线。
+
+**用 `npm run release:build`**（= `clean` + `vite build`），它先整目录删干净再构建：
+
+```bash
+cd frontend
+npm run release:build              # 发布用这个
+# 确认 assets/ 里只有 index.html 实际引用的那一代
+grep -o 'assets/[^"]*' dist/index.html | sort -u
+ls -la dist/assets/
+```
+
+两处应当**一一对应**。对不上就是有陈旧产物，再跑一次 `npm run release:build`。
+（日常开发用 `npm run build` 即可，不必每次清空。）
+
+### 11.5.3 Nginx：同域托管 + API 反代
+
+前端所有 API 都是**同源相对路径**（`api/*.js` 里全是 `/api/...`），
+`vite.config.js` 的 `server.proxy` **只在 dev 生效**。生产必须把 `/api/*` 反代到后端。
+
+```nginx
+server {
+  listen 80;
+  server_name your-domain.com;   # ← 换成实际域名
+  return 301 https://$host$request_uri;
+}
+
+server {
+  listen 443 ssl;
+  server_name your-domain.com;   # ← 换成实际域名
+  ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+
+  root /opt/<app>/frontend/dist;
+  index index.html;
+
+  # ── API 反代（必须在 rewrite 之前，见下方顺序说明）──
+  location /api/ {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # SSE：`/api/summarize` 与 `/api/chat` 是流式的。
+    # 不关缓冲的话 Nginx 会攒着一起发，界面就一直转圈。
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 600s;   # AI 总结 + 思维导图可能跑几分钟
+    proxy_send_timeout 600s;
+  }
+
+  # ── 带哈希的构建产物：可以长缓存 ──
+  location /assets/ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+    access_log off;
+  }
+
+  # ── SPA rewrite（关键一条）──
+  # 未知路径回 index.html，让前端路由接手。
+  # `try_files $uri $uri/ /index.html;` 最后的兜底就是这一行的全部作用。
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  # favicon / manifest 等根级静态文件：存在就直出，不存在才走 SPA
+  location = /favicon.svg { try_files $uri =404; }
+  location = /browserconfig.xml { try_files $uri =404; }
+  location = /site.webmanifest { try_files $uri =404; }
+}
+```
+
+**顺序为什么重要**：`location /api/` 必须在 `location /` 之前或用更长的前缀匹配。
+若 rewrite 那条先命中，`/api/xxx` 会被回成 `index.html`，前端拿到一段 HTML
+去 `JSON.parse` → 500，且日志里看不到明显的路由错误。
+
+### 11.5.4 上线后自检
+
+```bash
+# 1) 主页
+curl -sS -o /dev/null -w '%{http_code}\n' https://your-domain.com/          # 200
+
+# 2) SPA rewrite 真的生效（这一条就是本节存在的理由）
+curl -sS -o /dev/null -w '%{http_code}\n' https://your-domain.com/admin     # 200，且是 index.html
+curl -sS https://your-domain.com/admin | head -5                            # 应看到 <!DOCTYPE html> / <div id="app">
+
+# 3) API 没被 rewrite 吃掉
+curl -sS https://your-domain.com/api/health                                 # {"status":"ok"}
+
+# 4) 静态产物正常
+curl -sS -o /dev/null -w '%{http_code}\n' https://your-domain.com/favicon.svg
+```
+
+第 2 条返回 404 = rewrite 没生效；返回 200 但第 3 条返回 HTML = rewrite 盖住了 API。
+
+### 11.5.5 其它静态托管平台
+
+Caddy：
+
+```caddyfile
+your-domain.com {
+  handle /api/* {
+    reverse_proxy 127.0.0.1:8000
+    flush_interval -1          # SSE
+  }
+  handle {
+    root * /opt/<app>/frontend/dist
+    try_files {path} /index.html
+    file_server
+  }
+}
+```
+
+Nginx 之外的平台（对象存储 + CDN、Vercel、Netlify 等）**通常自带 SPA fallback**，
+但要逐个确认：不少平台的默认规则只对 `/index.html` 生效，**不覆盖 `/admin` 这类无扩展名路径**。
+以平台实际行为为准，别假设。
+
+---
+
 ## 12. 升级与维护
 
 ### 12.1 依赖升级
@@ -730,8 +878,11 @@ hub restart --name backend-api
 - [ ] 备份 `.env`
 - [ ] 看 `git log` 与 `docs/adr/` 是否有破坏性变更
 - [ ] 在 staging 环境跑通
+- [ ] **前端做一次干净构建**，确认 `dist/assets/` 与 `dist/index.html` 的引用一一对应（见 [11.5.2](#1152-发布前先做一次干净构建)）
+- [ ] 确认静态托管的 **SPA rewrite** 生效（`curl https://<域名>/admin` 返回 200 且是 index.html，见 [11.5.4](#1154-上线后自检)）
+- [ ] 确认 `/api/*` 反代没被 rewrite 盖住（`curl https://<域名>/api/health` 返回 JSON）
 - [ ] 生产滚动升级（先停前端再停后端，避免半截状态）
-- [ ] 验证 `/api/health` + 主页 + 注册登录 + 一次完整下载 + 一次 AI 总结
+- [ ] 验证 `/api/health` + 主页 + `/admin` 刷新 + 注册登录 + 一次完整下载 + 一次 AI 总结（SSE 不缓冲）
 
 ---
 

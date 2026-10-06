@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 import axios from 'axios'
 
 import { toItems, toModelItem, fetchPublicModelCatalog } from '../src/api/models.js'
-import { toAdminModelItem, fetchAdminModelCatalog, fetchAdminModels } from '../src/api/admin.js'
+import { toAdminModelItem, fetchAdminModelCatalog } from '../src/api/admin.js'
 import { chooseProvider, getRequestCredential, save, clear, validateBaseUrl } from '../src/lib/byok.js'
 
 /** 归一化行尾符：本仓库是 CRLF。 */
@@ -235,15 +235,39 @@ describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer
     )
   })
 
-  test('同一端点的原文出口给的是服务端那一份，不做映射', async () => {
-    // AdminPage.vue 现在 import 的就是这个名字。按 camelCase 给它的话，
-    // 它组件里那层 snake_case 映射会全读到 undefined，而这种错不会报错，
-    // 只表现为表格里端点与模型两列都是空的。
+  test('同端点只留一个出口：原文那份已删（工单 #15 收口）', async () => {
+    // 曾经这里有个 `fetchAdminModels()`（服务端原文，不做映射）与
+    // `fetchAdminModelCatalog()`（camelCase）打同一个端点，转换却散在
+    // AdminPage.vue 里。同端点两个出口 = 两种形状同时存在 = 用错哪个都不报错，
+    // 只表现为表格某几列是空的。
+    const mod = await import('../src/api/admin.js')
+    assert.equal(mod.fetchAdminModels, undefined,
+      '原文出口又回来了 —— 同端点两个出口会让人在不知情的情况下拿到 snake_case')
+    // 活着的那一个必须仍然打对端点、带上 Bearer。
     const calls = spyFetch({ items: [{ ...WIRE[1], enabled: 1, sort_order: 2 }] })
-    const data = await fetchAdminModels()
+    const data = await fetchAdminModelCatalog()
     assert.equal(calls[0].url, 'http://catalog.test/api/admin/models')
     assert.equal(calls[0].auth, 'Bearer test-token')
-    assert.deepEqual(data.items, [{ ...WIRE[1], enabled: 1, sort_order: 2 }])
+    assert.equal(data.items[0].sortOrder, 2, '留存的出口必须翻成 camelCase')
+  })
+
+  test('updateAdminModel 的回读也是 camelCase（组件据此替换本地行）', async () => {
+    // PATCH 的响应同样过 `toAdminModelItem`。少了这一步，
+    // 组件 `replaceModel` 拿到的就是 snake_case —— 而模板读的是
+    // `m.sortOrder` / `m.baseUrl`，全读到 undefined 且**不报错**，
+    // 症状只是保存后表格里某几列变空。
+    spyFetch({
+      item: { ...WIRE[1], enabled: 1, sort_order: 2 },
+      platform_default: WIRE[1].default_model,
+    })
+    const { updateAdminModel } = await import('../src/api/admin.js')
+    const out = await updateAdminModel('bailian', { label: '改名' })
+    assert.equal(out.item.sortOrder, 2,
+      'PATCH 回读没有翻成 camelCase —— 组件 replaceModel 会拿到 snake_case，'
+      + '而模板读 camelCase，于是几列静默变空')
+    assert.equal(out.item.baseUrl, WIRE[1].base_url)
+    assert.equal(out.item.isReal, WIRE[1].is_real)
+    assert.ok(!('sort_order' in out.item), '回读里还留着 snake_case 键')
   })
 
   test('没登录时不发一个空的 Bearer', async () => {

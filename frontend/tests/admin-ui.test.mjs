@@ -362,7 +362,7 @@ describe('三个页签 · 各自有取数路径', () => {
   for (const [fn, api, label] of [
     ['loadUsers', 'fetchAdminUsers', '用户'],
     ['loadCommunity', 'fetchAdminCommunity', '社区'],
-    ['loadModels', 'fetchAdminModels', 'AI 服务'],
+    ['loadModels', 'fetchAdminModelCatalog', 'AI 服务'],
   ]) {
     test(`${label}页签的 ${fn} 真的调 ${api}`, () => {
       const m = adminCode.match(new RegExp(`async function ${fn}\\(\\)[\\s\\S]*?\\n\\}`))
@@ -511,6 +511,16 @@ describe('每个页签的 loading / 空 / 错误三态', () => {
     assert.ok(m, '取不到 403 分支的正文')
     assert.match(m[0], /没有管理员权限/, '403 分支没有说明「没有管理员权限」')
     assert.match(m[0], /emit\('back'\)/, '403 分支没有离开的出口')
+  })
+
+  test('403 整页态也带 role="alert"（工单 #15）', () => {
+    // 页内各页签的错误态早有 role="alert"，只有整页这一个漏了。
+    // 文案可读、可达，但屏幕阅读器不会自动播报——非管理员点开 /admin
+    // 只会听到一片沉默。
+    const m = adminTemplate.match(/v-if="view\.forbidden"[\s\S]*?<\/button>/)
+    assert.ok(m, '取不到 403 分支的正文')
+    assert.match(m[0], /role="alert"/,
+      '403 整页态没有 role="alert" —— 读屏用户听到的是静默，而不是「没有管理员权限」')
   })
 
   test('markFailure 真的按 403 分流（而不是把拒绝当成「列表为空」）', () => {
@@ -662,29 +672,38 @@ describe('后端契约 · snake_case 转换收在一处', () => {
     const m = adminCode.match(/import \{([^}]*)\} from '\.\.\/api\/admin\.js'/)
     assert.ok(m, "没有从 '../api/admin.js' 导入")
     const names = m[1].split(',').map((s) => s.trim()).filter(Boolean)
-    // 契约从五个长到八个（ADR 0012 账号生命周期）再到十一个：
-    // fetchTagVocabulary / updateCommunityTags / deleteCommunityVideo 是 ADR 0013 社区审核的前端出口。
+    // 契约从五个长到八个（ADR 0012 账号生命周期）再到十一个：fetchTagVocabulary /
+    // updateCommunityTags / deleteCommunityVideo 是 ADR 0013 社区审核的前端出口。
+    // 工单 #15 收口：fetchAdminModels（原文出口）删掉，换成 fetchAdminModelCatalog。
+    // 转换函数 toAdminModelItem **不进组件的 import** —— 它归 api 层独有，
+    // 组件拿到的已经是转好的形状（多导一个就多一条重复转换的路）。
     // **这份名单是冻结的**——少一个说明有路径绕过了 api 层，
     // 多一个说明有新的未审接口混进来了。
     assert.deepEqual(names.sort(),
       ['createAdminUser', 'deleteAdminUser', 'deleteCommunityVideo',
-       'fetchAdminCommunity', 'fetchAdminModels', 'fetchAdminUsers',
+       'fetchAdminCommunity', 'fetchAdminModelCatalog', 'fetchAdminUsers',
        'fetchTagVocabulary', 'setUserAdmin', 'setUserQuota',
        'updateAdminModel', 'updateCommunityTags'],
       '导入的 API 名字与冻结的契约不一致')
   })
 
-  test('四个转换函数都在（用户 / 社区 / 模型各自的形状）', () => {
-    for (const fn of ['toUser', 'toCommunityItem', 'toModel']) {
+  test('两个转换函数都在组件里（用户 / 社区），模型那份已收进 api 层', () => {
+    // 模型清单的转换在 `api/admin.js` 的 toAdminModelItem（工单 #15 收口），
+    // 组件里曾有一份重复的 toModel，两处逐字段重复且 enabled 口径还不一致。
+    for (const fn of ['toUser', 'toCommunityItem']) {
       assert.ok(adminCode.includes(`const ${fn} =`), `没有 ${fn} —— 转换点散出去了`)
     }
+    assert.ok(!/\bconst toModel =/.test(adminCode),
+      '组件里又出现了一份 toModel —— 转换该归 api 层，'
+      + '组件留一份就等于两份映射各改各的')
   })
 
   test('模板里不出现 snake_case 取值（转换必须已经发生）', () => {
     const hits = [...adminTemplate.matchAll(/[A-Za-z_$][\w$]*\.[a-z]+_[a-z]+/g)].map((m) => m[0])
     assert.deepEqual(hits, [],
       `模板里直接读了 snake_case 字段：${hits.join(' ')}\n`
-      + '  —— 契约是 snake_case，camelCase 由 toUser/toCommunityItem/toModel 一次性转好。'
+      + '  —— 契约是 snake_case，camelCase 由 toUser / toCommunityItem / '
+      + 'api 层的 toAdminModelItem 一次性转好。'
       + '模板里混着两种命名，后端一改字段，报错会散落在整份模板里。')
   })
 
@@ -693,7 +712,7 @@ describe('后端契约 · snake_case 转换收在一处', () => {
       '用户列表的调用形状与契约不符（page / pageSize / q）')
     assert.match(adminCode, /fetchAdminCommunity\(\{ page: v\.page, pageSize: PAGE_SIZE \}\)/,
       '社区列表的调用形状与契约不符')
-    assert.match(adminCode, /await fetchAdminModels\(\)/, '模型清单应当无参数调用')
+    assert.match(adminCode, /await fetchAdminModelCatalog\(\)/, '模型清单应当无参数调用')
     assert.match(adminCode, /setUserQuota\(u\.id, \{ parseLimit: parseLimit\.value, chatLimit: chatLimit\.value \}\)/,
       '改额度的调用形状与契约不符（userId + { parseLimit, chatLimit }）')
   })
@@ -768,6 +787,22 @@ describe('AI 服务页签 · 模型清单可改（ADR 0010）', () => {
     assert.match(adminCode, /function\s+replaceModel\(/, '缺少 replaceModel')
     assert.ok(!/replaceModel\(\{\s*\.\.\./.test(adminCode),
       'replaceModel 收了本地草稿而不是服务端回读结果')
+  })
+
+  test('replaceModel 不再自己转换（api 层已经转过，翻第二次是静默 bug）', () => {
+    // `updateAdminModel` 在 api 层就把回读原文转成 camelCase 了
+    // （`api/admin.js` 里 `item: toAdminModelItem(res.data.item)`）。
+    // 组件若再翻一次**不会报错**：`enabled` 这个键两种形态同名，读得到；
+    // 而 `sort_order` 已经变成 `sortOrder`，`toAdminModelItem` 读不到就退回 0
+    // → 每保存一次就把该行的排序号静默抹成 0。
+    const m = adminCode.match(/function\s+replaceModel\(([\s\S]*?)\n\}/)
+    assert.ok(m, '取不到 replaceModel')
+    assert.ok(!/toAdminModelItem\(/.test(m[1]),
+      'replaceModel 又自己转换了一次 —— api 层已经转好，翻第二次会把 sortOrder 抹成 0')
+    // 组件里根本不该再出现模型转换函数（工单 #15 收口后它归 api 层独有）
+    assert.ok(!/toAdminModelItem/.test(adminCode),
+      '组件里引入了 toAdminModelItem —— 那是 api 层独有的转换，'
+      + '组件再拿一份就等于两份映射各改各的')
   })
 
   test('反馈走 aria-live，且成功提示说清平台默认变成了什么', () => {

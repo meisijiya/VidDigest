@@ -36,23 +36,30 @@
 | 功能 | 说明 | 免费 |
 |------|------|:----:|
 | 🧠 **AI 总结摘要** | LLM 自动分析字幕，生成结构化视频总结（概述、大纲、要点） | 每日 3 次 |
-| 🗺️ **思维导图** | AI 自动提取知识结构，生成可交互的 SVG 思维导图 | 每日 3 次 |
-| 💬 **AI 问答** | 基于视频内容对话，追问细节、深入理解 | 每日 3 次 |
-| 📝 **字幕导出** | 提取并导出 SRT/VTT/TXT 格式字幕 | 每日 3 次 |
-| 🎬 **视频解析下载** | YouTube、B站、抖音等 1800+ 平台，选择清晰度一键下载 | ✅ |
+| 🗺️ **思维导图** | AI 自动提取知识结构，生成可交互的 SVG 思维导图 | 与总结共用 |
+| 💬 **AI 问答** | 基于视频内容对话，追问细节、深入理解 | 每日 10 次 |
+| 📝 **字幕导出** | 提取并导出 SRT/VTT/TXT 格式字幕 | 随解析 |
+| 🎬 **视频解析下载** | YouTube、B站、抖音等 1800+ 平台，选择清晰度一键下载 | ✅ 不限次 |
+| 🗂️ **社区浏览** | 公开社区：任何人可读他人已解析的总结、字幕、思维导图 | ✅ 不消耗额度 |
+| 🕘 **解析历史** | 按关键词 / 标签 / 收藏筛选自己的解析记录 | ✅ |
+| 🛠️ **管理后台** | 用户额度、管理员标记、社区审核、模型清单 | 仅管理员 |
 
-> 视频解析下载无需登录，AI 功能需要注册账号（免费，每账号每日 3 次）。
+> 视频解析下载无需登录，AI 功能需要注册账号。免费额度是**两个独立计数器**：
+> 每日 3 次解析（产出总结 + 思维导图 + 标签）、每日 10 次追问；
+> 读社区里别人已解析的内容**不消耗任何额度**。
+> 具体数值由环境变量 `VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT` 控制。
 
 ---
 
 ## 🚀 快速开始
 
 ```bash
-# 后端
+# 后端（Windows；Linux/macOS 见安装指南）
 cd backend
-source venv/Scripts/activate   # Windows: venv\Scripts\activate
-cp .env.example .env           # 配置 API Key（见下方）
-python main.py                 # → http://localhost:8000
+python -m venv venv
+venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env             # 配置 API Key（见下方）
+venv\Scripts\python.exe main.py    # → http://localhost:8000
 
 # 前端（新终端）
 cd frontend
@@ -60,7 +67,15 @@ npm install
 npm run dev                    # → http://localhost:5173
 ```
 
+> ⚠️ **后端一律用 `venv\Scripts\python.exe`**，不要用 `python main.py`
+> —— 那会用系统 Python，而本项目的依赖装在 venv 里。
+> 也不要用 `source venv/Scripts/activate`（那是 Windows 的 activate 批处理，
+> 在 Git Bash / Linux 下不适用）。
+
 浏览器打开 **http://localhost:5173** → 粘贴视频链接 → 解析下载 / AI 总结。
+
+> ⚠️ 前端用 `localhost` 而不是 `127.0.0.1`：Vite 只监听 IPv6 回环，
+> `127.0.0.1:5173` 连不上。
 
 ---
 
@@ -68,9 +83,9 @@ npm run dev                    # → http://localhost:5173
 
 | 工具 | 最低版本 | 用途 |
 |------|:--------:|------|
-| Python | 3.10+ | 后端运行 |
-| Node.js | 18+ | 前端构建 |
-| npm | 9+ | 前端依赖管理 |
+| Python | 3.11+ | 后端运行（开发实测 3.11.9） |
+| Node.js | 20.19+ 或 22.12+ | 前端构建（Vite 8 的硬要求，**Node 18 装不上**） |
+| npm | 10+ | 前端依赖管理 |
 | ffmpeg | 任意 | 高清视频音画合并（强烈建议安装） |
 
 > **ffmpeg** 用于合并 YouTube 等平台的视频+音频流。未安装时自动降级为单一格式。
@@ -85,22 +100,39 @@ npm run dev                    # → http://localhost:5173
 ### 后端
 
 ```bash
+# Windows
 cd backend
 python -m venv venv
-source venv/Scripts/activate     # Windows: venv\Scripts\activate
+venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env             # 编辑 .env 填入密钥
+venv\Scripts\python.exe main.py
+```
+
+```bash
+# Linux / macOS
+cd backend
+python3 -m venv venv
+source venv/bin/activate           # 注意是 bin/activate，不是 Scripts/
 pip install -r requirements.txt
-cp .env.example .env             # 编辑 .env 填入密钥
+cp .env.example .env
 python main.py
 ```
+
+> 改了 Python 代码要**重启进程**：`main.py` 没有 `--reload`。
 
 ### 前端
 
 ```bash
 cd frontend
 npm install
-npm run dev                      # 开发模式
-npm run build                    # 生产构建 → dist/
+npm run dev                      # 开发模式 → http://localhost:5173
+npm run build                    # 日常构建 → dist/
+npm run release:build            # 发布用：先清空 dist/ 再构建（避免陈旧 bundle 上线）
 ```
+
+生产构建产物需要**静态托管 + SPA rewrite**（否则刷新 `/admin` 得到 404）。
+完整 Nginx / Caddy 配置与上线后自检见
+[docs/OPERATIONS.md §11.5](docs/OPERATIONS.md#115-生产静态托管spa-rewrite)。
 
 ---
 

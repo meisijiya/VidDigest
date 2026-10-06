@@ -20,7 +20,8 @@
       <!-- 非管理员：后端 403 的可读错误态。
            前端隐藏入口只做体验，真正的边界是后端 require_admin（ADR 0010）——
            所以这一段不是「防谁」的，是「别让人撞上白屏」的。 -->
-      <div v-if="view.forbidden" class="rounded-2xl bg-panel border border-line p-8 text-center">
+      <div v-if="view.forbidden" class="rounded-2xl bg-panel border border-line p-8 text-center"
+           role="alert">
         <p class="text-sm text-red-600">没有管理员权限</p>
         <p class="text-xs text-gray-400 mt-1">这个页面只对管理员开放。服务端已拒绝本次请求，请换一个管理员账号登录。</p>
         <button type="button" @click="emit('back')"
@@ -548,7 +549,7 @@
  *    useTheme 只读 DOM；后台再判一次必然和那两处打架。
  */
 import { ref, reactive, computed, onMounted } from 'vue'
-import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModels,
+import { fetchAdminUsers, setUserQuota, fetchAdminCommunity, fetchAdminModelCatalog,
          updateAdminModel, createAdminUser, setUserAdmin, deleteAdminUser,
          fetchTagVocabulary, updateCommunityTags, deleteCommunityVideo } from '../api/admin.js'
 
@@ -632,17 +633,14 @@ const toCommunityItem = (r) => ({
   createdAt: r.created_at,
 })
 
-const toModel = (r) => ({
-  id: r.id,
-  label: r.label,
-  baseUrl: r.base_url,
-  defaultModel: r.default_model,
-  models: Array.isArray(r.models) ? r.models : [],
-  hint: r.hint || '',
-  isReal: !!r.is_real,
-  enabled: !!r.enabled,
-  sortOrder: num(r.sort_order),
-})
+/**
+ * 模型清单的 snake_case → camelCase 转换**不在这里**。
+ *
+ * 它归 `api/admin.js` 的 `toAdminModelItem`（工单 #15 收口：同端点曾经有两个
+ * 出口，转换却散在组件里）。这里曾有一份重复的 `toModel`，与那份逐字段重复，
+ * 且把 `enabled` 翻成布尔——而库表与接口口径都是 0 / 1 数字，两处不一致。
+ * 组件直接用 api 层已转好的形状。
+ */
 
 /**
  * 额度草稿。
@@ -731,13 +729,16 @@ function toModelList(text) {
 }
 
 /** 用服务端回读的那份替换本地行：成功提示与卡片显示必须是同一份。 */
-function replaceModel(raw) {
-  if (!raw) return
-  const fresh = toModel(raw)
+function replaceModel(item) {
+  if (!item) return
+  // `updateAdminModel` 已经在 api 层把回读**原文**转成 camelCase 了
+  //（`api/admin.js:190`），所以这里直接用，不要再翻一次。
+  // 翻第二次不会报错——`sort_order` 已经变成 `sortOrder`，`toAdminModelItem`
+  // 读不到就退回 0，于是**每保存一次就把排序号抹成 0**。
   const list = views.models.items
-  const i = list.findIndex((m) => m.id === fresh.id)
-  if (i >= 0) list.splice(i, 1, fresh)
-  primeModelDrafts([fresh])
+  const i = list.findIndex((m) => m.id === item.id)
+  if (i >= 0) list.splice(i, 1, item)
+  primeModelDrafts([item])
 }
 
 /**
@@ -894,8 +895,8 @@ async function loadModels() {
   const v = views.models
   v.loading = true; v.error = ''; v.forbidden = false
   try {
-    const res = await fetchAdminModels()
-    v.items = (res.items || []).map(toModel)
+    const res = await fetchAdminModelCatalog()
+    v.items = res.items || []
     v.total = v.items.length
     primeModelDrafts(v.items)
   } catch (err) {

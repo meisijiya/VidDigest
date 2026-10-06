@@ -51,19 +51,6 @@ export async function fetchAdminModelCatalog() {
   return fetchAdminItems(toAdminModelItem)
 }
 
-/**
- * 同一个端点的**原文**出口：`{ items: [...] }` 就是服务端给的那一份
- * （snake_case，不做任何字段映射）。
- *
- * 留它是因为 `AdminPage.vue` 现在 import 的正是这个名字，并且自己在组件里
- * 做那层映射。新代码要 camelCase 请用 `fetchAdminModelCatalog()`，或者
- * 直接 `.map(toAdminModelItem)` —— 转换收在 api 层，而不是散在组件里。
- *
- * @returns {Promise<{ items: object[] }>} 服务端原文
- */
-export async function fetchAdminModels() {
-  return fetchAdminItems((row) => row)
-}
 // ── 分页列表（工单 #12）─────────────────────────────────────
 //
 // 服务端返回 `{items, total, limit, offset}`（数据层 `list_admin_users` /
@@ -103,7 +90,7 @@ function toPage(data, what) {
  * 后台用户列表（只读）。**需管理员**。
  *
  * 返回**服务端原文**（snake_case），字段映射由 `AdminPage.vue` 的 `toUser`
- * 负责——与同文件里 `fetchAdminModels` 的出口保持同一个约定。
+ * 负责。
  *
  * @param {object} o
  * @param {number} [o.page=1]      从 1 起

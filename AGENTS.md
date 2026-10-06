@@ -8,6 +8,7 @@ VidDigest —— 通用视频解析 / 下载 + AI 字幕总结工具。
 - 后端解释器**必须**用 `backend\venv\Scripts\python.exe`（3.11.9），系统 Python 不对。
 - `backend/main.py` 用 `uvicorn.run(app, ...)`，**没有 `--reload`**——改 Python 代码必须重启进程。
 - 前端 Vite 只监听 IPv6 回环：一律用 `http://localhost:5173`，`127.0.0.1:5173` 连不上。
+- 前端 Node 必须是 `^20.19.0 || >=22.12.0`（Vite 8 的 `engines` 硬要求，本机实测 24.4.0 / npm 11.6.0）。**Node 18 装不上**——2026-10-06 实测发现 README 与 OPERATIONS 都写的「Node 18+」是错的，已改。
 - 真实凭据只在 `backend/.env`（已 gitignore）。**任何时候不要 cat 出来贴进文档、提交或日志。**
 - Windows 上 PowerShell 会静默改写内联脚本里的中文 / 引号 / JSON。含中文、多行、引号的一次性脚本一律先 `write` 成 `.py` / `.cjs` 再执行，不要用 `python -c` / `node -e` 内联。
 
@@ -97,6 +98,11 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 - **「残留为 0」只在我枚举的那几个串上成立 —— 枚举出来的 0 不是 0，是「我没看那儿」。** 2026-10-04 实测：清完明文口令后我写了个验证脚本，数 7 个自己挑的字面量，全 0，写成「已清干净」。按类重新扫（任意家目录路径 / 任意安装根 / 任意保留域 / 任意密钥形态）立刻多出三样：一个**从没见过**的第二个 Windows 用户名（`backend/summarizer.py` 历史里的两处 ffmpeg 兜底路径）、cron 备份行的裸品牌串、以及**一条 commit message** 把那个路径原样写进了提交说明。写验证脚本时**按类枚举，不要按我想到了什么枚举**；commit message 与 blob 是两个独立范围，漏一个就等于没扫。
 - **给扫描关卡加豁免前，先变异验证豁免是「显式登记的合法类型」而不是「把判据放松」。** 同一个 PR 里两次踩中：① 豁免名单里放了 `sample-user`（那是我自己的夹具名），于是 M2 用例再也不转红；② 豁免用**子串包含**判定，`user` 把 `sample-user`/`notuser`/`abuser` 一起放过。修法是加 M8/M9 双向用例（含豁免词仍须被抓 / 恰为豁免名应放行），不是加宽判据。关卡自己也在扫描范围内：正则或注释里出现字面量形态的待查串，它会把自己报红——改写法，不改判据。
 - **门禁在功能分支上绿，不等于授权推送；要在合并后的树上再跑一次。** 同一个测试文件在 `feat/*` 上连过三次全绿，合并到 `master` 后第一次跑就红。**合并后的树才是要推出去的东西，它才是门禁的对象**——拿功能分支的绿证据去授权推送，是在为另一个提交历史背书。
+- **「同端点两个出口」是最便宜的一种静默故障，因为用错哪个都不报错。** 2026-10-06 工单 #15 实测：`/api/admin/models` 曾有 `fetchAdminModels()`（服务端原文）与 `fetchAdminModelCatalog()`（camelCase）两个出口，组件调前者却在组件里自己翻 `toModel`，api 层的 `toAdminModelItem` 无人使用；而那份组件内的 `toModel` 还把 `enabled` 翻成**布尔**，api 层翻成 **0/1 数字**——两处口径不一致，症状只是表格某几列显示异常。规则：**一个端点一个出口，转换只在 api 层定义一处**；转换函数**不许**在组件里另写一份，哪怕逐字段看起来一样。
+- **把转换「收口到 api 层」之后，先查还有谁在转换——多半多了一次。** 同上工单：收口时 `replaceModel` 顺手也调了 `toAdminModelItem`，但 `updateAdminModel` **早在 api 层就把回读转好了**（`item: toAdminModelItem(res.data.item)`）——于是**翻第二次**。它不报错：`enabled` 两种形态同名读得到，而 `sort_order` 已变成 `sortOrder` 读不到就退回 0，**每保存一次就把该行排序号静默抹成 0**。这类「翻两次」的 bug 逃过静态审查，因为每一处单看都对。收口完成后必须逐个调用点问一句：**这份数据从哪来，源头转过没有。**
+- **「多写一次转换」的判据是「源头转没转」，不是「转换幂不幂」。** 转换函数对同一形状幂等不代表可以随便多调：一旦混入 snake_case/camelCase 两种形态，它就不是幂等的，而差异只落在「读不到的键退化成默认值」上，**永远不报错**。变异时把「api 层少转一次」和「组件多转一次」分开各做一条——2026-10-06 实测这两条一开始**都 SURVIVED**，补了两条断言才各自 KILLED。只做前者会漏掉后者。
+- **变异 harness 的 anchor 必须按源文件的真实行尾构造，且至少留一条多行 anchor。** 2026-10-06 实测：`AdminPage.vue` 是 **CRLF**，而 harness 里的 anchor 用 LF —— 于是**单行 anchor 照常命中**（M2/M4/M5 全 KILLED），**多行 anchor 每个换行差一个 `\r`** 报「0 次命中」（M1/M3 两条直接 HARNESS-ERROR）。这个坑的诊断方向天然指向「文件里没这段代码」，不会指向「我的匹配函数返回错了形态」。写完 harness 逐条自问：**这个 0 次命中，是文件的问题还是我锚点的问题。**
+- **变异 SURVIVED 往往不是变异没用，是断言够不着它。** 2026-10-06 实测：把 `replaceModel` 里的 `toAdminModelItem(raw)` 换成自造形状 `{ ...raw, sortOrder: raw.sort_order }`，已有断言**全绿存活**——因为它们只查「`replaceModel(res.item)` 存在」，不查**它内部用什么转换**。修法是补一条查转换来源的断言（`/const fresh = toAdminModelItem\(/`），不是改变异。**每条 SURVIVED 都要先问「我这条断言守的是哪个行为」，再问「变异的那个坏掉点被覆盖了吗」。**
 - **本仓库是 PUBLIC：推送前审计必须扫历史，`git rm --cached` 不等于清出历史。** `.gitignore` 只对**未跟踪**文件生效，而 `git rm --cached` 也只把文件移出**最新一次提交**——内容仍留在那个 commit 里，历史一推就公开了。`TEST_ACCOUNTS.md`（含明文口令）就是这么差点进去的：它当时**从未推送过**，所以 `filter-branch --index-filter` + 删 `refs/original/` + `gc --prune=now` 是安全的；**已经推送过的仓库就没这个便宜了**，只能改远端历史。审计清单：`.gitignore` 覆盖 + `git ls-files` 可疑名 + 全树密钥形态 + **全 ref 全历史**密钥形态 + `git log --all --diff-filter=A --name-only` 查有没有提交过 `.env`/`.db`。两条容易漏的：邮箱/口令不含密钥正则，**要靠人读**；结论用 `gh api` 从服务端独立确认，别只信本地 `git ls-tree`。
 
 ## 范围边界
