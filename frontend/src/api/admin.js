@@ -90,7 +90,18 @@ function toPage(data, what) {
  * 后端契约是 snake_case，前端只用 camelCase。
  *
  * **这个文件是转换的唯一发生地**（工单 #15 收口）。三份转换 —— 用户 / 社区 / 模型
- * —— 都在这里，组件拿到的已经是转好的形状。
+ * —— 都在这里，组件里不再自己写第二份。
+ *
+ * 但「组件拿到的已经是转好的形状」**只对列表出口成立**，回读出口尚未统一：
+ * 模型清单四条出口全都翻（含 `updateAdminModel` 的回读），而 `setUserQuota` /
+ * `createAdminUser` / `setUserAdmin` / `updateCommunityTags` 返回的仍是服务端
+ * 原文，由组件的 replaceUser / replaceCommunityItem 引用上面那两个函数翻一次。
+ *
+ * 这一段状态必须写明而不是含糊过去。照着「统一」的直觉去给那四个出口补上转换，
+ * AdminPage.vue 里 `res.user.is_admin` 那行就会读到 undefined——**提权成功却在
+ * 界面上提示「已撤销管理员权限」，且不报错**。同一个 `res.user` 在下一行交给
+ * replaceUser 翻成 camelCase、在这一行直接读 snake_case，能并存全靠「api 层
+ * 恰好没翻」。收口之前先答一句：那份冻结的 import 名单还成不成立（工单 #22）。
  *
  * 为什么非得收在一处：转换散进组件之后，同一份数据会有两种命名形态混在数据流里，
  * 而「读不到的键」不会报错、只会退化成 `undefined` 或默认值。工单 #15 实测过两例：
