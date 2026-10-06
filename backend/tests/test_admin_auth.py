@@ -180,9 +180,19 @@ def test_promotion_takes_effect_on_next_request_without_relogin(probe_client, db
     _set_admin(admin_id, 1)
 
     # 同一个 token，不重新登录
+    # 提权是否生效，全看下面这一句。
+    #
+    # 这里原来还挂着 `assert token == auth.create_token(...)`（「对照组：token 未变」）。
+    # 它唯一的失败模式是**时钟**：`create_token` 把 `iat` / `exp` 写成 `datetime.now()`，
+    # PyJWT 截断成整秒，于是两次调用只要跨过秒边界就返回不同的 token。而这两句之间夹着
+    # 两次 HTTP 请求与一次写库（实测间隔中位数 4.5ms），跨秒概率约 0.5%/次全量跑——
+    # 症状就是「同一条命令红绿不定、单独跑又全过」。
+    #
+    # 删掉它不是放宽判据：它守的是时钟的性质，不是提权行为。上面那句 403 → 200
+    # 才是 ADR 0010 的主张；而「两次请求用的是同一个 headers 对象」由代码结构保证，
+    # 断言它等于断言 Python 的赋值语义。
     after = client.get("/admin/_probe", headers=headers)
     assert after.status_code == 200, f"提权应立即生效，实得 {after.status_code}：{after.text}"
-    assert token == auth.create_token(admin_id, "admin@example.com"), "对照组：token 未变"
 
 
 def test_revocation_takes_effect_on_next_request_without_relogin(probe_client, db):
