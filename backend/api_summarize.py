@@ -476,9 +476,17 @@ async def summarize_video(
 
     # 额度是否已扣。扣了之后没走完流程就要还回去。
     quota_spent = False
-    # 结果是否已经落进社区表。还没落成就失败/断流的话，finally 必须把
-    # 占位还回去——留下一行 pending 等于这个链接从此解析不了。
-    published = False
+    # 那个占位**是不是已经结清了**——注意不是「结果有没有落库」。
+    #
+    # 它只驱动 finally 里那一次 release：没结清就把位置还回去，
+    # 留下一行 pending 等于这个链接从此解析不了。
+    # 已结清有两种：这一行被 complete_video 变成了 ready，
+    # 或者它已经不归我了（被别人完成、或被管理员删掉）。
+    # 退不退额度由 quota_spent 单独决定，两件事不要挤在同一根标志上——
+    # 原来这两件事共用一个 published，于是「没落库」被读成「位置还在我手上」，
+    # 落库失败时 finally 就替这条失败路径做了一次不该做的 release
+    # （工单 #17 第 3 项）。
+    placeholder_settled = False
     try:
         extractor = _get_extractor()
         subtitle_data = await _run_in_thread(extractor.extract, req.url)
@@ -587,8 +595,9 @@ async def summarize_video(
         if regenerate:
             # 覆盖的 WHERE 里带 parsed_by：判定在 SQL 里，不在调用方。
             # 返回 0 说明这行此刻不属于他（被并发改过、或本来就是别人的）。
-            # 此时**不**把 published 置真——用户什么都没拿到，
-            # 额度必须由 finally 退回去。
+            # 直接报错收尾：placeholder_settled 保持假（覆盖路径本来就没有
+            # 占位可还），quota_spent 保持真让 finally 把额度退回去——
+            # 用户什么都没拿到，不该白付这一次。
             if regenerate_video(
                 req.url,
                 user["id"],
@@ -608,8 +617,23 @@ async def summarize_video(
             tags=tags_payload,
             subtitle_text=full_text,
         ) == 0:
+            # 落库失败与覆盖失败同权：不能装作成功。
+            #
+            # 返回 0 只有两种可能：这一行不存在（管理员删了 pending 行），
+            # 或者它已经不是 pending（成了别人的成果）。两种情况下
+            # **这个位置都已经结清了**——虽然不是我们结的。所以不回填，
+            # 也不去 release：release 的 WHERE 只看 status='pending'，
+            # 此刻对这两行都是空操作；而「在这之后有人重新占位」的那一瞬间，
+            # 它就不再是空操作了。不拥有，就别去动它。
+            placeholder_settled = True
             logger.warning("社区视频 %r 的占位已不在 pending 状态，结果未落库", req.url)
-        published = True
+            async for event in fail("这份总结没能保存到社区，请稍后重试"):
+                yield event
+            # quota_spent 保持真 → finally 把这一次扣减退回去。
+            # 用户看到的是一份完整总结，社区里却什么都没有，
+            # 让他白付这一次不成立。
+            return
+        placeholder_settled = True
 
         # 三项都已产出，扣费就此结清：此后即便客户端断流也不回滚。
         quota_spent = False
@@ -644,7 +668,7 @@ async def summarize_video(
         # 已经 ready 的社区内容永远不会被这一步碰到。
         # 覆盖路径没有占位，也**不能**在这里 release：那一行是别人的成果
         # （或作者自己的旧成果），删掉它等于用一次失败的覆盖抹掉社区内容。
-        if not published and not regenerate:
+        if not placeholder_settled and not regenerate:
             release_video(req.url)
         # 覆盖闸门必须无条件放掉，异常路径也不能漏——漏一次，
         # 这个链接此后就再也覆盖不了了（而内容明明还在）。
