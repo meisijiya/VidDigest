@@ -157,6 +157,37 @@ def test_bilibili_collection_page_is_not_canonicalised():
     assert c(url) == url
 
 
+def test_a_longer_path_is_not_truncated_to_the_bv_id():
+    """`/video/<BV>/<别的东西>` **不是**那条视频。
+
+    这是一条实测出来的漏洞，不是假想：不锚定结尾时
+    `.../video/BV1TEST/a` 与 `.../video/BV1TEST/b` 都会被截成 `BV1TEST`，
+    两个**不同的**视频塌成同一个 canonical。而第 3 片建上唯一索引之后，
+    它立刻变成「后写的那个被当成同一个视频而合并掉」——
+    实测由 `test_history_search_favorites.py` 的
+    `test_facets_are_not_narrowed_by_the_current_filters` 抓到（那里恰好
+    用了 `https://www.bilibili.com/video/BV1TEST` 拼 `/a`、`/b` 造两条记录）。
+
+    本仓自己的测试数据都能触发它，这足以说明它不是假想。
+    """
+    assert c("https://www.bilibili.com/video/BV1TEST/a") == (
+        "https://www.bilibili.com/video/BV1TEST/a"
+    )
+    assert c("https://www.bilibili.com/video/BV1TEST/a") != c(
+        "https://www.bilibili.com/video/BV1TEST/b"
+    )
+
+
+def test_a_longer_douyin_path_is_not_truncated_to_the_id():
+    """抖音同理要锚定：`/video/123/a` 不是一条视频。"""
+    assert c("https://www.douyin.com/video/7234567890123456789/a") == (
+        "https://www.douyin.com/video/7234567890123456789/a"
+    )
+    assert c("https://www.douyin.com/video/7234567890123456789/a") != c(
+        "https://www.douyin.com/video/7234567890123456789/b"
+    )
+
+
 def test_youtube_watch_without_v_param_is_left_alone():
     """没有 `v=` 的 watch 页不是一条具体视频，原样返回。"""
     url = "https://www.youtube.com/watch?list=PL1234567890"

@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import sqlite3
 import threading
@@ -382,6 +383,11 @@ def init_db():
         # 排在 _migrate_parse_history_unique_url 之前是因为那条也要扫
         # parse_history，而回填会 UPDATE 那张表。
         _migrate_canonical_url_columns(conn)
+        # canonical 上的唯一索引（工单 #25）：**去重必须排在建索引之前**，
+        # 与 _migrate_parse_history_unique_url 同一套理由。
+        # 也排在 _create_video_search_index 之前：那一步会对 videos 做一次
+        # #7/工单 #19 建立的 FTS 'rebuild'，而这里可能刚删掉了几行。
+        _migrate_videos_canonical_unique(conn)
         # 去重必须排在 _create_video_search_index 之前：它自己也会扫
         # parse_history，而重复行会让社区搜索的候选集出现同一条内容两次。
         # 排在 executescript 之后是因为表得先存在（全新库那一刻还没建）。
@@ -550,6 +556,149 @@ def _migrate_video_card_columns(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+#: 合并时逐列取「最新的非空值」。空 = '' 或 None 两种形态都算空，
+#: 理由与 _dedupe_parse_history 一致：两条重复行往往是互补的，
+#: 只留最新那条会把另一半悄悄抹掉。
+_VIDEO_CONTENT_COLUMNS = (
+    "video_title", "cover_url", "summary_md", "mindmap_md",
+    "subtitle_text", "tags",
+)
+
+
+def _row_order_key(row: dict) -> tuple:
+    """「更新」的可比键。与 _dedupe_parse_history 用同一套：时间优先，id 兜底。
+
+    id 兜底是必须的：created_at / updated_at 的默认值是
+    ``datetime('now')``，同一秒内建出来的两行字符串完全相同，
+    没有兜底时 max() 会随便挑一个，「最新」就成了不确定的。
+    """
+    return (row.get("updated_at") or "", row.get("created_at") or "", row["id"])
+
+
+def _dedupe_videos_by_canonical(conn) -> tuple[int, int]:
+    """把 videos 上 canonical_url 相同的行合成一行（工单 #25）。
+
+    为什么必须去重：``reserve_video`` 的并发安全靠的是 INSERT 撞唯一索引
+    （IntegrityError 那一支）。没有 canonical 上的唯一索引，两个用户同时粘
+    两种形态就会插出两行——而那正是本工单要消灭的重复。
+
+    合并规则（每一条都有代价，不是随手定的）：
+    - **幸存者 = 更新**（时间优先，id 兜底）。
+    - 每个内容列取组内**最新的非空值**：两条重复行往往互补。
+    - ``status`` 取 ready 优先：只有一条是 pending 而另一条已经 ready 时，
+      合成 pending 会让社区内容重新变成「还在解析」，而那份内容明明存在。
+    - ``created_at`` 取**最早**：它是「社区里第一次出现这个视频」的时间。
+    - ``parsed_by`` 取幸存者的（= 最新的）。这是**产品语义**不是工程细节：
+      它决定谁能重新解析这一条（can_regenerate 与 complete_video 的
+      ``WHERE parsed_by IS ?`` 都落在它上面）。
+    - ``video_url`` 取幸存者的：原文要留着**回显**（工单 #25 第 2 问）。
+
+    **正在被覆盖的一组整组跳过**：regenerating_by 非空说明有人正在改写它，
+    合并不去抢别人的锁、也不把它归零——归零会让那次覆盖静默失败。
+
+    返回 (被合并掉的行数, 跳过的组数)。跳过的那几组留给
+    _migrate_videos_canonical_unique 决定不建唯一索引。
+    """
+    groups: dict[str, list[dict]] = {}
+    for row in conn.execute(
+        """SELECT id, video_url, canonical_url, status, parsed_by,
+                  regenerating_by, created_at, updated_at,
+                  video_title, cover_url, summary_md, mindmap_md,
+                  subtitle_text, tags
+           FROM videos WHERE COALESCE(canonical_url, '') <> '' ORDER BY id"""
+    ):
+        groups.setdefault(row["canonical_url"], []).append(dict(row))
+
+    removed = skipped = 0
+    for canonical, rows in groups.items():
+        if len(rows) < 2:
+            continue
+        if any(r["regenerating_by"] is not None for r in rows):
+            skipped += 1
+            continue
+
+        ordered = sorted(rows, key=_row_order_key)
+        winner = dict(ordered[-1])
+
+        merged = {col: "" for col in _VIDEO_CONTENT_COLUMNS}
+        for row in ordered:  # 正序覆盖 → 最终留下的是最新的非空值
+            for col in _VIDEO_CONTENT_COLUMNS:
+                value = row.get(col)
+                if value not in (None, ""):
+                    merged[col] = value
+
+        # status：pending 不许盖掉 ready。
+        if winner.get("status") != VIDEO_STATUS_READY:
+            winner["status"] = VIDEO_STATUS_READY if any(
+                r.get("status") == VIDEO_STATUS_READY for r in ordered
+            ) else winner["status"]
+
+        conn.execute(
+            """UPDATE videos SET status = ?, parsed_by = ?, created_at = ?,
+                      video_title = ?, cover_url = ?, summary_md = ?,
+                      mindmap_md = ?, subtitle_text = ?, tags = ?
+               WHERE id = ?""",
+            (
+                winner["status"], winner["parsed_by"], ordered[0].get("created_at") or "",
+                merged["video_title"], merged["cover_url"], merged["summary_md"],
+                merged["mindmap_md"], merged["subtitle_text"], merged["tags"],
+                winner["id"],
+            ),
+        )
+        losers = [r["id"] for r in ordered[:-1]]
+        conn.execute(
+            f"DELETE FROM videos WHERE id IN ({','.join('?' * len(losers))})", losers
+        )
+        removed += len(losers)
+    return removed, skipped
+
+
+def _migrate_videos_canonical_unique(conn) -> int:
+    """去重之后把 canonical 上的索引升级成 UNIQUE（工单 #25）。
+
+    顺序不能反：先合成重复行，再建唯一索引。老库里已经有重复行时
+    ``CREATE UNIQUE INDEX`` 直接失败，init_db 整段 abort——
+    症状是「本地好好的，一升级就打不开」。这与
+    _migrate_parse_history_unique_url 是同一套理由。
+
+    **有组被跳过就不建唯一索引**（本轮拍板的决定）：去重不彻底时建唯一索引
+    要么失败、要么靠运气。宁可让这条索引暂时保持普通索引——那是**可观察**的
+    （``PRAGMA index_list(videos)`` 里 unique=0），下一次启动会再试一次。
+    绝不为了建一条索引去强抢别人正在进行的覆盖。
+
+    索引带 ``WHERE canonical_url <> ''``：canonical 为空的行不受约束。
+    canonical 为空只可能是 video_url 本身为空，而那种行本来就没有
+    「同一链接」的语义，让它参与唯一约束只会让建索引失败。
+
+    返回被合并掉的行数。
+    """
+    existing = conn.execute("PRAGMA index_list(videos)").fetchall()
+    if any(r["name"] == "idx_videos_canonical" and r["unique"] for r in existing):
+        # 已经 UNIQUE —— 有唯一索引就不可能有重复行，连表都不用扫。
+        return 0
+
+    removed, skipped = _dedupe_videos_by_canonical(conn)
+    if skipped:
+        print(
+            "[database] videos 去重跳过了 "
+            f"{skipped} 组（这些组里有一行正在被覆盖，regenerating_by 非空）。"
+            "本次**不**建立 canonical 唯一索引，下一次启动会再试。"
+            f" 已合并 {removed} 行。",
+            file=sys.stderr,
+        )
+        return removed
+
+    # 老库里那条同名**普通**索引必须先删：CREATE UNIQUE INDEX IF NOT EXISTS
+    # 遇到同名索引是空操作，不删就会静默留下一条普通索引，
+    # 而代码与注释都以为唯一性已经成立。
+    conn.execute("DROP INDEX IF EXISTS idx_videos_canonical")
+    conn.execute(
+        "CREATE UNIQUE INDEX idx_videos_canonical ON videos(canonical_url) "
+        "WHERE canonical_url <> ''"
+    )
+    return removed
 
 
 #: 需要 canonical_url 的三张表。顺序无关，每张都独立判存在性。

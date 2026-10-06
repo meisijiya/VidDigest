@@ -45,9 +45,17 @@ from urllib.parse import urlsplit
 
 #: B 站视频号。BV 号固定 12 位、BV1 开头 10 位；这里不写死长度，
 #: 因为 yt-dlp 接受什么就该归一什么 —— 规则只负责**取出**它。
-_BILIBILI_VIDEO = re.compile(r"^/(?:video|list)/(?P<id>BV[0-9A-Za-z]+)", re.I)
+#:
+#: ⚠️ **必须锚定结尾**（`$`）。这一条不是洁癖，是实测出来的漏洞：
+#: 不锚定时 `/video/BV1TEST/a` 与 `/video/BV1TEST/b` 都会被截成 `BV1TEST`，
+#: 于是两个**不同的**视频塌成同一个 canonical —— 而那种失效不报错，
+#: 只是社区慢慢塌。第 3 片建上唯一索引之后，它会立刻变成「后写的那个
+#: 被当成同一个视频而合并掉」，实测由 `test_history_search_favorites.py`
+#: 的 `test_facets_are_not_narrowed_by_the_current_filters` 抓到。
+_BILIBILI_VIDEO = re.compile(r"^/video/(?P<id>BV[0-9A-Za-z]+)$", re.I)
 _YOUTUBE_WATCH = re.compile(r"^/watch$", re.I)
-_DOUYIN_VIDEO = re.compile(r"^(?:/video|/(?:share/)?video)/(?P<id>\d+)", re.I)
+#: 抖音同理要锚定：`/video/123/a` 不是一条视频。
+_DOUYIN_VIDEO = re.compile(r"^/(?:share/)?video/(?P<id>\d+)$", re.I)
 
 #: 这些 host 归一到哪一个（大小写无关）。B 站的三个域名指向同一份内容。
 _BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
@@ -87,7 +95,8 @@ def canonical_video_url(url: str) -> str:
         m = _BILIBILI_VIDEO.match(path)
         if m:
             return f"https://www.bilibili.com/video/{m.group('id')}"
-        # /list/ 是合集页不是单条视频，id 不唯一 —— 交给原样返回。
+        # 其余一律原样返回：`/list/` 是合集页（id 不唯一，塌成一行会毁掉整个合集），
+        # `/video/<id>/<别的>` 也不是一条视频（见上面那条正则的注释）。
         return url
 
     # ── YouTube：watch?v=<id> 与 youtu.be/<id> 是同一条 ──

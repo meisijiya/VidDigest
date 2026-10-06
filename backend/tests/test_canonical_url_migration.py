@@ -72,9 +72,12 @@ def _seed_legacy_library():
             c.execute(f"DROP TABLE {table}")
             c.execute(_strip_column(row["sql"], "canonical_url"))
 
+        # videos 只塞**一种**形态 + 一条短链：第 3 片之后 videos 上同 canonical 的
+        # 行会被去重合并，形态收敛这件事改由 parse_history 那条断言守
+        # （去重只作用于 videos，parse_history 是个人记录，本来就该多行）。
         c.executemany(
             "INSERT INTO videos (video_url, status) VALUES (?, 'ready')",
-            [(u, ) for u in BILI_FORMS] + [(SHORT_LINK, )],
+            [(BILI_FORMS[0],), (SHORT_LINK,)],
         )
         c.executemany(
             "INSERT INTO parse_history (user_id, video_url, video_title) VALUES (?, ?, '')",
@@ -138,20 +141,18 @@ class TestLegacyUpgrade:
         """存量行按归一值回填，且 video_url 原文**一根汗毛都不动**。
 
         原文必须留着：它是回显的那一份（工单 #25 的第 2 问）。
+
+        videos 上只塞了一种形态 + 一条短链——同 canonical 的多行会被第 3 片
+        的去重合并掉，「三种形态收敛到同一个值」改由下面 parse_history 那条守。
         """
         _seed_legacy_library()
         database.init_db()
 
         got = _rows("videos")
-        assert len(got) == len(BILI_FORMS) + 1
+        assert len(got) == 2, f"videos 应当剩下 B 站一条 + 短链一条，实得 {len(got)}"
         for row in got:
             assert row["canonical_url"] == canonical_video_url(row["video_url"]), row
             assert row["video_url"] in BILI_FORMS + [SHORT_LINK], "原文被改写了"
-
-        # 三种形态收敛到同一个规范值——这正是这一列存在的理由
-        bvs = [r["canonical_url"] for r in got if r["video_url"] in BILI_FORMS]
-        assert len(set(bvs)) == 1, f"同一个视频回填出了 {len(set(bvs))} 个规范值：{set(bvs)}"
-        assert bvs[0] == BV
 
     def test_short_link_is_backfilled_verbatim(self, legacy_db):
         """短链原样回填。
@@ -165,13 +166,21 @@ class TestLegacyUpgrade:
         assert row["canonical_url"] == SHORT_LINK
 
     def test_parse_history_and_chat_messages_are_backfilled_too(self, legacy_db):
-        """三张表都回填。漏掉哪张，哪张就会在第 4 片切 JOIN 时安静地对不上。"""
+        """三张表都回填。漏掉哪张，哪张就会在第 4 片切 JOIN 时安静地对不上。
+
+        「三种形态收敛到同一个规范值」也在这里守：videos 上同 canonical 的行
+        会被第 3 片去重合并掉，而 parse_history 是**个人记录**，本来就该多行
+        （用户两次粘不同形态就是两次记录，#6 的「只解析一次」说的是社区那一行）。
+        """
         _seed_legacy_library()
         database.init_db()
 
         hist = _rows("parse_history")
-        assert len(hist) == len(BILI_FORMS)
-        assert {r["canonical_url"] for r in hist} == {BV}
+        assert len(hist) == len(BILI_FORMS), f"个人记录不该被合并，实得 {len(hist)} 行"
+        assert {r["canonical_url"] for r in hist} == {BV}, (
+            f"同一个视频回填出了多个规范值："
+            f"{ {r['canonical_url'] for r in hist} }"
+        )
         assert all(r["canonical_url"] == canonical_video_url(r["video_url"]) for r in hist)
 
         chat = _rows("chat_messages")
@@ -188,22 +197,15 @@ class TestLegacyUpgrade:
 
         assert _rows("videos") == first, "重复跑 init_db 又动了数据"
 
-    def test_the_index_exists_but_is_not_unique_yet(self, legacy_db):
-        """「建了索引」与「索引是唯一的」是两件事。
+    def test_the_index_exists_so_the_main_lookup_need_not_scan(self, legacy_db):
+        """社区视频表**刻意不做条数裁剪**，所以主查询路径必须有索引。
 
-        唯一化必须排在去重之后（第 3 片），否则老库里已有的重复行会让
-        CREATE UNIQUE 直接失败。所以这里明确断言它**还不唯一**——
-        将来第 3 片把它改成唯一时，这一条会故意转红，届时改成断言唯一即可。
+        「唯一」不在这里断言：那是第 3 片（去重）落地之后的事，
+        由 tests/test_canonical_url_dedupe.py 守着。本片只保证「不扫全表」。
         """
         _seed_legacy_library()
         database.init_db()
-
-        idx = _indexes("videos")
-        assert "idx_videos_canonical" in idx, "索引没建：主查询路径要全表扫"
-        assert idx["idx_videos_canonical"] is False, (
-            "还没去重就唯一化了 —— 这要么是第 3 片提前做了，"
-            "要么是回填把不同的视频塌成了一行"
-        )
+        assert "idx_videos_canonical" in _indexes("videos"), "索引没建：主查询路径要全表扫"
 
 
 # ── 写入侧：新行自己填（不给「列存在但恒为空」留空间）────────────
