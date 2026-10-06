@@ -2275,6 +2275,40 @@ def _pending_is_stale(row: dict) -> bool:
     return age > VIDEO_PENDING_TTL_SECONDS
 
 
+def probe_video(video_url: str) -> str:
+    """**只读**地问一句：这个链接现在归谁。不写库，不开写事务。
+
+    供等待者轮询用（工单 #19 第 1 项）。返回三种之一：
+
+    - ``"ready"``     社区里已有结果，调用方该去复用
+    - ``"claimable"`` 没人占位，或占位已老到可以接管——**该调用方去抢**
+    - ``"waiting"``   别人正占着且占位还新鲜——继续等
+
+    为什么需要它：:func:`reserve_video` 每次调用都是一个**写事务**——
+    它先 INSERT 让唯一索引来裁决，被拒绝了才另开事务重读。而等待者
+    每 50ms 重抢一次，实测每个等待者每秒产生 17 次写事务（30 秒内 510 次，
+    5 个等待者 2550 次）。这些事务抢的是 WAL 写锁，**争锁的代价由那个
+    真正有活要干的占位者承担**——它在几十秒后要 complete_video 写回结果，
+    正好撞上等待者最密的轮询。
+
+    所以「每轮重新抢」这个刻意设计（占位者中途失败还位时，等待者要能
+    在下一轮成为首次解析者）保留不动，只把**裁决**与**写入**拆开：
+    轮询走这条只读路径判断该不该抢，只有真的要抢时才调 reserve_video。
+
+    ⚠️ 读到「没人占位」不等于抢得到：那一刻到 INSERT 之间仍有竞态。
+    那个竞态由 :func:`reserve_video` 里的唯一索引兜住，本函数不负责。
+    **它只回答「值不值得花一次写事务」**，不回答「你抢到了没有」。
+    """
+    row = get_video_by_url(video_url)
+    if row is None:
+        # 没人占位：该抢
+        return "claimable"
+    if row["status"] == VIDEO_STATUS_READY:
+        return "ready"
+    # 别人占着：只有老到 TTL 才该接管，否则继续等
+    return "claimable" if _pending_is_stale(row) else "waiting"
+
+
 def reserve_video(
     video_url: str,
     user_id: int | None,

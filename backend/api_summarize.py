@@ -20,6 +20,7 @@ from database import (
     consume_quota,
     get_recent_chat_messages,
     get_video_by_url,
+    probe_video,
     quota_limit,
     refund_quota,
     regenerate_video,
@@ -264,14 +265,40 @@ async def _claim_video(
 
     `video_title` / `cover_url` 只在**抢到占位**那一刻起作用（工单 #17 第 2 项）：
     趁自己建的行还没 ready 就把平台元数据写进去。复用与等待两条路不碰它们。
+
+    ## 为什么每轮不是直接调 reserve_video（工单 #19 第 1 项）
+
+    `reserve_video` 每次调用都是一个**写事务**：先 INSERT 让唯一索引裁决，
+    被拒了才另开事务重读。而这个循环每 50ms 跑一次——实测每个等待者
+    17 次写事务/秒，30 秒内 510 次，5 个等待者 2550 次。SQLite 是 WAL，
+    这些事务抢的是**同一把写锁**；争锁的代价由真正有活要干的人承担，
+    也就是占位者那几十秒后要 `complete_video` 写回结果的那一刻。
+
+    所以这里把「该不该抢」（只读，`probe_video`）与「去抢」（写，
+    `reserve_video`）拆开：轮询只读，判定需要抢时才花那一次写事务。
+    上面那条「每轮重新抢」的语义一字未改——`probe_video` 在还位后
+    会返回 `claimable`，于是等待者下一轮照样能成为首次解析者。
+
+    ⚠️ `probe_video` 返回 claimable **不等于**抢到了：读到「没人占」到
+    真正 INSERT 之间仍有竞态，那一段由 `reserve_video` 的唯一索引兜住。
+    两种可能（抢到 / 仍被别人占着）都必须在下面显式处理，不能假设。
     """
     deadline = time.monotonic() + VIDEO_WAIT_TIMEOUT_SECONDS
     while True:
-        outcome, row = reserve_video(video_url, user_id, video_title, cover_url)
-        if outcome == "reserved":
-            return "owner", None
-        if outcome == "ready":
-            return "reuse", row
+        # 先只读地问一句：绝大多数轮次在这里就结束了，一个字节都没写。
+        state = probe_video(video_url)
+        if state == "ready":
+            # 复用不写库，但要拿到行去重放事件——单独读一次。
+            return "reuse", get_video_by_url(video_url)
+        if state == "claimable":
+            outcome, row = reserve_video(video_url, user_id, video_title, cover_url)
+            if outcome == "reserved":
+                return "owner", None
+            if outcome == "ready":
+                return "reuse", row
+            # 仍是 pending：探到与写入之间被别人抢走了，继续等下一轮。
+            # 这里**不能**当成 reserved 也不能当成 reuse——两条路都跳过
+            # 一次模型调用，而这一行还什么都没产出。
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return "busy", None

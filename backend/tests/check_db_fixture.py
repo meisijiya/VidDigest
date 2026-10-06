@@ -30,6 +30,10 @@ DB_FUNCS = {
     # 社区视频表（工单 #6）：这些函数会触库，测试直接调它们时必须取 db 夹具
     "reserve_video", "complete_video", "release_video",
     "regenerate_video", "get_video_by_url",
+    # 等待者轮询的只读探测（工单 #19 第 1 项）：它自己 `with get_db()`，
+    # 闭包算出来是「传递地触库」而不是直接调，所以手查极易漏——
+    # 漏了它，一条直接调它的测试就会静默连上真实 app.db。
+    "probe_video",
     # _paginate 是社区列表与搜索共用的分页信封助手，它自己 `with get_db()`。
     # 上面那两个补进来的名字由 test_db_fixture_gate.py 从源码闭包算出来，
     # 不是手查的 —— 那道元测试存在的意义就是别再靠手查。
