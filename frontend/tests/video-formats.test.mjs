@@ -1,20 +1,37 @@
 /**
- * VideoResult.vue：纯音频选项要真的看得见、点得中、说得出话。
+ * VideoResult.vue 的**模板结构**判据（工单 #19 第 2 项 · 工单 #23）。
  *
- * 这个组件之前零测试覆盖。三处判据分别钉三个不同的失败形态：
+ * ## 为什么从 17 条削到 4 条
  *
- *  1. **分组**（真跑，不做字符串匹配）：把 `videoFormats` / `audioFormats`
- *     两个 computed 的函数体抽出来，用 `new Function` 真执行。
- *     只断模板里出现了 `audioFormats` 这个名字毫无意义 —— 名字在、过滤逻辑
- *     写反了，界面上就是一个音频都不剩。
- *  2. **不丢选项**：两条桶的并集必须等于原始 formats。分组写错最常见的
- *     后果不是归错块，是某个选项**凭空消失**，而那正是原来「看不到音频」
- *     的形态。
- *  3. **按钮文案**：选中音频时按钮必须说「下载音频」。写着「下载音频」却
- *     递回一个带声的 mp4，不报错、文件也确实下来了 —— 这是最难查的一类。
+ * 原有 17 条里，**12 条断言的是函数返回值**——它们把 computed 的箭头函数抠出来
+ * 用 `new Function` 真执行（`runComputed` / `formatTitle`），本来就是真跑，
+ * 不是字符串匹配。这 12 条已迁到 `video-result.mount.spec.mjs` 真挂载。
  *
- * ⚠️ 判别法（AGENTS.md）：把下载请求整体打断（emit 的 format_id 恒为空、
- * 分组恒返回空数组），对应用例必须转红。所以下面每条判据是独立的 test()。
+ * 迁移不是改写，是**多覆盖一整类失败**。模板结构是：
+ *
+ *     <div v-if="video.formats?.length">        ← 外层
+ *       <template v-if="videoFormats.length"> ... </template>
+ *       <template v-if="audioFormats.length"> ... </template>
+ *     </div>
+ *
+ * 而下面四条断言都只在**块内切片**（`sliceBetween` 从 `<template v-if=` 到
+ * `</template>`）。于是把外层写成 `v-if="!video.formats?.length"`（取反了），
+ * **这四条全部照常绿**，而界面上一个格式都没有——今天没有任何东西守着这一类失败。
+ * 挂载版能红。
+ *
+ * 留在这里的是「模板里不许出现什么」那一类，它们的对象**就是模板文本**。
+ * 挂载后看不到模板源码，迁过去会退化成「界面上没出现那串字」，而模板写了、
+ * 只是没渲染到，恰恰是要抓的回归——判据见 `vitest.config.js` 顶部的说明。
+ *
+ * `emit('download', selectedFormat.value.format_id)` 那条也删了：它验的是
+ * 代码文本，而 `video-result.mount.spec.mjs` 验的是「点下去真的 emit 出一个
+ * 字符串」。同一个失败形态，后者更强。
+ *
+ * ## 判别法
+ *
+ * 把两个 `<template v-if>` 互换位置（或让其中一块恒不渲染），对应用例必须转红。
+ * 「这一块整个不渲染」在挂载版里表现为 `{ exists: false }`，在这里表现为
+ * `sliceBetween` 断言失败——两种形状都算响。
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -25,20 +42,14 @@ function read(...parts) {
 }
 
 /**
- * 剥注释。`//` **只**整行剥 —— 行尾一刀切会把 URL 之类的字面量从中间砍断，
- * 而那往往正是断言的对象（工单 #13 就这么被吃掉过一条厂商地址判据）。
+ * 顶层 eager 读，**不要**挪进 `describe` 体。
+ *
+ * 模块加载失败是**响**的（退出码 1），describe 体抛异常是**哑**的（退出码 0，
+ * runner 还会报 `tests N / pass 0 / fail 0`，真正的 ENOENT 埋在摘要下面，而
+ * `init.sh` 只看退出码）。工单 #19 第 2 项实测过：把 VideoResult.vue 改名，
+ * 读法在顶层则退出码 1，在 describe 体则退出码 0 而用例数悄悄变少。
  */
-function stripComments(src) {
-  return src
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((l) => (l.trim().startsWith('//') ? '' : l))
-    .join('\n')
-}
-
 const raw = read('../src/components/VideoResult.vue')
-const src = stripComments(raw)
 
 /** <template> 段。lastIndexOf：模板里有 <template v-if> 这种同名标签。 */
 const template = (() => {
@@ -47,53 +58,6 @@ const template = (() => {
   return raw.slice(0, end)
 })()
 
-const script = src.slice(src.indexOf('<script setup>'))
-
-/** 抽出 `function NAME(...) {...}` 的完整源码。 */
-function extractFn(code, name) {
-  const at = code.indexOf(`function ${name}(`)
-  assert.ok(at > 0, `抽不出 ${name}`)
-  const i = code.indexOf('{', at)
-  let depth = 0
-  for (let j = i; j < code.length; j += 1) {
-    if (code[j] === '{') depth += 1
-    else if (code[j] === '}') {
-      depth -= 1
-      if (depth === 0) return code.slice(at, j + 1)
-    }
-  }
-  throw new Error(`${name} 的大括号不配对`)
-}
-
-/** 抽出 `computed(...)` 的**参数**（配对小括号），即 `() => expr`。 */
-function extractComputedBody(code, name) {
-  const at = code.indexOf(`const ${name} = computed(`)
-  assert.ok(at > 0, `抽不出 computed ${name}`)
-  const open = code.indexOf('(', at + `const ${name} = `.length)
-  let depth = 0
-  for (let j = open; j < code.length; j += 1) {
-    if (code[j] === '(') depth += 1
-    else if (code[j] === ')') {
-      depth -= 1
-      if (depth === 0) return code.slice(open + 1, j)
-    }
-  }
-  throw new Error(`${name} 的小括号不配对`)
-}
-
-/**
- * 真跑一个 computed：把它的箭头函数拿出来，当场调用。
- *
- * `computed(...)` 的参数是**一个函数**（`() => expr`），不是表达式本身。
- * 直接 `return ${body}` 会把那个函数本身返回出去 —— 断言拿到的是函数，
- * 不是分组结果，而它照样不报错。`(${fn})` 那对括号就是干这个的。
- */
-function runComputed(code, name, argName, argValue) {
-  const fn = extractComputedBody(code, name)
-  // eslint-disable-next-line no-new-func
-  return new Function(argName, `return (${fn})(${argName})`)(argValue)
-}
-
 function sliceBetween(haystack, startNeedle, endNeedle) {
   const i = haystack.indexOf(startNeedle)
   assert.ok(i > 0, `找不到 ${startNeedle}`)
@@ -101,116 +65,6 @@ function sliceBetween(haystack, startNeedle, endNeedle) {
   assert.ok(j > i, `${startNeedle} 之后找不到 ${endNeedle}`)
   return haystack.slice(i, j)
 }
-
-const videoFormatsOf = (props) => runComputed(src, 'videoFormats', 'props', props)
-const audioFormatsOf = (props) => runComputed(src, 'audioFormats', 'props', props)
-const labelOf = (selectedFormat) =>
-  runComputed(src, 'downloadLabel', 'selectedFormat', selectedFormat)
-
-// 真函数（同样抽出来跑，不做字符串匹配）
-const formatTitle = new Function(
-  'fmt',
-  `${extractFn(src, 'formatTitle')}; return formatTitle`
-)()
-
-// ── 造数据 ────────────────────────────────────────────────
-
-const VIDEO = { format_id: 'v-1080', kind: 'video', resolution: '1920x1080', label: '1080p MP4' }
-const VIDEO_MERGED = { format_id: 'bestvideo+bestaudio/best', kind: 'video', resolution: '1920x1080', label: '最佳' }
-const AUDIO = { format_id: 'a-320', kind: 'audio', abr: 320, ext: 'm4a', resolution: '', label: '320kbps M4A (仅音频, 9.1MB)' }
-const AUDIO_DOUYIN = { format_id: 'douyin_audio', kind: 'audio', abr: null, ext: 'mp3', resolution: '', label: '纯音频 MP3 (只下音频, 未知大小)' }
-
-const propsOf = (formats) => ({ video: { formats } })
-
-// ── 分组 ──────────────────────────────────────────────────
-
-describe('VideoResult 把音频和视频分成两块', () => {
-  test('音频选项进入音频块，不混进画质块', () => {
-    const props = propsOf([VIDEO, AUDIO, VIDEO_MERGED])
-    assert.deepEqual(videoFormatsOf(props).map((f) => f.format_id), ['v-1080', 'bestvideo+bestaudio/best'])
-    assert.deepEqual(audioFormatsOf(props).map((f) => f.format_id), ['a-320'])
-  })
-
-  test('没有任何选项被吞掉：两块的并集等于原始列表', () => {
-    const formats = [VIDEO, AUDIO, VIDEO_MERGED, AUDIO_DOUYIN]
-    const props = propsOf(formats)
-    const seen = [...videoFormatsOf(props), ...audioFormatsOf(props)]
-    assert.equal(seen.length, formats.length, '有选项凭空消失了')
-    assert.deepEqual(
-      seen.map((f) => f.format_id).sort(),
-      formats.map((f) => f.format_id).sort()
-    )
-  })
-
-  test('音频块里不得混进视频选项', () => {
-    const props = propsOf([VIDEO, AUDIO])
-    for (const f of audioFormatsOf(props)) assert.equal(f.kind, 'audio')
-  })
-
-  test('自报了 kind 缺失的旧格式仍留在画质块里', () => {
-    // 反向缺省是刻意的：后端哪天回归漏了 kind，用户最坏看到归错块的选项，
-    // 而不是凭空消失的选项。「每条格式都自报 kind」由后端测试钉住。
-    const legacy = { format_id: 'old', resolution: '640x360', label: '360p' }
-    const props = propsOf([legacy, AUDIO])
-    assert.deepEqual(videoFormatsOf(props).map((f) => f.format_id), ['old'])
-    assert.deepEqual(audioFormatsOf(props).map((f) => f.format_id), ['a-320'])
-  })
-
-  test('只有音频可选时，画质块为空（不硬凑一个假画质）', () => {
-    const props = propsOf([AUDIO, AUDIO_DOUYIN])
-    assert.equal(videoFormatsOf(props).length, 0)
-    assert.equal(audioFormatsOf(props).length, 2)
-  })
-
-  test('formats 缺失时不炸', () => {
-    for (const props of [{}, { video: {} }, { video: { formats: null } }]) {
-      assert.deepEqual(videoFormatsOf(props), [])
-      assert.deepEqual(audioFormatsOf(props), [])
-    }
-  })
-})
-
-// ── 标题 ──────────────────────────────────────────────────
-
-describe('格式卡片的标题', () => {
-  test('视频选项显示分辨率', () => {
-    assert.equal(formatTitle(VIDEO), '1920x1080')
-    assert.equal(formatTitle(VIDEO_MERGED), '1920x1080')
-  })
-
-  test('音频选项显示码率，而不是一个空白的分辨率', () => {
-    assert.equal(formatTitle(AUDIO), '320 kbps')
-    // 抖音的 mp3 有码率，只是我们没去查。空白标题比"不知道"更糟：
-    // 它看起来像一个渲染坏了的卡片。
-    assert.equal(formatTitle(AUDIO_DOUYIN), 'MP3')
-  })
-
-  test('音频标题永远不为空', () => {
-    for (const f of [AUDIO, AUDIO_DOUYIN, { kind: 'audio', abr: null, ext: '' }]) {
-      assert.notEqual(formatTitle(f).trim(), '')
-    }
-  })
-})
-
-// ── 下载按钮文案 ──────────────────────────────────────────
-
-describe('下载按钮文案跟着选中项走', () => {
-  test('选中音频时说下载音频', () => {
-    assert.equal(labelOf({ value: AUDIO }), '下载音频')
-  })
-
-  test('选中视频时说下载视频', () => {
-    assert.equal(labelOf({ value: VIDEO }), '下载视频')
-    assert.equal(labelOf({ value: VIDEO_MERGED }), '下载视频')
-  })
-
-  test('什么都没选时是下载视频（按钮此刻是禁用的）', () => {
-    assert.equal(labelOf({ value: null }), '下载视频')
-    assert.equal(labelOf({ value: undefined }), '下载视频')
-  })
-})
-
-// ── 模板结构 ──────────────────────────────────────────────
 
 /**
  * 惰性地取两块模板。
@@ -252,9 +106,5 @@ describe('模板把两块分开渲染', () => {
     assert.ok(!template.includes("'下载视频'"), '模板里又出现硬编码的下载视频')
     // 「下载中...」还在，那是进行态，与选中项无关
     assert.ok(template.includes('下载中...'))
-  })
-
-  test('下载仍然回传 format_id，不是整条格式对象', () => {
-    assert.ok(src.includes("emit('download', selectedFormat.value.format_id)"))
   })
 })
