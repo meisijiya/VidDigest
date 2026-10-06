@@ -141,6 +141,56 @@ class TestAnonymousList:
             "https://img.example/cover-1.jpg"
         assert by_title["深入理解 Python 异步编程"]["tags"] == ["编程", "人工智能"]
 
+    def test_signed_query_string_is_echoed_verbatim(self, client_app, make_user):
+        """⚠️ **这是一条钉住已知缺陷的测试**（工单 #10 第 1 项）。
+
+        现状：带签名参数的临时链接解析后，`video_url` 在**未登录**响应里
+        **原样回显，含整个查询串**。一个 `?sig=...&token=...&exp=...` 的
+        分享链接因此变成对访客公开的字符串。
+
+        字段**不能删**：未登录响应只有 5 个键，`video_url` 是其中之一
+        （卡片要点得开、详情要能被寻址），见 `EXPECTED_CARD_KEYS`。
+
+        修它要引入 URL 规范化，而 URL 的**唯一性语义**是工单 #6 定下的
+        承诺（`idx_videos_url` 唯一索引 + `publish_video_card` 的先到先得）。
+        一旦规范化就要同时决定「入库规范化 / 查询规范化 / 回显哪个版本」
+        三者的关系，属于需要单独设计并写 ADR 的决策。
+
+        所以本测试的用途是**固定现状**，让后续规范化设计有一份可对比的基线：
+        改完之后**这条必须跟着改**，而它的消失不能是静默的——
+
+        - 若规范化被实现，本条应被改写成「回显的是规范化版本」
+          （那时它就变成了真正的护栏，而不是债的记录）；
+        - 若规范化一直没做，它会一直是红的**文档**，提醒这件事还没解决。
+
+        **不要**在没做规范化的情况下把这条删掉或改成宽松断言——
+        删掉它就等于让这个已知泄漏从视野里消失。
+        """
+        app, mk = client_app
+        owner = mk("signer@example.com")
+        signed = (
+            "https://example.com/private-clip"
+            "?V7URLSECRET_MARKER=1&sig=deadbeefcafe&exp=1700000000"
+        )
+        outcome, _ = database.reserve_video(signed, owner)
+        assert outcome == "reserved", f"前提不成立：占位失败（{outcome}）"
+        assert database.complete_video(signed, summary_md="一份总结") == 1
+
+        with anon(app) as c:
+            items = c.get("/api/community/videos").json()["items"]
+        hit = [i for i in items if i["id"] == database.get_video_by_url(signed)["id"]]
+        assert hit, "前提不成立：这条视频没出现在未登录列表里"
+        echoed = hit[0]["video_url"]
+
+        assert echoed == signed, (
+            f"未登录响应里的 video_url 与入库原文不一致：\n"
+            f"  原文：{signed}\n  回显：{echoed}\n"
+            "这条测试记录的是**工单 #10 尚未修复**的现状（签名参数随卡片公开回显）。\n"
+            "如果 URL 规范化已经被实现，请把本条改写成断言「回显的是规范化版本」——\n"
+            "那时它会从『债的记录』变成『真正的护栏』。\n"
+            "但**不要**在没有实现规范化的前提下删掉它或放松断言。"
+        )
+
     def test_list_omits_pending_placeholder(self, client_app, seeded):
         """pending 是占位：里面没有内容，不能当社区内容列出来。"""
         app, _mk = client_app
