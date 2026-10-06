@@ -1,0 +1,276 @@
+/**
+ * VideoSummary.vue 真挂载（工单 #19 第 2 项）。
+ *
+ * ## 这个文件**不迁移任何既有用例**，只补行为侧的真空
+ *
+ * 逐条判定 6 个文件里涉及 VideoSummary.vue 的 19 条断言，结论是 **19 条全是源码文本
+ * 断言，一条都不该迁**——判据对象就是源码本身（「模板里不许出现裸 `@click="startSummarize"`」
+ * 「`quotaLabel` 必须作为插值出现」），挂载后看不见模板源码，迁过去会退化成
+ * 「界面上没出现那串字」。所以本文件是**纯新增**。
+ *
+ * ## 变异探针说 VideoSummary「6/6 失明」，逐条复核后是 3/6 —— 这个差值本身是结论
+ *
+ * 探针报 6 条变异全部 SURVIVED。复核发现其中 3 条**压根不是缺陷**，为它们写断言会
+ * 写出结构上无法失败的测试：
+ *
+ * | 变异 | 复核结论 | 依据 |
+ * |---|---|---|
+ * | V1 `started` 守卫 | **不可达** | `App.vue:69-82` 的 `<VideoSummary>` 没有 `ref`，父组件拿不到 `startSummarize`；按钮 `:71` 的 `v-else-if="!started"` 在点完就整体卸载；而 watch `:506` 在调 `startSummarize` 前**自己**把 `started` 重置成 false，守卫拦不到它 |
+ * | V5 `sanitizeMindmap` 空兜底 `:418` | **语义空操作** | 探针实测 11 类输入（空串 / 空格 / 换行 / Tab / null / undefined / 0 / 正常 md / 无标题 / 仅 H2 / 带围栏）**输出逐字符相同**：`:418` 的兜底串与 `:448` 的 `items ? ... :` 兜底串是同一句 |
+ * | V6 `applyChatHistory` 空问题守卫 | **不可达** | `chatHistoryList` 只有三个来源：服务端 `fetchChatSession`、`initialHistory.chat_history`、以及 `handleChat` 里 `push({question, …})`——那一处的 `question` 已被 `:644` 的 `.trim()` 且非空校验过。要触发它得先有一条服务端返回空问题的畸形记录 |
+ *
+ * 剩下 V2 / V3 / V4 是**真实且用户可达**的，本文件守它们。
+ *
+ * ## V2 必须从回车路径验，不能从按钮验
+ *
+ * 提问按钮 `:206` 有 `:disabled="chatLoading || !chatQuestion.trim()"`，按钮点第二次
+ * 本来就被禁用。而输入框 `:204` 的 `@keyup.enter="handleChat"` **没有任何禁用门**——
+ * 所以「追问进行中再按一次回车」是用户真的能走出来的路径，`chatStream` 守卫
+ * （`:644`）是这条路上唯一的拦截点。删掉它就是两个并发流、两次扣额度。
+ *
+ * ## 每条守卫都配一条对照组
+ *
+ * 只写「不该发生」的那一半会恒真：本文件对 V2 / V3 / V4 各配一条「确实该发生」的
+ * 对照（结束后能再问、有总结会写、未登录之外会发），确保断言在能区分两种实现的状态上。
+ *
+ * ## 判据只走「用户看到什么」与「后端收到什么」
+ *
+ * `<script setup>` 不暴露内部状态，DOM 是唯一出口。本文件不 import 也不调用
+ * `started` / `chatStream` / `sanitizeMindmap` / `applyQuotaEvent`——那些是实现细节。
+ * 唯一的例外是「点完之后后端收到什么」：那本来就是接口契约，从 mock 的调用记录读。
+ */
+import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
+
+// vi.mock 必须在顶部：它靠「被提升到组件 import 之前」生效。下沉到共用夹具就依赖导入
+// 顺序，失效是静默的——组件真去发 axios 请求，jsdom 没有 XHR，形态是「挂载即炸」。
+vi.mock('../src/api/summarize.js', () => ({
+  summarizeVideo: vi.fn(),
+  chatWithVideo: vi.fn(),
+  fetchQuota: vi.fn(),
+}))
+vi.mock('../src/api/history.js', () => ({
+  fetchChatSession: vi.fn(),
+  saveHistory: vi.fn(),
+}))
+// 真实现读 localStorage；这里钉成固定值，让「凭据有没有跟着走」在任何环境下同形。
+vi.mock('../src/lib/byok.js', () => ({
+  getRequestCredential: vi.fn(() => ({ provider: 'openai' })),
+}))
+
+import VideoSummary from '../src/components/VideoSummary.vue'
+import { summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.js'
+import { fetchChatSession, saveHistory } from '../src/api/history.js'
+
+// ── 造数据 ─────────────────────────────────────────────────
+
+const VIDEO_URL = 'https://youtu.be/dQw4w9WgXcQ'
+
+/**
+ * `api/summarize.js` 的 `streamSse` 返回 `{ done, cancel }`：`done` 是结束的 Promise，
+ * `cancel` 是用户主动停止。这里照抄那个契约——事件什么时候发由测试自己点，
+ * 而不是像既有 text 测试那样 `enqueue` 一次性灌完。
+ */
+function makeStream() {
+  let finish
+  const done = new Promise((res) => { finish = res })
+  return {
+    handle: { done, cancel: vi.fn() },
+    finish: () => finish({ done: true, value: undefined }),
+  }
+}
+
+let summarizeCb
+let chatCb
+let summarizeStream
+let chatStream
+
+/**
+ * 挂载并等 watch 的 `immediate` 跑完。
+ *
+ * `hasCommunityResult: true` 时 `watch(() => props.videoUrl, …, {immediate: true})`
+ * 会自动发起 `startSummarize(false)`，于是 `started` 变真、组件进入总结 Tab——
+ * 这正是「从社区页点进来直接看到内容」的真实路径，也省掉了手动点开始按钮。
+ */
+async function mountSummary(props = {}) {
+  summarizeStream = makeStream()
+  chatStream = makeStream()
+  summarizeVideo.mockImplementation((_url, _lang, cb) => {
+    summarizeCb = cb
+    return summarizeStream.handle
+  })
+  chatWithVideo.mockImplementation((_url, _q, cb) => {
+    chatCb = cb
+    return chatStream.handle
+  })
+  fetchQuota.mockResolvedValue({ logged_in: true, parse: { remaining: 3, limit: 3 }, chat: { remaining: 10, limit: 10 } })
+  fetchChatSession.mockResolvedValue([])
+
+  const w = mount(VideoSummary, {
+    props: { videoUrl: VIDEO_URL, user: { id: 1 }, ...props },
+  })
+  await flushPromises()
+  return w
+}
+
+/** Tab 栏按钮的文本就是 label（图标没文字，激活态那条下划线 div 也没文字）。 */
+async function openTab(w, label) {
+  const btn = w.findAll('button').find((b) => b.text().includes(label))
+  expect(btn, `找不到 Tab「${label}」`).toBeTruthy()
+  await btn.trigger('click')
+  await flushPromises()
+  return btn
+}
+
+/** 全组件只有一个 `<input>`（`:200` 的追问框），所以不必按位置找。 */
+const chatInput = (w) => w.find('input[type="text"]')
+
+beforeEach(() => {
+  // reset 而不是 clear：clear 只清调用历史、不清实现，会让漏设前提的用例默默继承上一条
+  // 的种子，然后断言了另一个场景还照样绿。每条用例要的实现都在 mountSummary 里现设。
+  vi.resetAllMocks()
+})
+
+// ── 基础通路 ───────────────────────────────────────────────
+
+describe('VideoSummary 挂载 · 总结渲染', () => {
+  test('流式 token 累积后渲染成 HTML', async () => {
+    const w = await mountSummary({ hasCommunityResult: true })
+
+    summarizeCb.onSummary('# 第一章\n\n这是**加粗**正文。')
+    summarizeCb.onSummary('第二段。')
+    await flushPromises()
+
+    const html = w.html()
+    // marked 真跑：换行成 <p>，** 加粗成 <strong>
+    expect(html).toContain('<h1')
+    expect(html).toContain('<strong>加粗</strong>')
+    expect(html).toContain('第二段。')
+  })
+})
+
+// ── V2：重复追问 ───────────────────────────────────────────
+
+describe('VideoSummary 挂载 · 追问不重复发', () => {
+  test('追问流还开着时按第二次回车，不会再发一次请求', async () => {
+    const w = await mountSummary({ hasCommunityResult: true })
+    await openTab(w, 'AI 问答')
+
+    const input = chatInput(w)
+    await input.setValue('这个视频讲了什么')
+    await input.trigger('keyup.enter')
+    await flushPromises()
+    expect(chatWithVideo, '第一次回车必须真的发出去了').toHaveBeenCalledTimes(1)
+
+    // 流还开着（没有 finish），再按一次回车——这是用户真能走出来的路径：
+    // 输入框 `@keyup.enter` 没有任何禁用门，拦不住的。
+    await input.trigger('keyup.enter')
+    await flushPromises()
+    expect(chatWithVideo, '追问进行中按第二次回车，多发了一条').toHaveBeenCalledTimes(1)
+  })
+
+  test('对照组：上一条追问结束后，再问一次会真的发第二次请求', async () => {
+    const w = await mountSummary({ hasCommunityResult: true })
+    await openTab(w, 'AI 问答')
+
+    const input = chatInput(w)
+    await input.setValue('第一个问题')
+    await input.trigger('keyup.enter')
+    await flushPromises()
+    chatCb.onDone()
+    await flushPromises()
+
+    await input.setValue('第二个问题')
+    await input.trigger('keyup.enter')
+    await flushPromises()
+
+    // 没有这条，上面那条会恒真：守卫和「追问压根发不出去」对它同形。
+    expect(chatWithVideo).toHaveBeenCalledTimes(2)
+    expect(chatWithVideo.mock.calls[1][1]).toBe('第二个问题')
+  })
+})
+
+// ── V3：空结果不写历史 ─────────────────────────────────────
+
+describe('VideoSummary 挂载 · 空结果不写历史', () => {
+  test('流结束时既没有总结也没有导图，不往解析历史塞空记录', async () => {
+    await mountSummary({ hasCommunityResult: true })
+
+    summarizeCb.onDone()
+    await flushPromises()
+
+    expect(saveHistory, '失败/空结果也写了历史，刷新后是一次凭空消失的解析').not.toHaveBeenCalled()
+  })
+
+  test('对照组：有总结的流会写一条历史', async () => {
+    await mountSummary({ hasCommunityResult: true })
+
+    summarizeCb.onSummary('一段总结')
+    summarizeCb.onDone()
+    await flushPromises()
+
+    // 没有这条，上面那条会恒真：守卫和「persistHistory 压根不工作」对它同形。
+    expect(saveHistory).toHaveBeenCalledTimes(1)
+    expect(saveHistory.mock.calls[0][0].summary_md).toBe('一段总结')
+  })
+})
+
+// ── V4：访客不回填问答历史 ─────────────────────────────────
+
+describe('VideoSummary 挂载 · 访客不回填问答历史', () => {
+  test('未登录访客不发会话回填请求', async () => {
+    await mountSummary({ hasCommunityResult: true, user: null })
+
+    summarizeCb.onDone()
+    await flushPromises()
+
+    // 服务端会 401，白等一趟；而且这条请求带的就是用户的视频链接。
+    expect(fetchChatSession).not.toHaveBeenCalled()
+  })
+
+  test('对照组：登录用户会发会话回填请求', async () => {
+    await mountSummary({ hasCommunityResult: true, user: { id: 7 } })
+
+    summarizeCb.onDone()
+    await flushPromises()
+
+    expect(fetchChatSession).toHaveBeenCalledTimes(1)
+    expect(fetchChatSession.mock.calls[0][0]).toBe(VIDEO_URL)
+  })
+})
+
+// ── 行为侧的加强：overwrite 与额度 ─────────────────────────
+
+describe('VideoSummary 挂载 · 接口契约', () => {
+  test('点「开始 AI 解析」发出的是新增而不是覆盖', async () => {
+    const w = await mountSummary({ hasCommunityResult: false })
+
+    const btn = w.findAll('button').find((b) => b.text().includes('开始 AI 解析'))
+    expect(btn, '没有 hasCommunityResult 时应停在待启动区块').toBeTruthy()
+    await btn.trigger('click')
+
+    expect(summarizeVideo).toHaveBeenCalledTimes(1)
+    const options = summarizeVideo.mock.calls[0][3]
+    // 这一条是 `reparse-owner.test.mjs:237`（文本：模板里不许出现裸 `@click="startSummarize"`）
+    // 的行为对应物：写回裸引用会把 MouseEvent 当 overwrite 传进来，于是「开始」变成「覆盖」。
+    expect(options.overwrite).toBe(false)
+  })
+
+  test('额度拆分后两个计数器同时显示', async () => {
+    const w = await mountSummary({ hasCommunityResult: true })
+
+    summarizeCb.onQuota({
+      remaining: 1,
+      limit: 3,
+      parse: { remaining: 2, limit: 3 },
+      chat: { remaining: 7, limit: 10 },
+    })
+    await flushPromises()
+
+    const badge = w.html()
+    // `quota.test.mjs:159`（文本：`{{ quotaLabel }}` 必须是插值）挡不住 quotaLabel 被换成
+    // 另一个仍然存在的插值；这条断言的是用户真的同时看到两个数字。
+    expect(badge).toContain('解析 2 / 3')
+    expect(badge).toContain('追问 7 / 10')
+  })
+})
