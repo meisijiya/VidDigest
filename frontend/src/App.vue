@@ -708,11 +708,17 @@ async function refreshSession(syncUser) {
 }
 
 /**
- * 管理员判据回查。
+ * 管理员判据回查（挂载与登录成功后各调一次）。
  *
- * ⚠️ **签名必须是零参**：`admin-ui.test.mjs:273` 断的就是
- * `async function refreshAdminFlag()` 这个字面量，所以细节都在
- * `refreshSession` 里，这个名字只作为那个断言的落点而存在。
+ * `syncUser=false`：这一路的 `currentUser` 已经有权威来源——localStorage
+ * 种子与登录响应——不需要用 `/api/auth/me` 覆盖它；覆盖会静默丢掉两者有、
+ * `/me` 没有的字段。付款回跳那一路相反，要传 `true`，理由见 `refreshSession`。
+ *
+ * 这个名字曾经还有一个理由：`admin-ui.test.mjs` 有一条文本断在
+ * `async function refreshAdminFlag()` 这个字面量上。那条断言已随工单 #33
+ * 收尾删除——它把整个函数掏空（保留签名）都照样全绿，判别力≈0，且反过来
+ * dictate 了实现形态。真实的行为判据在
+ * `frontend/tests/app-admin-entry.mount.spec.mjs`。
  */
 async function refreshAdminFlag() {
   await refreshSession(false)
