@@ -121,9 +121,25 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 - **断言必须跑在能区分两种实现的状态上。** 同一次实测里，「展开态下 measure 不该改 overflowing」这条断言喂的是**不换行但溢出**的宽度，于是 `needsExpand` 照样返回 true，去掉 early return 两种实现结果一样，**变异存活**。真实的展开态下行会 wrap（`scrollWidth == clientWidth`），只有这个形状才能把它区分开。写完断言问一句：**拿它去测另一种实现，会不会红**。
 - **「多选取并集」不是交集。** 历史页与社区页的标签筛选都是命中任一即列出（交集在标签很少共现时直接返回空，界面上与「筛选坏了」一模一样）。前端 `lib/tag-filter.js` 里曾把注释写成「多选 = 与」，而后端是并集——**注释里的语义错了比代码错了更贵**，改代码时顺手搜一遍 `docs/`、`AGENTS.md`、`CONTEXT.md` 里的同类描述。
 - **平台链接形态先查 `_VALID_URL`，别猜也别拿假 id 试。** 2026-10-03 实测（yt-dlp 2026.08.19，结论只对该构建成立）：
-  - 小红书 extractor 是 `XiaoHongShu`，只认 `https://www\.xiaohongshu\.com/(?:explore|discovery/item)/<hex>`——**`www.` 是必需的**。不带 `www`、`m.` 开头、`/user/profile/`、`xhslink.com` 短链都**没有专用 extractor 认领**（落进 `[generic]` 兜底，**不是** `Unsupported URL`：它仍然会出网，只是没有平台专用解析逻辑，两者的失败原因与用户该看到的提示都不一样）。而 App 分享出来的默认就是短链，`clean_url()` 会把它从整段文案里原样抽出来，所以「复制小红书链接」直接粘必然失败。
+  - 小红书 extractor 是 `XiaoHongShu`，只认 `https://www\.xiaohongshu\.com/(?:explore|discovery/item)/<hex>`——**`www.` 是必需的**。不带 `www`、`m.` 开头、`/user/profile/`、`xhslink.com` 短链都**没有专用 extractor 认领**（落进 `[generic]` 兜底，**不是** `Unsupported URL`：它仍然会出网，只是没有平台专用解析逻辑，两者的失败原因与用户该看到的提示都不一样）。而 App 分享出来的默认就是短链，`clean_url()` 会把它从整段文案里原样抽出来。⚠️ 但**「落进 generic」不等于「必然失败」**——见下面那条实测。
   - `m.bilibili.com` 同样**没有 BiliBili extractor 认领**（2026-10-06 用 `gen_extractors()` 逐个 `suitable()` 实测，共 1751 个 IE），而 B 站 App 分享的默认形态就是它。它比短链更常见，而且**不需要出网就能修**——见下面「归一只管比较，不管取数」那条。
   - 爱奇艺**必须带 `.html`**，否则不掉进 iqiyi extractor、而是掉进 `[generic]` 兜底，**不报错但等于没支持**。
+  - **`[generic]` 会跟完 302 并重新分派**给平台专用 extractor。
+    2026-10-06 全程不出网实测：本地 302 服务 + 临时放宽一个真实已注册 IE 的
+    `_VALID_URL`，把「短链」交给 yt-dlp——
+    `[redirect] Following redirect to …` 之后，专用 extractor 被调用 1 次。
+    源码对得上：`yt_dlp/extractor/generic.py:845` 跟完跳转后 `return self.url_result(new_url)`，
+    **没指定 `ie`**，于是走一遍正常的 extractor 选择。meta refresh 同理（`generic.py:1207`）。
+  - ⚠️ **这条不能外推。** 只验了**普通 302**；**JS 跳转 yt-dlp 处理不了**。
+    而「小红书 `xhslink.com` 到底是不是普通 302」**没有验过**——
+    拿假 id 出网得到的失败原因没法区分形态问题还是网络问题，这种结论不可信。
+    工单 #30 第 2 件据此定案为「不做」：我们自己出网解析跳转，
+    是在为 yt-dlp 已经能做的事再付一次「纯函数变网络调用」的代价。
+  - 写这类本地实验时，**阳性对照比结论重要**：
+    `_match_valid_url` 读的是 `cls._VALID_URL`（设实例上**不生效**）；
+    分派后会调 `_match_id`，假 `_VALID_URL` 缺 `id` 命名组会抛
+    `IndexError: no such group`——**那个异常看着像「没分派」，其实方向正好相反**。
+    本轮探针坏了三次，每次都是「先证明工具真的产出了输出」把它拦下来的。
   - 微博 `weibo.com/tv/show/` 的 id 必须是 `<数字>:<32位hex>`；短 id 会被判 `Unsupported URL`。
   - 西瓜视频 extractor 明确要求 Cookie（不必登录）；**快手在这个构建里没有 extractor**。
   - **把「形态对不对」和「视频在不在」分开验**：读 `_VALID_URL` / `IE.suitable(url)` 只回答「有没有专用 extractor 认领」，**不回答「能不能下下来」**——后者必须真的出网才知道。拿假 id 出网得到的失败原因没法区分是形态问题还是网络问题，这种结论不可信，本仓已经因此错判过一次微博。
