@@ -625,6 +625,10 @@ function handleAuthSuccess(user) {
  * 还亮着，要 F5 才消失（工单 #33）。
  */
 function handleLogout() {
+  // 推进代次：让**在途**的 /api/auth/me 回查失效。那一发是登出前发出的，
+  // 带着**旧 token**（auth.js 的拦截器在**请求时**读 token），仍会成功返回；
+  // 不作废它，它 resolve 后就会把下面这次同步重置覆盖掉——登出之后入口重新亮起。
+  adminFlagGen++
   logoutApi()
   currentUser.value = null
   isAdmin.value = false
@@ -648,31 +652,70 @@ function checkPaymentResult() {
   if (params.get('payment') === 'success') {
     window.history.replaceState({}, '', window.location.pathname)
     if (isLoggedIn()) {
-      setTimeout(async () => {
-        try { currentUser.value = await fetchMe() } catch {}
-      }, 1000)
+      // 付款只改 VIP 状态、**不改**管理员身份，所以这条路径过去「更新了
+      // currentUser 却不管 isAdmin」也没人看出来。但它是同一根因的第三处
+      // 漏网点：将来谁在这里塞提权逻辑，就会再踩一次「写 currentUser 顺手
+      // 忘了写 isAdmin」的坑。走同一条受代次守卫的路径收口（syncUser=true：
+      // VIP 状态的更新途径就是这一发，不能丢）。
+      setTimeout(() => { refreshSession(true) }, 1000)
     }
   }
 }
 
 /**
- * 管理员判据回查。
+ * 管理员判据回查的**代次号**。
+ *
+ * /api/auth/me 是一次异步往返，而它到达服务端时**带着发出那一刻的 token**。
+ * 于是「登录后立刻登出」这种序列里，登出前发的那一发会带着**有效的旧
+ * token** 成功返回；若无条件落地，它就把 handleLogout 的同步重置覆盖掉，
+ * 登出之后管理入口重新亮起（工单 #33 复审）。
+ *
+ * ⚠️ 靠 `catch` 兜底防不住：竞态那一路走的是 `try` 的**成功**分支。
+ * 只能让「过期的结果」自己作废——发请求时取号，回来时比对。
+ */
+let adminFlagGen = 0
+
+/**
+ * 会话回查：`/api/auth/me` 一次，同时落 `currentUser` 与 `isAdmin`。
+ *
+ * `syncUser` 决定要不要顺带刷新 `currentUser`：
+ *   - 挂载 / 登录回查（`refreshAdminFlag`）传 false —— 那一路的 currentUser
+ *     已经有权威来源（localStorage 种子 / 登录响应），不需要覆盖；
+ *   - 付款成功回跳（`checkPaymentResult`）传 true —— 那边**唯一**的更新途径
+ *     就是这一次回查（VIP 状态变了），过去也是这么做的。
  *
  * 只在已登录时打这一发：游客本来就不可能有管理入口，而无谓的 401
  * 会在控制台里留一条噪音。失败一律按「不是管理员」处理——宁可让入口
  * 晚一点出现，也不要在服务端已撤权时还亮着它。
+ *
+ * ⚠️ 代次守卫（`gen !== adminFlagGen`）把在途结果挡在落地之外：只要期间
+ * 发生过登出或又一次回查，这一发就整份作废。两个方向都靠它。
  */
-async function refreshAdminFlag() {
+async function refreshSession(syncUser) {
+  const gen = ++adminFlagGen
   if (!isLoggedIn()) {
     isAdmin.value = false
     return
   }
   try {
     const fresh = await fetchMe()
+    if (gen !== adminFlagGen) return
     isAdmin.value = !!fresh?.is_admin
+    if (syncUser && fresh) currentUser.value = fresh
   } catch {
-    isAdmin.value = false
+    if (gen === adminFlagGen) isAdmin.value = false
   }
+}
+
+/**
+ * 管理员判据回查。
+ *
+ * ⚠️ **签名必须是零参**：`admin-ui.test.mjs:273` 断的就是
+ * `async function refreshAdminFlag()` 这个字面量，所以细节都在
+ * `refreshSession` 里，这个名字只作为那个断言的落点而存在。
+ */
+async function refreshAdminFlag() {
+  await refreshSession(false)
 }
 
 onMounted(() => {

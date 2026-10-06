@@ -212,3 +212,61 @@ describe('工单 #33 判据 2 · 登出后入口消失', () => {
     w.unmount()
   })
 })
+
+describe('工单 #33 复审 · 登出后在途回查不得把入口重新点亮', () => {
+  it('挂起 /api/auth/me：登录后立刻登出，让在途请求回来，入口不重新出现', async () => {
+    // 这一条是**本次修复自己引入的**竞态，方向与判据 2 相反。
+    //
+    // `auth.js` 的拦截器在**请求时**读 token，所以登出前发出的那发
+    // /api/auth/me 带着**有效的旧 token** 到达服务端并成功返回。它 resolve
+    // 之后若无条件写 isAdmin，就把 handleLogout 的同步重置覆盖掉——
+    // **登出之后、token 已经是 null 的情况下，管理后台入口重新亮了。**
+    //
+    // ⚠️ 靠 `catch` 兜底防不住：这一路走的是 `try` 的**成功**分支。
+    // 只能让过期结果自己作废（代次守卫）。
+    const admin = { id: 7, email: 'admin@example.com', is_admin: true }
+    login.mockImplementation(async () => {
+      localStorage.setItem('auth_token', 'tok-new')
+      localStorage.setItem('auth_user', JSON.stringify(admin))
+      return admin
+    })
+
+    // ⚠️ **手动控制 resolve，不用 sleep 撞时序。** await sleep 出来的竞态用例
+    // 在 CI 上时好时坏，而「偶发红」最容易被登记成「未定因」——本仓已经吃过
+    // 一次亏。这里把 promise 真的挂起，由本用例在断言之后手动放行，
+    // 于是「在途窗口」在任何机器上都必然存在。
+    let releaseFetchMe
+    fetchMe.mockImplementation(() => new Promise((resolve) => {
+      releaseFetchMe = () => resolve(admin)
+    }))
+
+    const w = await mountApp()
+    // 起点必须是**登出态**：否则 `refreshAdminFlag` 第一道 `if (!isLoggedIn())`
+    // 就 return 了，那发请求压根发不出去，下面的竞态无从谈起。
+    expect(fetchMe, '登出态挂载时不该发 /api/auth/me —— 前提不成立').not.toHaveBeenCalled()
+
+    await loginThroughModal(admin)
+
+    // 登录后回查**在途**，结果还没回来 —— 此刻入口本就不该出现。
+    expect(fetchMe, '登录后应该发出了一发 /api/auth/me').toHaveBeenCalled()
+    expect(adminEntry(), '回查还在途，入口不该出现').toBeNull()
+
+    // 登出，落在请求在途的窗口里。
+    const logoutBtn = [...document.body.querySelectorAll('header button')]
+      .find((b) => b.textContent.trim() === '退出')
+    logoutBtn.click()
+    await settle()
+    expect(adminEntry(), '登出后入口本该消失').toBeNull()
+    expect(localStorage.getItem('auth_token'), '登出后 token 应当已清').toBeNull()
+
+    // 现在放行那一发在途请求。它是登出**前**发出的，服务端会成功返回
+    // is_admin: true —— 这正是覆盖同步重置的那一刀。
+    releaseFetchMe()
+    await settle()
+
+    expect(adminEntry(), '在途回查把登出后的管理员入口重新点亮了').toBeNull()
+    expect(w.text(), '在途回查把登出后的用户也复活了').not.toContain(admin.email)
+
+    w.unmount()
+  })
+})
