@@ -343,3 +343,72 @@ describe('标签多选取并集', () => {
     expect(callArg(2).tag).toBe('')
   })
 })
+// ── 标签清单加载失败，与「真的还没有标签」分开 ─────────────────
+//
+// `tagLoadError` 这个独立状态存在的**全部理由**就是这两者长得一模一样：
+// 失败时 `tagOptions` 被清空，于是筛选行空着 —— 和「社区里一个标签都还没有」
+// 在界面上完全一样。所以下面三条必须成组读，少任何一条都判别不出来。
+
+describe('标签清单加载失败', () => {
+  const oneCard = page({ items: [card()], total: 1, page: 1, total_pages: 1 })
+
+  test('清单加载失败时说出原因，而列表本身照常渲染', async () => {
+    searchCommunity.mockResolvedValue(oneCard)
+    fetchCommunityTags.mockRejectedValue(new Error('boom'))
+    const w = mount(CommunityPage)
+    await flushPromises()
+
+    expect(w.text(), '标签清单挂了却什么都不说 —— 它与「社区里还没有标签」长得一模一样')
+      .toContain('标签列表加载失败')
+    expect(w.text()).toContain('boom')
+    // 标签只是筛选器。它挂了不该把内容一起吃掉 —— 那是另一种故障。
+    expect(w.text(), '标签挂了把整个列表也吃掉了，用户看不到任何视频').toContain('机器学习入门')
+    expect(chips(w).length, '失败时不该渲染出一行空标签').toBe(0)
+  })
+
+  test('清单成功但真的为空时**不**显示失败（两件事必须分开）', async () => {
+    searchCommunity.mockResolvedValue(oneCard)
+    fetchCommunityTags.mockResolvedValue([])
+    const w = mount(CommunityPage)
+    await flushPromises()
+
+    // 这条是上一条的对照。只有两条都在，才证明界面分得清「挂了」与「没有」。
+    expect(w.text(), '真的没有标签却说「加载失败」—— 用户会反复去点那个不存在的重试')
+      .not.toContain('标签列表加载失败')
+    expect(w.text(), '没有标签时列表也不该消失').toContain('机器学习入门')
+  })
+
+  test('点重试会重新拉清单；成功后提示消失、标签行出现', async () => {
+    searchCommunity.mockResolvedValue(oneCard)
+    fetchCommunityTags.mockRejectedValueOnce(new Error('boom'))
+    const w = mount(CommunityPage)
+    await flushPromises()
+    expect(w.text()).toContain('标签列表加载失败')
+    expect(fetchCommunityTags).toHaveBeenCalledTimes(1)
+
+    fetchCommunityTags.mockResolvedValue(TAGS)
+    const retry = w.findAll('button').find((b) => b.text().trim() === '重试')
+    expect(retry, '标签清单挂了却没给重试入口 —— 用户只能刷新整个页面').toBeTruthy()
+    await retry.trigger('click')
+    await flushPromises()
+
+    expect(w.text(), '重试成功了失败提示还挂着').not.toContain('标签列表加载失败')
+    expect(chips(w).length, '重试成功后标签行没出来').toBe(TAGS.length)
+    expect(fetchCommunityTags, '点重试没有真的重新拉一次').toHaveBeenCalledTimes(2)
+  })
+
+  test('重试也失败时提示留着，且说清是这次的失败', async () => {
+    searchCommunity.mockResolvedValue(oneCard)
+    fetchCommunityTags.mockRejectedValue(new Error('boom'))
+    const w = mount(CommunityPage)
+    await flushPromises()
+
+    fetchCommunityTags.mockRejectedValue(new Error('还是不行'))
+    const retry = w.findAll('button').find((b) => b.text().trim() === '重试')
+    await retry.trigger('click')
+    await flushPromises()
+
+    expect(w.text()).toContain('标签列表加载失败')
+    expect(w.text(), '重试后的失败原因没更新 —— 用户看到的还是上一次那句').toContain('还是不行')
+  })
+})
