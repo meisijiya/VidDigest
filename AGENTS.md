@@ -101,7 +101,17 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
   - 判据：凡是「改源码 → 跑 → 改回来」的一次性操作，收尾一律 `git diff --stat` 与
     `git status --porcelain` 各看一眼。**不要相信脚本自己说它还原了。**
 - 改 Python 代码必须重启后端进程（`main.py` 没有 `--reload`）。
-- **前端测试别在 `describe` 体里做会抛异常的事。** node 对 **describe 体里抛出的异常**给出的退出码是 **0**，runner 还会报 `tests 0 / pass 0 / fail 0`——那个 suite 的测试一条都没注册、没运行，真正的 AssertionError 被埋在摘要下面，而 `init.sh` 只看退出码。实测（变异 F1）：把 `<template v-if="audioFormats.length">` 改成 `v-if="false"`，整份文件报「12 passed / 0 failed」、退出码 0，而那个 suite 的 5 条测试根本没跑。对照实验：模块顶层抛、测试体抛都给 1，**只有 describe 体这一处是隐形的**。`ui-fixes` / `community-tags` / `theme` / `admin-ui` / `quota` 目前都在 describe 体里做 `readFileSync` / `stripComments(read(...))`——源码一改名，那一整个 suite 就会静默消失。
+- **前端测试别在 `describe` 体里做会抛异常的事。** node 对 **describe 体里抛出的异常**给出的退出码是 **0**，runner 还会报 `tests 0 / pass 0 / fail 0`——那个 suite 的测试一条都没注册、没运行，真正的 AssertionError 被埋在摘要下面，而 `init.sh` 只看退出码。实测（变异 F1）：把 `<template v-if="audioFormats.length">` 改成 `v-if="false"`，整份文件报「12 passed / 0 failed」、退出码 0，而那个 suite 的 5 条测试根本没跑。对照实验：模块顶层抛、测试体抛都给 1，**只有 describe 体这一处是隐形的**。
+  - **2026-10-06 已修三处**（工单 #19 第 2 项）。修法统一：**把 `readFileSync` 提到模块顶层 eager 读**——模块加载失败是响的（退出码 1），describe 体失败是哑的。已修 `community-tags.test.mjs`（`:157`/`:210`）、`theme.test.mjs`（`:280-283`）、`ui-fixes.test.mjs`（`:361-362`）。
+  - **实测证据**（不是推理）：把 `VideoSummary.vue` 改名 → `community-tags` 报 `tests 12 → 7` 而**退出码仍是 0**；修后同一变异退出码变 **1**。把 `PixelLogo.vue` 改名 → `theme` 与 `ui-fixes` 修后均退出码 1（修前各静默丢 6 / 7 条）。
+  - **三种读源码的位置，失败形状完全不同，别混为一谈**：
+    | 位置 | 源码改名时的形状 | 门禁看得见吗 |
+    |---|---|---|
+    | `describe` 体 | 用例数悄悄变少 + 退出码 0 | **看不见**（本条要防的） |
+    | 模块顶层 | 模块加载即失败 + 退出码 1 | 看得见，但整份文件一起死 |
+    | `test` 体 | 那条用例红 + 退出码 1 | 看得见，影响面最小 |
+  - 反查命令：某文件是否还有 describe 体读源码 —— `Select-String -Path tests\X.test.mjs -Pattern '^\s*describe\(|readFileSync\('`，看 `readFileSync(` 出现在哪一行之后属于 describe 块。**`community-tags-ui` 与 `video-formats` 已经是 0 处**（前者惰性 thunk、后者惰性箭头函数，文件头写明了这条纪律）。
+- **「某个测试文件读源码」不等于「它的用例在断言源码文本」——按文件名归类会误伤。** 2026-10-06 工单 #19 第 2 项实测：工单写「7 处读源码的前端测试」，实际是 **16 个文件 / 约 469 条用例**；而逐条读完后发现其中**约 133 条压根不断言源码文本**——它们是假 fetch、假 localStorage、抠函数 `new Function` 真跑的**真行为测试**，只是恰好没有组件挂载（`quota.test.mjs` 的 12 条是纯函数单测，`admin-ui` 有 22 条沙箱真跑）。按「读源码测试 → 全部迁挂载」执行会把这些**比挂载更强**的断言改弱（迁过去还要 mock 整条 SSE 流才能验同一个返回值，白赚一个组件生命周期这个失败面）。判据：按**每条用例断言的对象**分类，不按**它所在文件 import 了什么**分类；`readFileSync` 出现在文件里只是「这个文件里混了两类」，不是「整个文件是一类」。
 - **两套 runner（工单 #18）。** `*.test.mjs` 走 `node --test`（`npm test`，静态 / 契约断言），`*.spec.mjs` 走 `vitest run`（`npm run test:mount`，真挂载）；`init.sh` 跑**两关**，分开计数。判据：**断言「渲染出了什么」→ 挂载；断言「源码里不许出现什么」→ 留文本**。色值字面量、snake_case 取值、转换函数收口这些迁成挂载只会变弱（挂载后看不到模板源码，断言会退化成「界面上没出现那个字符串」，而模板写了、只是没渲染到，恰恰是要抓的回归）。
   - `vitest.config.js` 的 `include` **必须显式写死成 `tests/**/*.spec.mjs`**。默认 include 覆盖 `.test`，会吃掉 node:test 的文件；而 `describe` 体抛异常时 vitest 同样退出 0（上面那条 AGENTS.md 纪律在这里原样重演）。
   - `vi.mock` **必须留在 spec 文件顶部**，不能下沉到共用夹具。它靠「被提升到组件 import 之前」生效；下沉后依赖导入顺序，失效是静默的，形态是「组件真去发 axios 请求，jsdom 没 XHR，挂载即炸」——看着像真故障，其实在测一个不存在的世界。

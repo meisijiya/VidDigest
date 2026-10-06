@@ -151,21 +151,37 @@ describe('summarizeVideo · tags 事件路由', () => {
 /**
  * 路由表静态检查：工单 #5 只允许「加一条」。
  * 行为测试能覆盖「收到就转发」，但覆盖不了「有人顺手改了别人的映射名」。
+ *
+ * ⚠️ 源码在**模块顶层**读，不在 describe 体里读（2026-10-06 实测）。
+ * node --test 对 **describe 回调体里抛出的异常**给出的退出码是 **0**，
+ * runner 还会报 `tests 0 / pass 0 / fail 0`——那个 suite 的测试一条
+ * 都没注册、没运行。实测把 `VideoSummary.vue` 改名后的形状：
+ *
+ *     基线 tests=12  退出码 0
+ *     改名 tests=7   退出码 0      ← 5 条用例静默消失，门禁对它完全失明
+ *     （真正的 ENOENT 埋在摘要下面，而 init.sh 只看退出码）
+ *
+ * 模块顶层读失败是**响**的（模块加载即失败，退出码非 0），所以搬到这里。
+ * 代价是源码改名会让整份文件一起死——但那种红本来就该有。
  */
-describe('路由表', () => {
-  // 归一化行尾符：本仓库是 CRLF，直接按 \n 切块会切空。
-  const api = readFileSync(
-    new URL('../src/api/summarize.js', import.meta.url),
-    'utf8',
-  ).replace(/\r\n/g, '\n')
+const apiSource = readFileSync(
+  new URL('../src/api/summarize.js', import.meta.url),
+  'utf8',
+).replace(/\r\n/g, '\n')
 
+const summaryVueSource = readFileSync(
+  new URL('../src/components/VideoSummary.vue', import.meta.url),
+  'utf8',
+).replace(/\r\n/g, '\n')
+
+describe('路由表', () => {
   /** 读出 `const X = { k: 'v', ... }` 的键值对 */
   function readRoutes(name) {
-    const start = api.indexOf(`const ${name} = {`)
+    const start = apiSource.indexOf(`const ${name} = {`)
     assert.notEqual(start, -1, `找不到 ${name}`)
-    const end = api.indexOf('\n}', start)
+    const end = apiSource.indexOf('\n}', start)
     assert.ok(end > start, `${name} 没读到收尾大括号`)
-    const body = api.slice(api.indexOf('{', start) + 1, end)
+    const body = apiSource.slice(apiSource.indexOf('{', start) + 1, end)
     return Object.fromEntries(
       body.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
         // 去掉行尾逗号与引号，否则值会读成 "onAnswer',"
@@ -207,15 +223,10 @@ describe('路由表', () => {
  * 或在回调里偷偷过滤 / 排序 / 截断后端已规范化的数组。
  */
 describe('VideoSummary 标签渲染接线', () => {
-  const source = readFileSync(
-    new URL('../src/components/VideoSummary.vue', import.meta.url),
-    'utf8',
-  ).replace(/\r\n/g, '\n')
-
   /** 标签条模板块：从容器标签本身到 Tab 内容区之前 */
-  const divAt = source.indexOf('<div v-if="videoTags.length"')
-  const blockEnd = source.indexOf('<!-- Tab 内容 -->', divAt)
-  const block = source.slice(divAt, blockEnd)
+  const divAt = summaryVueSource.indexOf('<div v-if="videoTags.length"')
+  const blockEnd = summaryVueSource.indexOf('<!-- Tab 内容 -->', divAt)
+  const block = summaryVueSource.slice(divAt, blockEnd)
 
   test('模板渲染出标签：v-for 遍历 + 插值 + 像素字体', () => {
     assert.notEqual(divAt, -1, '模板没有标签渲染出口（videoTags 从未被容器守卫消费）')
@@ -240,24 +251,24 @@ describe('VideoSummary 标签渲染接线', () => {
   })
 
   test('onTags 原样赋值：没有过滤 / 排序 / 截断 / 原地修改', () => {
-    const assigned = source.match(/videoTags\.value\s*=\s*[^\n]+/g) ?? []
+    const assigned = summaryVueSource.match(/videoTags\.value\s*=\s*[^\n]+/g) ?? []
     assert.deepEqual(
       assigned.sort(),
       ['videoTags.value = []', 'videoTags.value = []', 'videoTags.value = data'],
       `videoTags 只允许被整体赋值，出现意料之外的写法：${JSON.stringify(assigned)}`,
     )
     assert.doesNotMatch(
-      source, /videoTags\.value\.(push|splice|sort|reverse|filter|map|slice|flat)\b/,
+      summaryVueSource, /videoTags\.value\.(push|splice|sort|reverse|filter|map|slice|flat)\b/,
       '不得对后端已规范化的标签数组做二次加工',
     )
   })
 
   test('换视频与重新解析都会清空标签，不残留上一个视频的标签', () => {
-    const wAt = source.indexOf('watch(() => props.videoUrl')
-    const watcher = source.slice(wAt, source.indexOf('\n})', wAt))
-    const sAt = source.indexOf('function startSummarize(')
+    const wAt = summaryVueSource.indexOf('watch(() => props.videoUrl')
+    const watcher = summaryVueSource.slice(wAt, summaryVueSource.indexOf('\n})', wAt))
+    const sAt = summaryVueSource.indexOf('function startSummarize(')
     assert.notEqual(sAt, -1, '没找到 startSummarize')
-    const startFn = source.slice(sAt, source.indexOf('\n}\n', sAt) + 2)
+    const startFn = summaryVueSource.slice(sAt, summaryVueSource.indexOf('\n}\n', sAt) + 2)
     assert.match(watcher, /videoTags\.value = \[\]/, '换视频未清空标签')
     assert.match(startFn, /videoTags\.value = \[\]/, '重新解析未清空标签')
     assert.match(startFn, /onTags:\s*\(data\)\s*=>\s*\{\s*videoTags\.value = data\s*\}/,

@@ -357,9 +357,18 @@ describe('问题7 · 悬停邮箱显示额度面板', () => {
 // ─────────────────────────────────────────────────────────
 // 像素母题归位：闪动从「历史页空状态」搬到「左上角 Logo」
 // ─────────────────────────────────────────────────────────
+//
+// ⚠️ 这两个文件在**模块顶层**读，不在 describe 体里读（2026-10-06 实测）。
+// node --test 对 **describe 回调体里抛出的异常**给出的退出码是 **0**，
+// 那个 suite 的测试一条都没注册、没运行——实测把 PixelLogo.vue 改名后，
+// 这 7 条静默消失而退出码仍是 0，`init.sh` 只看退出码所以完全看不见。
+// 模块顶层读失败是**响**的（模块加载即失败，退出码非 0）。
+const pixelLogoSource = stripComments(read('../src/components/PixelLogo.vue'))
+const pixelStyleCss = read('../src/style.css')
+
 describe('像素母题 · 闪动在左上角 Logo 上', () => {
-  const pixelLogo = stripComments(read('../src/components/PixelLogo.vue'))
-  const styleCss = read('../src/style.css')
+  const pixelLogo = pixelLogoSource
+  const styleCss = pixelStyleCss
 
   /** 取出所有带闪动 class 的 rect，按 SVG 里的书写顺序 */
   const litRects = [...pixelLogo.matchAll(/<rect[^>]*class="([^"]*)"[^>]*>/g)]

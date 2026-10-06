@@ -275,12 +275,21 @@ describe('主色按钮 · 文字色必须够对比度', () => {
  *  - 「顺手把 Logo 也改成新配色」这个动作已经发生过一次。它当时让全部
  *    用例保持绿色（没有任何断言检查 Logo 的具体颜色），所以静默通过。
  *  - 这类豁免的失效方式永远是「有人觉得它不一致」，而不是「报错」。
+ *
+ * ⚠️ 下面三个文件在**模块顶层**读，不在 describe 体里读（2026-10-06 实测）。
+ * node --test 对 **describe 回调体里抛出的异常**给出的退出码是 **0**，
+ * 那个 suite 的测试一条都没注册、没运行。实测把 PixelLogo.vue 改名后的
+ * 形状就是「tests 数悄悄变少 + 退出码仍是 0」，而 `init.sh` 只看退出码。
+ * 模块顶层读失败是**响**的（模块加载即失败，退出码非 0），所以放在顶层。
  */
+const brandLogo = read('../src/components/PixelLogo.vue')
+const brandFavicon = read('../public/favicon.svg')
+const brandBrowserconfig = read('../public/browserconfig.xml')
+
 describe('品牌标记 · 色块豁免主题，底板跟随主题', () => {
-  const logo = read('../src/components/PixelLogo.vue')
-  const logoMarkup = stripComments(logo)
-  const favicon = read('../public/favicon.svg')
-  const browserconfig = read('../public/browserconfig.xml')
+  const logoMarkup = stripComments(brandLogo)
+  const favicon = brandFavicon
+  const browserconfig = brandBrowserconfig
 
   /** 品牌原色：紫 → 紫 → 粉 → 紫 → 青 → 青 */
   const BRAND_BLOCKS = ['#7C3AED', '#A855F7', '#EC4899', '#A855F7', '#06B6D4', '#06B6D4']
