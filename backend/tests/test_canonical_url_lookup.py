@@ -248,3 +248,62 @@ class TestSearchAndJoin:
         assert page["items"][0]["has_ai_result"], (
             "换个形态之后 AI 徽标消失了 —— 用户会以为那次解析没成功，又重跑一遍"
         )
+
+
+# ── 工单 #25 自己写的三条验收判据 ────────────────────────────────
+#
+# 票面写的是「方案确定后，以下任一条能转红才算落地」。这里逐条对应，
+# 让「落地了」这句话能对回票面，而不是只对回我这四片的提交说明。
+#
+# 第 1 条**刻意不满足**，而且是有意的——见下面的注释。
+
+SIGNED = "https://www.bilibili.com/video/BV1aa411c7mD?sig=SECRETTOKEN&exp=1789"
+UNSIGNED = "https://www.bilibili.com/video/BV1aa411c7mD"
+
+
+class TestTicketAcceptanceCriteria:
+    def test_criterion_2_signed_and_unsigned_are_the_same_row(self, db):
+        """判据 2：同一个视频用「带签名」和「不带签名」两种 URL 解析，社区里只有一行。
+
+        落地前：两行（精确比较劈开了）。
+        """
+        db.reserve_video(SIGNED, 1)
+        outcome, _row = db.reserve_video(UNSIGNED, 2)
+
+        with database.get_db() as c:
+            n = c.execute("SELECT count(*) AS n FROM videos").fetchone()["n"]
+        assert n == 1, f"社区里同一个视频有 {n} 行"
+        assert outcome in ("pending", "ready"), f"第二个人抢占成功了：{outcome}"
+        assert db.get_video_by_url(UNSIGNED) is not None, "不带签名那一份找不到"
+        assert db.get_video_by_url(SIGNED) is not None, "带签名那一份找不到"
+
+    def test_criterion_3_by_url_still_locates_from_the_users_own_text(self, db):
+        """判据 3：拿用户手贴的**原始**分享链接，仍能精确定位到那一行。
+
+        票面说这一条「最容易被规范化顺手弄坏」——它把原文换成规范值去查，
+        用户粘分享链接就命中不了。而它恰恰是分享场景的主要入口。
+        """
+        db.reserve_video(SIGNED, 1)
+        db.complete_video(SIGNED, summary_md="总结")
+        # 用户后来粘的是**另一种**形态（不带签名）
+        assert db.get_video_by_url(UNSIGNED)["status"] == database.VIDEO_STATUS_READY
+
+    def test_criterion_1_is_deliberately_not_met(self, db):
+        """判据 1（签名不再出现在访客响应里）**刻意不满足**，且是有意的。
+
+        票面把它拆成了「回显哪个版本」那个独立问题，而本轮拍板的是
+        「**比较**用 canonical，**回显**仍然是原文」——回显用户当初分享的
+        那个地址，对临时分享链接来说可能正是持有人在意的那个。
+
+        所以这一条现在断言的是**现状 + 理由**，而不是把结论藏起来：
+        签名确实还在回显里。要闭掉它需要单独决定「回显哪个版本」，
+        那是工单 #25 的第 2 问，本轮明确不在范围内。
+        """
+        db.reserve_video(SIGNED, 1)
+        db.complete_video(SIGNED, summary_md="总结")
+        row = db.get_video_by_url(SIGNED)
+        assert "SECRETTOKEN" in row["video_url"], (
+            "回显里没有签名了 —— 如果这是有意改的，请同步更新本条与工单 #25 的第 2 问；"
+            "如果不是，那说明有人顺手把原文改了，必须还原"
+        )
+        assert row["canonical_url"] == UNSIGNED, "但比较用的那一份确实是不带签名的"
