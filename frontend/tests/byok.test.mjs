@@ -215,10 +215,19 @@ describe('BYOK 前端接线（集中管理后）', () => {
     assert.ok(!/localStorage\./.test(script), 'VideoSummary 仍在直接读写 localStorage')
   })
 
-  test('界面写明了隐私承诺与「不消耗额度」', () => {
-    const privacy = dialogTemplate + summaryTemplate
-    assert.match(privacy, /不写日志/)
-    assert.match(privacy, /不消耗平台额度/)
+  test('隐私承诺写在填 Key 的弹窗里', () => {
+    // 刻意**不**把两个模板拼起来断言：`dialogTemplate + summaryTemplate` 是析取，
+    // 任一文件含该串即通过。实测 VideoSummary.vue 压根没有「不写日志」——原来那条
+    // 断言完全由 ByokDialog.vue 贡献，VideoSummary 那半边是虚的，
+    // 看着像两处都被守着，实际其中一处从来没被守过。
+    assert.match(dialogTemplate, /不写日志/)
+    assert.match(dialogTemplate, /不消耗平台额度/)
+  })
+
+  test('常驻额度行写明「不消耗平台额度」', () => {
+    // VideoSummary 的 byok 提示挂在**常驻**额度行上而不是某个 Tab 里：
+    // 用户正在看总结时也要知道这份内容用的是谁的额度。
+    assert.match(summaryTemplate, /不消耗平台额度/)
   })
 
   test('byok 额度事件不清空用户看得到的余额', () => {
