@@ -174,10 +174,27 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 - **「同端点两个出口」是最便宜的一种静默故障，因为用错哪个都不报错。** 2026-10-06 工单 #15 实测：`/api/admin/models` 曾有 `fetchAdminModels()`（服务端原文）与 `fetchAdminModelCatalog()`（camelCase）两个出口，组件调前者却在组件里自己翻 `toModel`，api 层的 `toAdminModelItem` 无人使用；而那份组件内的 `toModel` 还把 `enabled` 翻成**布尔**，api 层翻成 **0/1 数字**——两处口径不一致，症状只是表格某几列显示异常。规则：**一个端点一个出口，转换只在 api 层定义一处**；转换函数**不许**在组件里另写一份，哪怕逐字段看起来一样。
 - **把转换「收口到 api 层」之后，先查还有谁在转换——多半多了一次。** 同上工单：收口时 `replaceModel` 顺手也调了 `toAdminModelItem`，但 `updateAdminModel` **早在 api 层就把回读转好了**（`item: toAdminModelItem(res.data.item)`）——于是**翻第二次**。它不报错：`enabled` 两种形态同名读得到，而 `sort_order` 已变成 `sortOrder` 读不到就退回 0，**每保存一次就把该行排序号静默抹成 0**。这类「翻两次」的 bug 逃过静态审查，因为每一处单看都对。收口完成后必须逐个调用点问一句：**这份数据从哪来，源头转过没有。**
 - **「多写一次转换」的判据是「源头转没转」，不是「转换幂不幂」。** 转换函数对同一形状幂等不代表可以随便多调：一旦混入 snake_case/camelCase 两种形态，它就不是幂等的，而差异只落在「读不到的键退化成默认值」上，**永远不报错**。变异时把「api 层少转一次」和「组件多转一次」分开各做一条——2026-10-06 实测这两条一开始**都 SURVIVED**，补了两条断言才各自 KILLED。只做前者会漏掉后者。
-- **「多写一次转换」的判据是「源头转没转」，不是「转换幂不幂」。** 转换函数对同一形状幂等不代表可以随便多调：一旦混入 snake_case/camelCase 两种形态，它就不是幂等的，而差异只落在「读不到的键退化成默认值」上，**永远不报错**。变异时把「api 层少转一次」和「组件多转一次」分开各做一条——2026-10-06 实测这两条一开始**都 SURVIVED**，补了两条断言才各自 KILLED。只做前者会漏掉后者。
 - **变异 harness 的 anchor 必须按源文件的真实行尾构造，且至少留一条多行 anchor。** 2026-10-06 实测：`AdminPage.vue` 是 **CRLF**，而 harness 里的 anchor 用 LF —— 于是**单行 anchor 照常命中**（M2/M4/M5 全 KILLED），**多行 anchor 每个换行差一个 `\r`** 报「0 次命中」（M1/M3 两条直接 HARNESS-ERROR）。这个坑的诊断方向天然指向「文件里没这段代码」，不会指向「我的匹配函数返回错了形态」。写完 harness 逐条自问：**这个 0 次命中，是文件的问题还是我锚点的问题。**
 - **变异 SURVIVED 往往不是变异没用，是断言够不着它。** 2026-10-06 实测：把 `replaceModel` 里的 `toAdminModelItem(raw)` 换成自造形状 `{ ...raw, sortOrder: raw.sort_order }`，已有断言**全绿存活**——因为它们只查「`replaceModel(res.item)` 存在」，不查**它内部用什么转换**。修法是补一条查转换来源的断言（`/const fresh = toAdminModelItem\(/`），不是改变异。**每条 SURVIVED 都要先问「我这条断言守的是哪个行为」，再问「变异的那个坏掉点被覆盖了吗」。**
 - **本仓库是 PUBLIC：推送前审计必须扫历史，`git rm --cached` 不等于清出历史。** `.gitignore` 只对**未跟踪**文件生效，而 `git rm --cached` 也只把文件移出**最新一次提交**——内容仍留在那个 commit 里，历史一推就公开了。`TEST_ACCOUNTS.md`（含明文口令）就是这么差点进去的：它当时**从未推送过**，所以 `filter-branch --index-filter` + 删 `refs/original/` + `gc --prune=now` 是安全的；**已经推送过的仓库就没这个便宜了**，只能改远端历史。审计清单：`.gitignore` 覆盖 + `git ls-files` 可疑名 + 全树密钥形态 + **全 ref 全历史**密钥形态 + `git log --all --diff-filter=A --name-only` 查有没有提交过 `.env`/`.db`。两条容易漏的：邮箱/口令不含密钥正则，**要靠人读**；结论用 `gh api` 从服务端独立确认，别只信本地 `git ls-tree`。
+- **守卫与注释都会过期，而过期之后它们仍在产生约束力 —— 同一族病，2026-10-07 一晚四次全中。**
+  工单 #32 / #33 / #34 实测：① `database.py:1018` 的 docstring 写「收在一处」时，
+  还有**三份**逐字内联副本在跑；② `App.vue` 写「签名必须是零参，`admin-ui.test.mjs:273`
+  断的就是这个字面量」——而那条断言在**同一张工单的上一笔提交里刚被删掉**；
+  ③ `test_tags_decode_single_source.py` 的文件头写「**当前树上**共 6 处 `json.loads`」，
+  而 6 是收口**之前**的数，收口后是 3 处——**一句里混了两个状态**；
+  ④ `admin-ui.test.mjs:274` 的 `/await fetchMe\(\)[\s\S]{0,80}is_admin/`
+  **没有限定在任何函数体内**，匹配的是全文件，于是 worker 为满足它把实现调成「gap=69」，
+  而实测「掏空 `refreshAdminFlag` 的函数体后该文件 exit 0 / 0 失败」——
+  **它判别力≈0，却逼出了一个零参死壳。**
+  配套三条：① **每次改完，回头看你动过的文件里哪些句子描述的是「改动之前」的状态**——
+  注释与测试都会烂，且**不会自己喊出来**；② **文本断言要么用 AST / 函数归属限定作用域，
+  要么它产生的是约束而不是守卫**——**漏报是守卫最坏的失败模式**（内联一份新副本却全绿）；
+  ③ **判据可能「开篇就红」**：动手前先验它在当前树上成不成立，不成立就报告，不要照着做。
+  工单 #32 的「`json.loads` 只许出现在一处」、#34 的「枚举所有带 `user_id` 列的表」
+  **两条都被 worker 顶回来，两次都是 worker 对**——后者按字面做会让豁免登记表恒为空，
+  因为全库唯一**故意不随删号删除**的 `videos` 用的是 `parsed_by` 而不是 `user_id`，
+  而 `delete_user:1854` 的阻断检查走的正是 `WHERE user_id = ?`。
 
 ## 范围边界
 
