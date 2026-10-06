@@ -1015,7 +1015,8 @@ COMMUNITY_PAGE_SIZE_MAX = 100
 def _decode_tags_text(raw) -> list:
     """把 tags 列的 JSON 文本还原成字符串数组。
 
-    收在一处是因为这段已经在这个文件里长出了四份副本，各写各的。
+    收在一处是因为这段曾经在这个文件里长出过四份逐字重复的副本，各写各的。
+    现已全部收口：下面三个出口都调这一个函数，规则改动只改这一处。
     类型不对就当没有，不让脏数据变成下游的 TypeError。
     """
     try:
@@ -1030,15 +1031,11 @@ def _decode_tags_text(raw) -> list:
 def _project_video(row, fields: tuple) -> dict:
     """按字段白名单投影一行，tags 由 JSON 文本还原成数组。
 
-    tags 的清洗与 get_video_by_url 同一套：类型不对就当没有，
-    不让脏数据变成下游的 TypeError。
+    清洗规则不在这里另写一份，交给 _decode_tags_text —— 与 get_video_by_url
+    共用同一份实现（工单 #32 收口），规则改动只改那一处。
     """
     item = {name: row[name] for name in fields}
-    try:
-        parsed = json.loads(item.get("tags") or "[]")
-    except (ValueError, TypeError):
-        parsed = []
-    item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
+    item["tags"] = _decode_tags_text(item.get("tags"))
     return item
 
 
@@ -1887,16 +1884,12 @@ def _admin_community_item(row) -> dict:
     """后台社区列表项的投影：把 tags 从 JSON 字符串解析成 list。
 
     单独抽出来是因为改标签的端点要回读**同一形状**（update_video_tags
-    末尾那次回读）。解析容错与列表那边逐字一致：解析不出来退回空数组，
+    末尾那次回读）。解析容错统一交给 _decode_tags_text（工单 #32 收口）：
     而不是把原始字符串透出去——前端拿到字符串会直接渲染成 `["编程"]` 那样
     一串带引号的怪东西。
     """
     item = dict(row)
-    try:
-        parsed = json.loads(item.get("tags") or "[]")
-    except (ValueError, TypeError):
-        parsed = []
-    item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
+    item["tags"] = _decode_tags_text(item.get("tags"))
     return item
 
 
@@ -2866,10 +2859,5 @@ def get_video_by_url(video_url: str) -> dict | None:
     if row is None:
         return None
     item = dict(row)
-    try:
-        parsed = json.loads(item.get("tags") or "[]")
-    except (ValueError, TypeError):
-        parsed = []
-    # 类型不对就当没有，不让脏数据变成下游的 TypeError
-    item["tags"] = [t for t in parsed if isinstance(t, str)] if isinstance(parsed, list) else []
+    item["tags"] = _decode_tags_text(item.get("tags"))
     return item
