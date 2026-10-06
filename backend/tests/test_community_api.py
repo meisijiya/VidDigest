@@ -235,7 +235,17 @@ class TestAnonymousDetailIs401:
         assert r.status_code == 401, "无效 token 不该被当成已登录"
 
     def test_token_of_deleted_user_is_401(self, client_app, seeded, make_user):
-        """token 有效但用户已不存在：仍须 401，不能因为解码成功就放行。"""
+        """token 有效但用户已不存在：仍须 401，不能因为解码成功就放行。
+
+        `auth.get_current_user` 在 `auth.py:80-81` 显式做了这件事
+        （解码得到 sub → 查 users → 查不到就 401）。JWT 只验签名不验存在性，
+        删号后旧 token 在过期前一直是「有效」的——所以这条守的正是
+        `auth.py:80-81` 那个分支。
+
+        ⚠️ 下面 ``TestDeletedUserTokenIs401OnLiveEndpoints`` 里有一条在
+        **前端真在调用的**端点上守同一件事。本条守在这个孤儿端点上，
+        那条守在活端点上——两条都要在。
+        """
         app, mk = client_app
         uid = mk("ghost@example.com")
         headers = auth_headers(auth.create_token(uid, "ghost@example.com"))
@@ -246,6 +256,62 @@ class TestAnonymousDetailIs401:
         with anon(app) as c:
             r = c.get(f"/api/community/videos/{vid}", headers=headers)
         assert r.status_code == 401
+
+
+# ── 鉴权层：已删用户的 token 必须在**活端点**上也失效（工单 #19 第 3 项）──
+
+class TestDeletedUserTokenIs401OnLiveEndpoints:
+    """JWT 只验签名不验存在性——删号后旧 token 在过期前一直是「有效的」。
+
+    `auth.get_current_user` 用 `get_user_by_id(payload["sub"])` 回查 users 表
+    来堵这个洞（`auth.py:80-81`）。**全仓只有这一处守它**，而原先那条守在
+    `GET /api/community/videos/{id}` 上——那是个**没有任何调用方**的端点
+    （前端走 `/api/summarize` 的复用回放，详见 `api_community.py` 里那条
+    路由的 docstring）。
+
+    于是有一个说不出口的耦合：那个端点哪天被删掉，它那 11 处测试一起没，
+    `auth.py:80-81` 就**彻底没人守了，而且不会有任何东西变红**。
+    把同一条语义钉在活端点上，两种坏法都看得见：
+
+    - 端点被删 → 下面第一条红（路由不存在）
+    - 鉴权被摘掉（改成不查 users、直接信 JWT 的 sub）→ 两条都红
+    """
+
+    def test_history_detail_rejects_deleted_user_token(self, client_app, make_user):
+        """`GET /api/history/{id}` —— `frontend/src/api/history.js:76`
+        的 `fetchHistoryDetail` 真的在调它，所以这个端点是活的。
+        """
+        app, mk = client_app
+        uid = mk("ghost-history@example.com")
+        headers = auth_headers(auth.create_token(uid, "ghost-history@example.com"))
+        with database.get_db() as conn:
+            conn.execute("DELETE FROM users WHERE id = ?", (uid,))
+        with anon(app) as c:
+            r = c.get("/api/history/1", headers=headers)
+        assert r.status_code == 401, (
+            f"已删用户的 token 竟拿到 {r.status_code}（body={r.text[:120]}）。"
+            "JWT 只验签名不验存在性——auth.get_current_user 必须回查 users 表，"
+            "否则删号后旧 token 在过期前一直是有效的。"
+        )
+
+    def test_auth_me_rejects_deleted_user_token(self, client_app, make_user):
+        """`GET /api/auth/me` —— `frontend/src/api/auth.js:43` 真的在调它。
+
+        第二个活端点，防止「只有一条断言」的偶然：单条断言可能因为任何
+        偶然原因变弱（那条路由的鉴权恰好写得更严、或那条测试的路径恰好
+        404）。**两条独立的活端点同时红，才是「鉴权层被摘掉」这个真因。**
+        """
+        app, mk = client_app
+        uid = mk("ghost-me@example.com")
+        headers = auth_headers(auth.create_token(uid, "ghost-me@example.com"))
+        with database.get_db() as conn:
+            conn.execute("DELETE FROM users WHERE id = ?", (uid,))
+        with anon(app) as c:
+            r = c.get("/api/auth/me", headers=headers)
+        assert r.status_code == 401, (
+            f"已删用户的 token 在 /api/auth/me 上拿到 {r.status_code}。"
+            "这是最基础的需登录端点，摘掉回查 users 的话前端一进来就是错的。"
+        )
 
 
 # ── AC 3：翻页与标签筛选，未登录也可用 ────────────────────────
