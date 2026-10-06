@@ -2418,18 +2418,31 @@ def regenerate_video(
         return cursor.rowcount
 
 
-def release_video(video_url: str) -> int:
+def release_video(video_url: str, user_id: int | None) -> int:
     """占位者失败时把位置还回去，返回删掉的行数。
 
     只删 pending 行：已经 ready 的社区内容与占位无关，绝不能被回滚删掉。
 
     不还回去的代价是永久性的——那一行会永远停在 pending，
     后来的每个用户都只能干等到超时，再也没人能解析这个链接。
+
+    ``AND parsed_by IS ?`` 不是多余的防御，它是**写权限**的判定落点：
+    只删「本来就是我占的那一行」。
+
+    少了它有一条现实的失效链：占位被 TTL 接管之后（见 reserve_video 的
+    陈旧占位分支），位置已经归了另一个人，而**前一个**占位者的 finally
+    还在跑——它一删，接管者的整次解析就没了，而接管者的 finally 不会发 done，
+    社区里也永远不会有他那份总结。
+
+    用 ``IS`` 而不是 ``=``：parsed_by 可为 NULL（建表早期未登录的记录），
+    ``=`` 在 NULL 上永不成立，而 ``IS`` 才能正确表达「相等或两边都是 NULL」。
+    与 regenerate_video 的 ``AND parsed_by IS ?`` 同一口径。
     """
     with get_db() as conn:
         cursor = conn.execute(
-            "DELETE FROM videos WHERE video_url = ? AND status = ?",
-            (video_url, VIDEO_STATUS_PENDING),
+            """DELETE FROM videos
+               WHERE video_url = ? AND status = ? AND parsed_by IS ?""",
+            (video_url, VIDEO_STATUS_PENDING, user_id),
         )
         return cursor.rowcount
 

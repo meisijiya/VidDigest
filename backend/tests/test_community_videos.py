@@ -418,10 +418,11 @@ class TestCommunityContentIsImmutable:
 
     def test_releasing_does_not_delete_a_finished_row(self, db, make_user):
         """占位者失败后的还位动作，绝不能误删已经 ready 的社区内容。"""
-        db.reserve_video(URL, 1)
+        owner = make_user()
+        db.reserve_video(URL, owner)
         db.complete_video(URL, summary_md="社区内容")
 
-        assert db.release_video(URL) == 0
+        assert db.release_video(URL, owner) == 0
 
         assert db.get_video_by_url(URL) is not None, "已完成的行被还位动作删掉了"
 

@@ -469,7 +469,7 @@ async def summarize_video(
         allowed, remaining, message = _check_quota_permission(user, "parse")
         if not allowed:
             if not regenerate:
-                release_video(req.url)
+                release_video(req.url, user["id"])
             async for event in fail(message, need_vip=True):
                 yield event
             return
@@ -669,7 +669,7 @@ async def summarize_video(
         # 覆盖路径没有占位，也**不能**在这里 release：那一行是别人的成果
         # （或作者自己的旧成果），删掉它等于用一次失败的覆盖抹掉社区内容。
         if not placeholder_settled and not regenerate:
-            release_video(req.url)
+            release_video(req.url, user["id"])
         # 覆盖闸门必须无条件放掉，异常路径也不能漏——漏一次，
         # 这个链接此后就再也覆盖不了了（而内容明明还在）。
         if regenerate:
