@@ -16,7 +16,7 @@ from openai import OpenAI
 
 from credentials import UserCredential
 from tags import vocabulary_prompt_text
-
+from url_canonical import url_for_ytdlp
 import model_catalog
 
 logger = logging.getLogger("summarizer")
@@ -90,6 +90,11 @@ class SubtitleExtractor:
         （没有轨道 / 有轨道但拿不到），``asr_fail_reason`` 记兜底那一步为什么
         没救回来（未配置 / 转写失败）。两个字段成功时都是空串。
         """
+        # 取数边界先归一（ADR 见 url_canonical.url_for_ytdlp）。
+        # 这一句不影响下面的 B 站分支：_parse_bvid 只从 path 里抽 BV 号，
+        # 而 _extract_bilibili 自己拼 www. 的 Referer，本来就不看输入域名。
+        url = url_for_ytdlp(url)
+
         # 1. B 站专用 API
         if _is_bilibili_url(url):
             result = self._extract_bilibili(url)
@@ -509,6 +514,7 @@ def _download_audio_for_asr(url: str) -> str | None:
             logger.warning("Douyin audio download failed: %s", e)
             return None
     else:
+        url = url_for_ytdlp(url)
         try:
             logger.info("Downloading audio via yt-dlp for ASR...")
             ydl_opts = {

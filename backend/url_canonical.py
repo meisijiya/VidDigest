@@ -57,9 +57,22 @@ _YOUTUBE_WATCH = re.compile(r"^/watch$", re.I)
 #: 抖音同理要锚定：`/video/123/a` 不是一条视频。
 _DOUYIN_VIDEO = re.compile(r"^/(?:share/)?video/(?P<id>\d+)$", re.I)
 
+#: 小红书笔记路径。
+#:
+#: ⚠️ 这条**只用来判形态，不用来重写 id**：小红书的 `?xsec_token=…` 是平台的
+#: 反爬参数，抹掉会让本来能解析的链接解析不了（与 B 站不同——B 站的
+#: `spm_id_from` 之类确实是跟踪参数）。所以小红书这条规则**只换 host**，
+#: path 与 query 一律原样带过去。
+#:
+#: 同样必须锚定结尾：`/explore/<id>/anything` 不是一条笔记。
+_XIAOHONGSHU_NOTE = re.compile(
+    r"^/(?:explore|discovery/item)/(?P<id>[0-9a-f]+)$", re.I
+)
+
 #: 这些 host 归一到哪一个（大小写无关）。B 站的三个域名指向同一份内容。
 _BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
 _DOUYIN_HOSTS = {"douyin.com", "www.douyin.com", "iesdouyin.com", "www.iesdouyin.com"}
+_XIAOHONGSHU_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com", "m.xiaohongshu.com"}
 
 
 def _strip(url: str) -> tuple[str, str, str]:
@@ -120,5 +133,36 @@ def canonical_video_url(url: str) -> str:
             return f"https://www.douyin.com/video/{m.group('id')}"
         return url
 
-    # ── 其余一律原样返回（短链、爱奇艺、小红书、以及任何不认识的主机）──
+    # ── 小红书：只换 host，path 与 query 一律原样带过去 ──
+    #
+    # 与上面三个平台的差别在这里：它们的 query 是跟踪参数，可以丢；
+    # 小红书的 `xsec_token` 是反爬参数，**丢了就解析不了**。
+    if host in _XIAOHONGSHU_HOSTS:
+        if _XIAOHONGSHU_NOTE.match(path):
+            tail = f"{path}?{query}" if query else path
+            return f"https://www.xiaohongshu.com{tail}"
+        # `/user/profile/` 是主页不是笔记，原样返回（归一了也一样解析不了，
+        # 但那是平台的事，不该由这里改写用户的地址）
+        return url
+
+    # ── 其余一律原样返回（短链、爱奇艺、以及任何不认识的主机）──
     return url
+
+
+def url_for_ytdlp(url: str) -> str:
+    """**交给 yt-dlp 之前**把链接归一成本仓认识的形态。
+
+    与 `canonical_video_url` 结果相同，但名字不同是为了让调用点自己说明
+    「我改的是喂给 yt-dlp 的那个字符串」。
+
+    ## 只能用在这里
+
+    ⚠️ **不要拿它去写库或回显。** ADR 0016 定的是「比较用规范值、回显用原文」。
+    `SummarizeRequest.url` 同时喂给 `reserve_video` 等数据库写入，
+    在入口处替换会把 canonical 写进 `video_url`，
+    于是社区卡片回显的变成规范值——**静默推翻那个决定**，
+    而且现有测试一条都不会红（它们读的是同一个变量）。
+
+    未识别的主机上本函数**逐字返回原文**，所以对绝大多数链接零行为变化。
+    """
+    return canonical_video_url(url)

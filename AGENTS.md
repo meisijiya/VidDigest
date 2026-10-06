@@ -121,11 +121,26 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 - **断言必须跑在能区分两种实现的状态上。** 同一次实测里，「展开态下 measure 不该改 overflowing」这条断言喂的是**不换行但溢出**的宽度，于是 `needsExpand` 照样返回 true，去掉 early return 两种实现结果一样，**变异存活**。真实的展开态下行会 wrap（`scrollWidth == clientWidth`），只有这个形状才能把它区分开。写完断言问一句：**拿它去测另一种实现，会不会红**。
 - **「多选取并集」不是交集。** 历史页与社区页的标签筛选都是命中任一即列出（交集在标签很少共现时直接返回空，界面上与「筛选坏了」一模一样）。前端 `lib/tag-filter.js` 里曾把注释写成「多选 = 与」，而后端是并集——**注释里的语义错了比代码错了更贵**，改代码时顺手搜一遍 `docs/`、`AGENTS.md`、`CONTEXT.md` 里的同类描述。
 - **平台链接形态先查 `_VALID_URL`，别猜也别拿假 id 试。** 2026-10-03 实测（yt-dlp 2026.08.19，结论只对该构建成立）：
-  - 小红书只有 `https://www.xiaohongshu\.com/(?:explore|discovery/item)/<24位hex>`。**不带 `www`、`m.` 开头、`xhslink.com` 短链、`/user/profile/` 全部 `Unsupported URL`** —— 而 App 分享出来的默认就是短链，`clean_url()` 会把它从整段文案里原样抽出来，所以「复制小红书链接」直接粘必然失败。
+  - 小红书 extractor 是 `XiaoHongShu`，只认 `https://www\.xiaohongshu\.com/(?:explore|discovery/item)/<hex>`——**`www.` 是必需的**。不带 `www`、`m.` 开头、`/user/profile/`、`xhslink.com` 短链都**没有专用 extractor 认领**（落进 `[generic]` 兜底，**不是** `Unsupported URL`：它仍然会出网，只是没有平台专用解析逻辑，两者的失败原因与用户该看到的提示都不一样）。而 App 分享出来的默认就是短链，`clean_url()` 会把它从整段文案里原样抽出来，所以「复制小红书链接」直接粘必然失败。
+  - `m.bilibili.com` 同样**没有 BiliBili extractor 认领**（2026-10-06 用 `gen_extractors()` 逐个 `suitable()` 实测，共 1751 个 IE），而 B 站 App 分享的默认形态就是它。它比短链更常见，而且**不需要出网就能修**——见下面「归一只管比较，不管取数」那条。
   - 爱奇艺**必须带 `.html`**，否则不掉进 iqiyi extractor、而是掉进 `[generic]` 兜底，**不报错但等于没支持**。
   - 微博 `weibo.com/tv/show/` 的 id 必须是 `<数字>:<32位hex>`；短 id 会被判 `Unsupported URL`。
   - 西瓜视频 extractor 明确要求 Cookie（不必登录）；**快手在这个构建里没有 extractor**。
-  - **把「形态对不对」和「视频在不在」分开验**：格式正确但 id 不存在会拿到平台自己的错误（说明被认领并出网了）；形态错误才是 `Unsupported URL`，请求根本没出过进程。拿假 id 得出的「不支持」结论不可信——本仓已经因此错判过一次微博。
+  - **把「形态对不对」和「视频在不在」分开验**：读 `_VALID_URL` / `IE.suitable(url)` 只回答「有没有专用 extractor 认领」，**不回答「能不能下下来」**——后者必须真的出网才知道。拿假 id 出网得到的失败原因没法区分是形态问题还是网络问题，这种结论不可信，本仓已经因此错判过一次微博。
+  - ⚠️ 「没有专用 extractor 认领」**不等于** `Unsupported URL`：前者会落进 `[generic]` 兜底并**继续出网**（只是没有平台专用解析逻辑），后者才是根本没被认领。两者给用户的提示与排查方向都不同，别混着说。
+- **归一只管比较、不管取数，等于只修了一半。** 2026-10-06 实测：
+  `url_canonical.py` 早就把「`m.bilibili.com` = B 站长链」写成规则了，
+  但 `main.py` 喂给 yt-dlp 的是 `clean_url()` 的**原文**——
+  于是 yt-dlp 看到 `m.bilibili.com` 照样落 `[generic]`，
+  而那个归一值明明已经算出来了。
+  **判断一段归一有没有用，要看它的结果有没有流到真正的出口**，
+  而不是看它被调用了多少次。
+  - ⚠️ **归一只许放在 yt-dlp 边界**（用 `url_for_ytdlp()`），
+    **不许放在请求入口**。`SummarizeRequest.url` 同时喂给 `reserve_video`
+    等数据库写入，在入口替换会把 canonical 写进 `video_url`，
+    社区卡片回显的于是变成规范值——
+    **静默推翻 ADR 0016「比较用规范值、回显用原文」的决定，
+    且现有测试一条都不会红**（它们读的是同一个被改过的变量）。
 - **别拿「时间戳变了」当判据，除非把时钟钉死。** 2026-10-04 实测本机：连续两次 `datetime.now()` 有 **199832/200000 次返回完全相同的值**（时钟量化到约 0.3ms，最小非零间隔 335us）。于是「改前看一眼、改后再看一眼、断言两个时间戳不同」是靠掷骰子过的——单跑 5 次全过、全量跑偶尔红，而**被测代码并没有错**（`test_only_tags_and_updated_at_change` 就是在 master 上第一次跑门禁时炸的）。钉时钟用 `monkeypatch` 掉模块里的 `datetime`，**假类要继承 `datetime` 而不是顶替它**（`database.py` 别处还在用 `fromisoformat`，只实现 `now` 的假类会让那些路径**因错误的原因**抛错）；钉完必须补一条变异「假时钟改成空操作」，否则「钉时钟」这件事本身没人守，将来会被悄悄改回掷骰子那条。
 - **「残留为 0」只在我枚举的那几个串上成立 —— 枚举出来的 0 不是 0，是「我没看那儿」。** 2026-10-04 实测：清完明文口令后我写了个验证脚本，数 7 个自己挑的字面量，全 0，写成「已清干净」。按类重新扫（任意家目录路径 / 任意安装根 / 任意保留域 / 任意密钥形态）立刻多出三样：一个**从没见过**的第二个 Windows 用户名（`backend/summarizer.py` 历史里的两处 ffmpeg 兜底路径）、cron 备份行的裸品牌串、以及**一条 commit message** 把那个路径原样写进了提交说明。写验证脚本时**按类枚举，不要按我想到了什么枚举**；commit message 与 blob 是两个独立范围，漏一个就等于没扫。
 - **变异 harness 的「存活」要先排除「被测断言压根没跑」。** 2026-10-06 工单 #17 实测：Q4（调用方忽略守卫返回值）报 SURVIVED，我手工改源码验证它**会红**——差别在 harness 的测试清单少列了一个文件，而那条断言住在那个文件里。**变异 harness 自己也有「describe 体隐形失败」的同款坑**：测试文件没进 glob，harness 就报「断言没咬住」，而真相是「断言不存在」。配套：① harness 的 `TESTS` 清单要与 `init.sh` 的收集范围对齐；② 写完 harness 加一条**自检**——把某条变异的 `to` 内容写进文件后断言它确实存在（我这次加的就是这条，它立刻指出 anchor 命中与否），仍不确定时**手工改一次源码**验一遍，别只信 harness 的结论。

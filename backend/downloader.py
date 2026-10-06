@@ -5,6 +5,7 @@ from typing import Optional
 
 import yt_dlp
 
+from url_canonical import url_for_ytdlp
 
 def _find_ffmpeg_path() -> Optional[str]:
     """查找 ffmpeg 可执行文件路径"""
@@ -64,6 +65,7 @@ class VideoDownloader:
 
     def parse_video(self, url: str) -> dict:
         """解析视频信息，不下载文件"""
+        url = url_for_ytdlp(url)
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -222,6 +224,7 @@ class VideoDownloader:
 
     def download_video(self, url: str, format_id: str) -> dict:
         """下载视频到服务器临时目录，返回文件路径和元数据"""
+        url = url_for_ytdlp(url)
         if not self.has_ffmpeg and "+" in format_id:
             format_id = "best"
 
@@ -275,6 +278,7 @@ class VideoDownloader:
 
     def get_direct_url(self, url: str, format_id: str) -> dict:
         """获取视频直链"""
+        url = url_for_ytdlp(url)
         ydl_opts = {
             "format": format_id,
             "quiet": True,
