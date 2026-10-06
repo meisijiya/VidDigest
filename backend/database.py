@@ -200,6 +200,12 @@ def get_db():
     if conn is None:
         conn = sqlite3.connect(get_db_path())
         conn.row_factory = sqlite3.Row
+        # 归一函数注册成 SQL 可调用的形式，让下面的 INSERT 触发器能用它
+        # （工单 #25）。注册在**每条**连接上：线程本地缓存会复用连接，
+        # 而 create_function 是连接级的，少一处就有一个线程拿到未注册的连接。
+        conn.create_function(
+            "canonical_url_of", 1, canonical_video_url, deterministic=True
+        )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         _thread_local.conn = conn
@@ -276,8 +282,8 @@ def init_db():
                 user_id INTEGER NOT NULL,
                 video_url TEXT NOT NULL,
                 -- 同 videos：比较用，不回显。带它是因为下面那句
-                -- `LEFT JOIN videos v ON v.video_url = h.video_url`
-                -- 按**原文** JOIN，两个人粘了不同形态就谁也 join 不上。
+                -- `LEFT JOIN videos v ON v.canonical_url = h.canonical_url`
+                -- 按原文 JOIN 的话，两个人粘了不同形态就谁也 join 不上谁。
                 canonical_url TEXT DEFAULT '',
                 video_title TEXT DEFAULT '',
                 video_data TEXT DEFAULT '',
@@ -383,6 +389,7 @@ def init_db():
         # 排在 _migrate_parse_history_unique_url 之前是因为那条也要扫
         # parse_history，而回填会 UPDATE 那张表。
         _migrate_canonical_url_columns(conn)
+        _create_canonical_url_triggers(conn)
         # canonical 上的唯一索引（工单 #25）：**去重必须排在建索引之前**，
         # 与 _migrate_parse_history_unique_url 同一套理由。
         # 也排在 _create_video_search_index 之前：那一步会对 videos 做一次
@@ -699,6 +706,41 @@ def _migrate_videos_canonical_unique(conn) -> int:
         "WHERE canonical_url <> ''"
     )
     return removed
+
+
+def _create_canonical_url_triggers(conn) -> None:
+    """给三张表挂 AFTER INSERT 触发器，把空的 canonical_url 就地填上。
+
+    为什么需要这一层兜底：第 4 片之后**所有读出口**都按 canonical 比较，
+    而这一列不空这件事此前只靠「三个写入路径都记得填」来保证——那是约定，
+    不是保证。任何一条直接 INSERT 的路径（测试造老库、造边界态，
+    将来还可能有导入脚本）都会留下一批空值行，于是那些行在任何 canonical
+    查询里都匹配不上：症状是「换个形态打开同一个视频，说没解析过」，
+    而**不报错**。
+
+    落在数据库层而不是调用方，是因为这与本仓既有的 FTS 触发器同一套路：
+    那条也正是「每条 UPDATE videos 的路径都会自动重建索引，
+    不必记得回头调一次重新索引」。漏掉一次就是一条静默搜不到的视频。
+
+    ⚠️ AFTER 触发器里的 UPDATE 会让唯一索引在那次 UPDATE 上**再检查一次**：
+    第二次插入先以 canonical='' 通过部分索引（`WHERE canonical_url <> ''`
+    本就不约束空值），随后 UPDATE 成真值时唯一约束生效、整条 INSERT 原子回滚。
+    所以 `reserve_video` 依赖 ``except sqlite3.IntegrityError`` 的并发安全
+    不受影响——由 test_reserving_a_second_form_does_not_create_a_second_row 守着。
+
+    只在**为空且 video_url 非空**时才动：video_url 本身为空的那种行没有
+    「同一链接」的语义，让它参与唯一约束只会让建索引失败。
+    """
+    for table in _CANONICAL_URL_TABLES:
+        conn.execute(
+            f"""CREATE TRIGGER IF NOT EXISTS {table}_fill_canonical
+                AFTER INSERT ON {table}
+                WHEN NEW.canonical_url = '' AND COALESCE(NEW.video_url, '') <> ''
+            BEGIN
+                UPDATE {table} SET canonical_url = canonical_url_of(NEW.video_url)
+                WHERE id = NEW.id;
+            END"""
+        )
 
 
 #: 需要 canonical_url 的三张表。顺序无关，每张都独立判存在性。
@@ -1183,11 +1225,11 @@ def publish_video_card(video_url: str, video_title: str = "", cover_url: str = "
                   SET video_title = CASE WHEN COALESCE(video_title, '') = '' THEN ? ELSE video_title END,
                       cover_url    = CASE WHEN COALESCE(cover_url, '')    = '' THEN ? ELSE cover_url    END,
                       updated_at   = ?
-                WHERE video_url = ? AND status = 'ready'
+                WHERE canonical_url = ? AND status = 'ready'
                   AND ((COALESCE(video_title, '') = '' AND ? <> '')
                     OR (COALESCE(cover_url, '') = '' AND ? <> ''))""",
             (video_title, cover_url,
-             datetime.now(timezone.utc).isoformat(), video_url,
+             datetime.now(timezone.utc).isoformat(), canonical_video_url(video_url),
              video_title, cover_url),
         )
         return cursor.rowcount
@@ -1238,9 +1280,10 @@ def search_community_videos(q: str = "", page: int = 1,
     tag_clause, tag_params = _tag_clause(tag)
 
     if q.startswith(("http://", "https://")):
-        where = f"{_COMMUNITY_VISIBLE} AND v.video_url = ?{tag_clause}"
+        where = f"{_COMMUNITY_VISIBLE} AND v.canonical_url = ?{tag_clause}"
         order = "v.created_at DESC, v.id DESC"
-        result = _paginate("videos v", where, (q, *tag_params), page, page_size, order)
+        result = _paginate("videos v", where, (canonical_video_url(q), *tag_params),
+                           page, page_size, order)
     elif q:
         phrase = _fts_phrase(q)
         where = f"{_VIDEO_SEARCH_INDEX} MATCH ? AND {_COMMUNITY_VISIBLE}{tag_clause}"
@@ -2159,8 +2202,8 @@ def get_recent_chat_messages(user_id: int, video_url: str, turns: int | None = 3
     取「最近的一段」却在 SQL 里正序查会拿到最早的，所以先倒序取再翻回来。
     """
     sql = ("SELECT role, content FROM chat_messages"
-           " WHERE user_id = ? AND video_url = ? ORDER BY id DESC")
-    params = [user_id, video_url]
+           " WHERE user_id = ? AND canonical_url = ? ORDER BY id DESC")
+    params = [user_id, canonical_video_url(video_url)]
     if turns is not None:
         sql += " LIMIT ?"
         params.append(max(0, int(turns)) * 2)
@@ -2201,8 +2244,9 @@ def get_chat_session(user_id: int, video_url: str) -> list:
     # 漏掉它就是别人的追问记录被读出来。
     with get_db() as conn:
         row = conn.execute(
-            "SELECT chat_history FROM parse_history WHERE user_id = ? AND video_url = ?",
-            (user_id, video_url),
+            "SELECT chat_history FROM parse_history "
+            "WHERE user_id = ? AND canonical_url = ?",
+            (user_id, canonical_video_url(video_url)),
         ).fetchone()
     return _legacy_chat_history(row["chat_history"]) if row else []
 
@@ -2243,7 +2287,7 @@ def get_parse_histories(user_id: int, limit: int = MAX_PARSE_HISTORY_PER_USER) -
                       -- 漏掉它会让「详情里读得到记录、列表里却没有」自相矛盾。
                       (EXISTS (SELECT 1 FROM chat_messages m
                                WHERE m.user_id = parse_history.user_id
-                                 AND m.video_url = parse_history.video_url)
+                                 AND m.canonical_url = parse_history.canonical_url)
                        OR (chat_history IS NOT NULL AND chat_history != '[]')) AS has_chat
                FROM parse_history WHERE user_id = ?
                ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?""",
@@ -2295,7 +2339,7 @@ def get_parse_history_detail(user_id: int, history_id: int) -> dict | None:
 #: 那两个都不花模型调用，界面上那个 AI 徽标指的是总结。
 _HISTORY_HAS_AI_ALIASED_H = (
     "(EXISTS (SELECT 1 FROM chat_messages m"
-    "  WHERE m.user_id = h.user_id AND m.video_url = h.video_url)"
+    "  WHERE m.user_id = h.user_id AND m.canonical_url = h.canonical_url)"
     " OR (h.chat_history IS NOT NULL AND h.chat_history != '[]')"
     " OR COALESCE(TRIM(h.summary_md), '') != '')"
 )
@@ -2321,8 +2365,8 @@ def list_parse_histories(user_id: int, q: str = "", tag: str = "",
     params: list = [user_id]
 
     if q.startswith(("http://", "https://")):
-        where.append("h.video_url = ?")
-        params.append(q)
+        where.append("h.canonical_url = ?")
+        params.append(canonical_video_url(q))
     elif q:
         where.append("(COALESCE(h.video_title, '') LIKE ? OR h.video_url LIKE ?)")
         params.extend([f"%{q}%", f"%{q}%"])
@@ -2345,7 +2389,7 @@ def list_parse_histories(user_id: int, q: str = "", tag: str = "",
 
     page, page_size = _clamp_page(page, page_size)
     clause = " AND ".join(where)
-    sql_from = "parse_history h LEFT JOIN videos v ON v.video_url = h.video_url"
+    sql_from = "parse_history h LEFT JOIN videos v ON v.canonical_url = h.canonical_url"
 
     with get_db() as conn:
         total = conn.execute(
@@ -2403,7 +2447,7 @@ def list_parse_history_facets(user_id: int) -> list:
         rows = conn.execute(
             """SELECT je.value AS tag, count(*) AS n
                FROM parse_history h
-               LEFT JOIN videos v ON v.video_url = h.video_url
+               LEFT JOIN videos v ON v.canonical_url = h.canonical_url
                JOIN json_each(
                    CASE WHEN json_valid(COALESCE(v.tags, '[]'))
                         THEN v.tags ELSE '[]' END) je
@@ -2553,13 +2597,14 @@ def acquire_regenerate_gate(video_url: str, user_id: int) -> bool:
         cursor = conn.execute(
             """UPDATE videos
                   SET regenerating_by = ?, regenerating_at = ?
-                WHERE video_url = ?
+                WHERE canonical_url = ?
                   AND status = ?
                   AND parsed_by = ?
                   AND (regenerating_by IS NULL
                        OR regenerating_at IS NULL
                        OR regenerating_at <= ?)""",
-            (user_id, now.isoformat(), video_url, VIDEO_STATUS_READY, user_id, cutoff),
+            (user_id, now.isoformat(), canonical_video_url(video_url),
+             VIDEO_STATUS_READY, user_id, cutoff),
         )
         return cursor.rowcount == 1
 
@@ -2573,8 +2618,8 @@ def release_regenerate_gate(video_url: str, user_id: int) -> None:
     with get_db() as conn:
         conn.execute(
             """UPDATE videos SET regenerating_by = NULL, regenerating_at = NULL
-                WHERE video_url = ? AND regenerating_by = ?""",
-            (video_url, user_id),
+                WHERE canonical_url = ? AND regenerating_by = ?""",
+            (canonical_video_url(video_url), user_id),
         )
 
 
@@ -2679,9 +2724,10 @@ def reserve_video(
                     """UPDATE videos SET parsed_by = ?, created_at = ?, updated_at = ?,
                               video_title = CASE WHEN COALESCE(video_title, '') = '' THEN ? ELSE video_title END,
                               cover_url    = CASE WHEN COALESCE(cover_url, '')    = '' THEN ? ELSE cover_url    END
-                       WHERE video_url = ? AND status = ? AND updated_at = ?""",
+                       WHERE canonical_url = ? AND status = ? AND updated_at = ?""",
                     (user_id, now, now, video_title or "", cover_url or "",
-                     video_url, VIDEO_STATUS_PENDING, row["updated_at"]),
+                     canonical_video_url(video_url), VIDEO_STATUS_PENDING,
+                     row["updated_at"]),
                 )
                 if cursor.rowcount == 1:
                     return "reserved", None
@@ -2709,10 +2755,11 @@ def complete_video(
             """UPDATE videos
                SET status = ?, summary_md = ?, mindmap_md = ?, tags = ?,
                    subtitle_text = ?, updated_at = ?
-               WHERE video_url = ? AND status = ?""",
+               WHERE canonical_url = ? AND status = ?""",
             (
                 VIDEO_STATUS_READY, summary_md, mindmap_md, payload,
-                subtitle_text, now, video_url, VIDEO_STATUS_PENDING,
+                subtitle_text, now, canonical_video_url(video_url),
+                VIDEO_STATUS_PENDING,
             ),
         )
         return cursor.rowcount
@@ -2765,10 +2812,11 @@ def regenerate_video(
             """UPDATE videos
                SET summary_md = ?, mindmap_md = ?, tags = ?,
                    subtitle_text = ?, updated_at = ?
-               WHERE video_url = ? AND status = ? AND parsed_by IS ?""",
+               WHERE canonical_url = ? AND status = ? AND parsed_by IS ?""",
             (
                 summary_md, mindmap_md, payload,
-                subtitle_text, now, video_url, VIDEO_STATUS_READY, user_id,
+                subtitle_text, now, canonical_video_url(video_url),
+                VIDEO_STATUS_READY, user_id,
             ),
         )
         return cursor.rowcount
@@ -2797,8 +2845,8 @@ def release_video(video_url: str, user_id: int | None) -> int:
     with get_db() as conn:
         cursor = conn.execute(
             """DELETE FROM videos
-               WHERE video_url = ? AND status = ? AND parsed_by IS ?""",
-            (video_url, VIDEO_STATUS_PENDING, user_id),
+               WHERE canonical_url = ? AND status = ? AND parsed_by IS ?""",
+            (canonical_video_url(video_url), VIDEO_STATUS_PENDING, user_id),
         )
         return cursor.rowcount
 
@@ -2812,7 +2860,8 @@ def get_video_by_url(video_url: str) -> dict | None:
     """
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM videos WHERE video_url = ?", (video_url,)
+            "SELECT * FROM videos WHERE canonical_url = ?",
+            (canonical_video_url(video_url),),
         ).fetchone()
     if row is None:
         return None

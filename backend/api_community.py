@@ -100,7 +100,8 @@ async def community_tags():
 
 @router.get("/videos/by-url")
 async def community_video_by_url(
-    url: str = Query(..., description="视频链接，需与解析时规范化后完全一致"),
+    url: str = Query(..., description="视频链接；按归一后的形态匹配，"
+                               "所以无 www / 移动域名 / 跟踪参数 / 分享文案都算同一条"),
     user: dict = Depends(get_current_user),
 ):
     """社区视频表里有没有这一份。只答存在性与写权限，不回内容。

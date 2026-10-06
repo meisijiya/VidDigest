@@ -264,26 +264,9 @@ class TestWritePaths:
             assert blank == 0, f"{table} 里有 {blank} 行 canonical_url 是空的"
 
 
-# ── 本片刻意**不做**的事 ──────────────────────────────────────
-
-class TestReadPathsUnchanged:
-    def test_get_video_by_url_still_matches_the_raw_string_only(self, db):
-        """读侧还没切：不同形态之间**仍然**互相查不到。
-
-        这一条钉的是「第 2 片没有顺手把第 4 片干了」。等第 4 片落地时，
-        它会**故意转红**，那时改成断言命中即可——两片的边界就靠这一行标着。
-        """
-        db.reserve_video(BILI_FORMS[0], 1)
-        assert db.get_video_by_url(BILI_FORMS[0]) is not None, "原文查不到 —— 读侧已经变了？"
-        assert db.get_video_by_url(BILI_FORMS[1]) is None, (
-            "读侧已经切到 canonical 了 —— 那是第 4 片的活，本片不该做"
-        )
-
-    def test_short_link_still_resolves_only_by_its_own_text(self, db):
-        """短链维持现状：原样匹配，且不会与别的短链混成一行。"""
-        db.reserve_video(SHORT_LINK, 1)
-        db.reserve_video("https://b23.tv/ZzYyXx", 2)
-        rows = _rows("videos", "video_url, canonical_url")
-        assert len(rows) == 2, "两个短链被当成同一条了"
-        assert rows[0]["canonical_url"] == rows[0]["video_url"]
-        assert rows[1]["canonical_url"] == rows[1]["video_url"]
+# ── 第 2 片刻意**不做**读侧切换 ─────────────────────────────────
+#
+# 这一片只加列 + 回填 + 写入侧填值，读出口仍旧按原文匹配。
+# 切读侧是第 4 片的事，判据在 tests/test_canonical_url_lookup.py。
+# 本片唯一与之相关的守卫在下面 `test_no_row_is_left_with_an_empty_canonical_url`：
+# 列存在却没有值，是这一片最坏的结果。
