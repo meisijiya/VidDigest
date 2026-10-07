@@ -195,6 +195,28 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
   **两条都被 worker 顶回来，两次都是 worker 对**——后者按字面做会让豁免登记表恒为空，
   因为全库唯一**故意不随删号删除**的 `videos` 用的是 `parsed_by` 而不是 `user_id`，
   而 `delete_user:1854` 的阻断检查走的正是 `WHERE user_id = ?`。
+- **「实测过」这三个字是本仓最容易变成假证据的一处 —— 工单 #38 实测，两次。**
+  写「见 `Xxx.test` 的实测断言」之前，先问**那条测试真的跑那条路径了吗**。
+  ① worker 在 `test_quota_kinds_single_source.py` 的文件头写「见
+  `test_missing_kind_in_payload_is_invisible_not_fallback` 的实测断言」，
+  而那条测试只断言了后端 payload 的槽位键集——**前端那条路径压根没跑**
+  （它在 JS 里，Python 侧观察不到）。修法：把声称改成诚实的边界声明，
+  再去 `frontend/tests/quota.test.mjs` **真写**那 4 条（多出第三种时文案逐字不变 /
+  只缺一半不触发兜底 / 两个都缺才降级）。**一条声称跨语言实测的注释，
+  缺的往往不是断言，是另一侧根本没写。**
+  ② 同一批的豁免判定 `site["func"] == "<module>" and target == "_QUOTA_LABELS"`，
+  **两个条件都无人守**：实测把任一半删掉，全套照样全绿——因为真值树上
+  「唯一一处模块顶层 dict」与「那个 dict 恰好叫 `_QUOTA_LABELS`」**是同一件事**，
+  等价关系让两个条件各自都显得冗余。**两个条件在当前树上等价，恰恰说明要各写一条
+  断言**，因为将来多出第二处时它们立刻不等价。
+  判据：**当一个判定写成 `A and B` 时，两半各自都可能被删掉而不变**——
+  除非有一对构造让 `A ∧ ¬B` 与 `¬A ∧ B` 各自转红，否则你不知道自己在守哪一个。
+- **「修好一条变异」之后要问：同一族的其余变异现在是什么形状。** 工单 #38 我为
+  「豁免不能按文件名给」补了断言（M9 KILLED），顺手做同族扫描时发现豁免判定的
+  另一个维度（模块顶层 vs 函数内）**同样无人守**（M11 SURVIVED）——
+  而它防的形状更隐蔽：**豁免放过的枚举，恰恰是键集判据看不见的那一处**
+  （`test_labels_keys_equal_quota_kinds` 只 import 真标签表）。
+  处置顺序：**先跑完一轮同族扫描再收尾**，不要拿到一条 KILLED 就提交。
 
 ## 范围边界
 
