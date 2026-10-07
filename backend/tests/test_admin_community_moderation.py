@@ -463,6 +463,10 @@ class TestTagVocabulary:
 
         assert body["maxTags"] == tags.MAX_TAGS, (
             f"maxTags 与 MAX_TAGS（{tags.MAX_TAGS}）对不上")
+        assert set(body) == {"maxTags", "groups"}, (
+            f"返回体的键集合应当恰好是 {{maxTags, groups}}，实得 {sorted(body)}"
+            " —— 多出一个 max_tags 之类时，前端读错键名仍然「拿得到值」，"
+            "工单 #41 那个 bug 就重新变成静默的")
         assert all(g["name"] for g in body["groups"]), "分组名不能为空"
         assert [t for g in body["groups"] for t in g["tags"]] == list(tags.TAG_VOCABULARY), (
             "分组展平后的顺序不等于 TAG_VOCABULARY：分类页与筛选器的稳定"

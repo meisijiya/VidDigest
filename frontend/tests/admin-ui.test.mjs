@@ -1364,8 +1364,18 @@ describe('社区审核 · 静态契约', () => {
   })
 
   test('上限由服务端给，前端不写死 3', () => {
-    assert.match(adminCode, /const maxTags = computed\(\(\) => vocabulary\.value\.maxTags \|\| 3\)/,
-      'maxTags 不是从服务端响应里读的 —— 前端把它写死了，词表改上限时这里会静默过期')
+    // ⚠️ 这条断言**曾经是反的**（2026-10-07 实测，工单 #41）。
+    // 原断言是 `assert.match(adminCode, /…maxTags \|\| 3/)` —— 正则**要求**
+    // `|| 3` 必须存在，而它自己的失败信息写的是「前端把它写死了，这里会
+    // 静默过期」。测试名说「不写死 3」、断言却要求 3 在场：它当时是绿的，
+    // 只因为源码正好有那个兜底。**守卫在强制缺陷存在**，而修好源码就会
+    // 让它转红 —— 也就是说「把实现改对」这件事被这条断言挡着。
+    // 记在这里是为了别有人再把它改回正向。
+    assert.ok(!/maxTags\s*\|\|\s*\d/.test(adminCode),
+      'maxTags 又出现了 `|| 数字` 兜底 —— 前端不是从服务端响应里读的，'
+      + '词表改上限时这里会静默过期，而界面不报错')
+    assert.match(adminCode, /const maxTags = computed\(\(\) => vocabulary\.value\.maxTags\)/,
+      'maxTags 没有直接取 vocabulary 里的值')
     assert.match(adminTemplate, /selectedTagCount\(c\.id\) >= maxTags/,
       '选满之后没有把其余选项禁掉')
   })
@@ -1462,5 +1472,18 @@ describe('社区审核 · toggleTag 真跑', () => {
     const four = makeSandbox(4)
     for (const t of ['a', 'b', 'c', 'd']) four.toggle(1, t)
     assert.equal(four.count(1), 4, '服务端把上限提到 4 之后前端还是拦在 3')
+  })
+})
+
+// 上面的沙箱把 maxTags 当自由变量注入（`const max = { value: maxTags }` 顶替
+// computed），所以**组件自己那个 computed 一行都没跑到**——把 `|| 3` 加回去，
+// 那五条用例照样全绿。下面这条断的是初始值那一半。
+describe('社区审核 · vocabulary 的初始值不是写死的上限', () => {
+  test('初始 maxTags 是 0（0 是「还没有上限」，非 0 就是第二个真值）', () => {
+    const m = adminCode.match(/ref\(\{\s*maxTags\s*:\s*(-?\d+)/)
+    assert.ok(m, '抽不出 vocabulary 的 ref 初始值')
+    assert.equal(Number(m[1]), 0,
+      `vocabulary 的初始 maxTags 是 ${m[1]}，不是 0 —— 非 0 的初值就是第二个真值：`
+      + '词表到达之前，界面会先按它放行一次')
   })
 })

@@ -893,14 +893,19 @@ async function loadModels() {
 const expandedCommunityId = ref(null)
 const communityBusyId = ref(null)
 const pendingCommunityDeleteId = ref(null)
-const vocabulary = ref({ maxTags: 3, groups: [] })
+// 0 是「还没有上限」，不是兜底常量：加载态与出错态下这块模板走
+// v-else 不渲染，所以 0 不会被看见（工单 #41）。
+const vocabulary = ref({ maxTags: 0, groups: [] })
 const vocabLoading = ref(false)
 const vocabError = ref('')
 const tagDrafts = reactive({})
 const communityFeedbacks = reactive({})
 
-/** 上限由服务端给，前端不自己数。 */
-const maxTags = computed(() => vocabulary.value.maxTags || 3)
+/**
+ * 上限由服务端给，前端不自己数，也不设兜底常量：兜底一旦与服务端
+ * 悄悄分叉，界面会按旧数字放行、而后端按新数字 400（工单 #41）。
+ */
+const maxTags = computed(() => vocabulary.value.maxTags)
 
 function communityFeedbackOf(id) {
   if (!communityFeedbacks[id]) communityFeedbacks[id] = { kind: '', text: '' }

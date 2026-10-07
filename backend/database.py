@@ -1354,10 +1354,18 @@ def create_user(email: str, password_hash: str) -> dict:
 # ── AI 总结次数限制 ───────────────────────────────────────
 
 def is_vip_active(user) -> bool:
-    """VIP 权益判定——本项目唯一一份实现。
+    """VIP 权益判定——`vip_expire_at` 的**权威**比较。
 
-    naive datetime 兜底在此收口：所有 vip_expire_at 的比较都必须走这里，
-    否则同一个"还是不是 VIP"的问题会在多处得到不同答案。
+    naive datetime 兜底在此收口：新增的 vip_expire_at 比较必须走这里，
+    否则同一个「还是不是 VIP」的问题会在多处得到不同答案。
+    现状（2026-10-07 实测，不是推断）：`api_auth._build_user_response` 里
+    **仍有一份手写比较**。8 种输入形态（aware/naive 各自过期与未过期、
+    脏字符串、空串、NULL、is_vip=0）逐一对齐，两边答案完全一致——
+    但那是**巧合性的一致，不是构造出来的一致**：本函数 `except` 捕
+    (ValueError, TypeError)，那份只捕 ValueError。
+    「TypeError 那支当前不可达」是数据形态的性质（TEXT 列在 SQLite 里
+    恒返回 typeof=text，实测 int/float 存进去读回都是字符串），不是代码
+    给的保证。要合并成一份时，两处的异常范围必须一起改。
     """
     if not user["is_vip"] or not user["vip_expire_at"]:
         return False

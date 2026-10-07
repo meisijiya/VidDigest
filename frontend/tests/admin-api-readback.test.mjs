@@ -34,6 +34,7 @@ import axios from 'axios'
 
 import {
   setUserQuota, createAdminUser, setUserAdmin, updateCommunityTags,
+  fetchTagVocabulary,
 } from '../src/api/admin.js'
 
 // ── 服务端原文（snake_case），四个出口的回读体 ──────────────
@@ -171,5 +172,50 @@ describe('api/admin.js · 回读出口自己翻好', () => {
     await assert.rejects(() => createAdminUser({ email: 'a@b.c', password: 'secret1' }), /响应形状不对/)
     lastBody = { note: null }
     await assert.rejects(() => updateCommunityTags(10, []), /响应形状不对/)
+  })
+})
+
+// ── 词表出口：maxTags 必须真的是服务端那个数（工单 #41）──────────
+//
+// 2026-10-07 实测的 bug：`admin.js` 读的是 `d.max_tags`，而 `admin_api.py:470`
+// 返回的键是 `maxTags`（驼峰）。`Number(undefined) > 0` 恒 false，于是那个
+// 写死的 `3` **每次都在用**，服务端给的 `MAX_TAGS` 一次都没被读到。
+// 而 `tags.MAX_TAGS` 恰好就是 3 —— 两边碰巧相等，症状为零。
+//
+// 为什么挂载关卡没抓到：`admin-page.mount.spec.mjs:44` 把 `fetchTagVocabulary`
+// 整个 `vi.fn()` 掉，并直接喂 `{ maxTags: 2 }` / `{ maxTags: 3 }` —— 正确的
+// 形状被夹具补上了，转换层从没被执行过。**夹具会遮住护栏**：这条用例存在的
+// 意义是让转换层自己被跑到，且桩值刻意取 5，兜底的 3 一眼就露馅。
+describe('api/admin.js · 词表出口的 maxTags 是服务端那个数', () => {
+  const VOCAB_PAYLOAD = {
+    maxTags: 5,
+    groups: [
+      { name: '学科', tags: ['数学', '物理'] },
+      { name: '场景', tags: ['校园'] },
+    ],
+  }
+
+  test('喂服务端真实形状，maxTags 等于服务端给的 5（不是写死的 3）', async () => {
+    lastBody = VOCAB_PAYLOAD
+    const res = await fetchTagVocabulary()
+
+    assert.equal(res.maxTags, 5,
+      'maxTags 必须原样取服务端的值。取不到时静默用 3 的症状是：'
+      + 'MAX_TAGS 一旦从 3 改成别的数，界面按旧数字放行而后端按新数字 400')
+    // 兄弟出口仍在 —— 说明这不是「整体原样透传」蒙对了。
+    assert.deepEqual(res.groups.map((g) => g.name), ['学科', '场景'],
+      'groups 必须照常翻出来，不能因为 maxTags 的守卫把整条出口改道')
+  })
+
+  test('只有蛇形 max_tags 时必须抛，不许静默退回到 3', async () => {
+    // 这正是线上那份响应的错误读法：键名不对，值拿不到。
+    lastBody = { max_tags: 5, groups: VOCAB_PAYLOAD.groups }
+    await assert.rejects(() => fetchTagVocabulary(), /maxTags/,
+      '读不到上限必须抛。静默给 3 会让管理员按错的上限勾选，界面完全不报错')
+  })
+
+  test('反向对照：groups 形状不对时抛，maxTags 的守卫没有把它放过', async () => {
+    lastBody = { maxTags: 5, groups: [] }
+    await assert.rejects(() => fetchTagVocabulary(), /形状不对/)
   })
 })

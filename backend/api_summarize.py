@@ -584,7 +584,12 @@ async def summarize_video(
         if not using_byok:
             # 扣减自带守卫（工单 #17）：上面的 `check_quota_kind` 与此刻之间
             # 隔着字幕提取（可能几十秒），并发请求会全部通过那次只读判定。
-            # 现在判定与扣减在同一条 SQL 里完成，返回 0 = 额度已满。
+            # 现在判定与扣减在同一条 SQL 里完成，**没扣成时返回 None**。
+            # **必须处理这个 None**：忽略它就等于「额度满了照样调模型」，
+            # 而那正是白送平台付费资源（模型调用费）。
+            # 0 **不**表示「没扣成」：额度恰好用完时 remaining 正好是 0，
+            # 拿它当哨兵会把「刚好用完」误判成「额度已满」（理由见
+            # consume_quota 的 docstring，工单 #17）。
             # **必须处理这个 0**：忽略它就等于「额度满了照样调模型」，
             # 而那正是白送平台付费资源（模型调用费）。
             remaining = consume_quota(user["id"], "parse")
@@ -834,7 +839,7 @@ async def chat_with_video(
 
         # 即将调用 AI，此刻才扣额度（无字幕 / 未登录 / 超额都不扣）
         if credential is None:
-            # 同上：扣减自带守卫，返回 0 = 额度已满，必须中止（工单 #17）。
+            # 同上：扣减自带守卫，**没扣成（None）就是额度已满**，必须中止（工单 #17）。
             if consume_quota(user["id"], "chat") is None:
                 yield ServerSentEvent(
                     raw_data=json.dumps({

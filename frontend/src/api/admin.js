@@ -323,8 +323,15 @@ export async function fetchTagVocabulary() {
   if (!Array.isArray(d.groups) || !d.groups.length) {
     throw new Error('标签词表响应形状不对')
   }
+  // 上限只有服务端那一个出处。读错键名会静默退回到写死的数字，
+  // 而写死的数字恰好等于当前 MAX_TAGS 时症状是「上限改了界面没变」
+  // ——管理员能勾到后端会 400 拒掉的标签数（admin_api 用 MAX_TAGS
+  // 校验）。与上面 groups 同一个处置：宁可抛（工单 #41）。
+  if (!(Number(d.maxTags) > 0)) {
+    throw new Error('标签词表响应里没有 maxTags')
+  }
   return {
-    maxTags: Number(d.max_tags) > 0 ? Number(d.max_tags) : 3,
+    maxTags: Number(d.maxTags),
     groups: d.groups
       .filter((g) => g && Array.isArray(g.tags) && g.tags.length)
       .map((g) => ({ name: String(g.name || ''), tags: g.tags.map(String) })),
