@@ -334,7 +334,11 @@ class DouyinParser:
 
         formats = []
         if play_urls:
-            clean_url = play_urls[0].replace("playwm", "play")
+            # 这里曾把去水印直链塞进 `_direct_url` 一并返回。它**写 1 处、读 0 处**：
+            # 抖音下载实际走 main.py 的 mode 分发（AUDIO_FORMAT_ID → audio，
+            # 否则 video），从没读过这个字段。它唯一的实际后果是让这一处的
+            # 键集合比另外三处多一个，形状就不齐了。
+            # 要真的用直链下载，那是产品决定：得先有读出口，而不是先有字段。
             width = video_info.get("width", 0)
             height = video_info.get("height", 0)
             formats.append({
@@ -352,7 +356,6 @@ class DouyinParser:
                 "has_audio": True,
                 "kind": "video",
                 "label": f"无水印 MP4 ({height}p)" if height else "无水印 MP4 (原始画质)",
-                "_direct_url": clean_url,
             })
 
         # 音频选项。_get_media_url 早就支持 mode="audio"（出 .mp3），
