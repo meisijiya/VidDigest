@@ -79,12 +79,11 @@ def _fake_resolver(monkeypatch, mapping):
 
 def _fake_httpx(monkeypatch, recorder, status=200, content=b"\x89PNG-bytes",
                 content_type="image/png"):
-    """替换 ``httpx.AsyncClient``，记录真实被请求的 URL 与 Host。
+    """替换 ``httpx.AsyncClient``，记录真实被请求的 URL / Host / SNI。
 
-    关键点：桩**不接受**调用方传入的 URL 去「照抄」——它按调用方给的
-    目标 IP 应答，并把它记进 ``recorder``。这样「判定发生在解析之后、
-    且请求用的是已判定的那个 IP」这件事才能被断言到；
-    若实现把**域名**原样丢给 httpx，桩就无从拿到 IP，断言会失败。
+    桩**不接受**调用方传入的 URL 去「照抄」——它把调用方实际发的东西
+    原样记进 recorder。于是「URL 用已判定的 IP、而 Host 与 SNI 用原域名」
+    这三件事才能分别被断言到；实现若把域名原样交给 httpx，URL 断言就红。
     """
     class _Resp:
         def __init__(self):
@@ -110,8 +109,8 @@ def _fake_httpx(monkeypatch, recorder, status=200, content=b"\x89PNG-bytes",
 
         async def get(self, url, **kwargs):
             recorder["url"] = url
-            recorder["host"] = kwargs.get("headers", {}).get("Host")
             recorder["headers"] = kwargs.get("headers", {})
+            recorder["sni"] = (kwargs.get("extensions") or {}).get("sni_hostname")
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=True)
@@ -263,11 +262,17 @@ class TestThumbnailServesPublicAddresses:
             f"content-type 没照抄上游：{r.headers.get('content-type')}"
         )
 
-    def test_request_targets_the_resolved_ip_not_the_domain(self, app, monkeypatch):
-        """判定之后要用**已判定的那个 IP** 去连。
+    def test_request_targets_resolved_ip_but_keeps_host_and_sni(self, app, monkeypatch):
+        """连接目标是**已判定的 IP**，但 Host 与 SNI 仍是原域名。
 
-        这是 DNS rebinding 的防线：判完再把域名丢给客户端解析，
-        中间那次解析完全可能给出另一个（内网）地址。
+        三者缺一不可，各治一种坏法：
+        * URL 用域名 → DNS rebinding 窗口回来（判完又解析一次，中间可能变）
+        * Host 用 IP → CDN 拿不到虚拟主机，**HTTPS 直接握手失败**
+        * SNI 用 IP → 同上，且证书校验报 ``IP address mismatch``
+
+        后两条不是推测：实测两个真实图床（``www.bilibili.com`` 与
+        ``example.com``）在 Host/SNI 为 IP 时**全部失败**，原域名时 200
+        且响应体与直连逐字节一致（``.scratch/apply47/probe_real_cdn2.py``）。
         """
         recorder = {}
         _fake_resolver(monkeypatch, {"img.example": [PUBLIC_IP]})
@@ -276,10 +281,18 @@ class TestThumbnailServesPublicAddresses:
         r = app.get(self.URL, params={"url": "http://img.example/cover.png"})
 
         assert r.status_code == 200, r.text
-        assert recorder.get("host") == PUBLIC_IP, (
-            "请求应当指向已判定过的那个 IP（Host 头带上它），"
-            f"实得 {recorder.get('host')!r}——把域名原样交出去的话，"
-            "判定与连接之间那个窗口就还能被 rebinding 挤进去"
+        assert recorder.get("url") == f"http://{PUBLIC_IP}/cover.png", (
+            "请求 URL 应当是已判定的那个 IP（不再解析域名，rebinding 窗口才关着）；"
+            f"实得 {recorder.get('url')!r}"
+        )
+        headers = recorder.get("headers", {})
+        assert headers.get("Host") == "img.example", (
+            "Host 头必须是**原域名**：CDN 按虚拟主机路由，填 IP 会握手失败。"
+            f"实得 {headers.get('Host')!r}"
+        )
+        assert recorder.get("sni") == "img.example", (
+            "SNI 必须是原域名，否则 TLS 校验报 IP address mismatch。"
+            f"实得 {recorder.get('sni')!r}"
         )
 
     def test_non_image_content_type_is_still_proxied(self, app, monkeypatch):

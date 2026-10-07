@@ -277,9 +277,9 @@ async def proxy_thumbnail(url: str = Query(..., description="缩略图URL")):
     收紧了什么（工单 #46）：原实现对 ``url`` 零校验，于是任何人可让本服务
     GET 任意 URL 并把响应体原样吐回来——内网地址（含云环境的
     ``169.254.169.254`` 元数据服务）都在射程内。现在按**解析后的 IP** 判，
-    且请求**直连已判定的那个 IP**、用 Host 头保留原域名：判完再把域名交回
-    客户端解析，中间那次解析完全可能给出另一个（内网）地址，那是 DNS
-    rebinding。判据与连接在同一步，不留窗口。
+    且请求 URL 里是**已判定的那个 IP**（不再解析域名，DNS rebinding 窗口关闭），
+    而 **Host 与 SNI 仍是原域名**——CDN 按虚拟主机路由，这两者换成 IP 会
+    全部握手失败。详见下面那两行的实测记录。
     """
     try:
         parts = urlsplit(url)
@@ -291,17 +291,31 @@ async def proxy_thumbnail(url: str = Query(..., description="缩略图URL")):
 
         ips = _resolve_public_ips(host)
         target = f"{parts.scheme}://{ips[0]}{parts.path or '/'}"
+        origin = parts.netloc.rsplit("@", 1)[-1]  # 去掉 userinfo
 
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(target, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": url,
-                # **已判定的那个 IP**，不是原域名：判完再把域名交回客户端解析，
-                # 中间那次解析完全可能给出另一个（内网）地址，那是 DNS rebinding。
-                # 代价是虚拟主机/CDN 要按 IP 路由时会拿错图——所以这一条要
-                # 和真实图床对一遍（见工单 #46 的后续）。
-                "Host": ips[0],
-            })
+            resp = await client.get(
+                target,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": url,
+                    # **Host 与 SNI 都必须是原域名**，只有连接目标换成已判定的 IP。
+                    #
+                    # 为什么不能图省事把 Host 也写成 IP（第一版就这么写的）：
+                    # 实测两个真实 HTTPS 图床**全部握手失败**——
+                    #   www.bilibili.com → CERTIFICATE_VERIFY_FAILED: IP address mismatch
+                    #   example.com      → SSLV3_ALERT_HANDSHAKE_FAILURE
+                    # 因为 CDN 按虚拟主机路由，拿到 IP 形态的 SNI 既拿不到对的证书
+                    # 也选不对后端。那等于把社区卡片的所有 HTTPS 缩略图**全打坏**。
+                    #
+                    # rebinding 防线仍然在：URL 里是 IP，httpx **不会再去解析域名**，
+                    # 连的就是刚判定过的那个地址；域名只用于 TLS 握手与 Host 头。
+                    "Host": origin,
+                },
+                # sni_hostname 是 httpcore 的扩展项（httpx 的 get/build_request 都收）。
+                # 不给的话 TLS 握手的 SNI 会取 URL 的 host——也就是那个 IP。
+                extensions={"sni_hostname": host},
+            )
             resp.raise_for_status()
             if len(resp.content) > THUMBNAIL_MAX_BYTES:
                 raise _ThumbnailFetchFailed("缩略图超过大小上限")
