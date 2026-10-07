@@ -30,6 +30,58 @@ FAIL_FETCH_FAILED = "subtitle_fetch_failed"    # 有字幕轨道，但下载/解
 FAIL_ASR_NOT_CONFIGURED = "asr_not_configured"  # 落穿到 ASR，但没配 OPENAI_API_KEY
 FAIL_ASR_FAILED = "asr_failed"                # 落穿到 ASR，但下载音频或转写失败
 
+# ── extract() 的返回形状：唯一出处（工单 #37）──────────────
+#: 字幕提取结果的键集。**整个后端只有这一份**，而且只有 `_subtitle_result` 负责实现它。
+#:
+#: 构造点曾在 5 处各写一份字面量（`extract` / `_extract_bilibili` 两处 /
+#: `_transcribe_audio` / `_empty_asr`），形状恰好一致所以谁也不报错；而加第 8 个
+#: 字段时漏改一处只会在下游炸成 KeyError → 500。
+#: `test_subtitle_result_shape.py` 读的就是这个元组，它同时是第二份独立登记。
+SUBTITLE_RESULT_KEYS = (
+    "has_subtitle",
+    "language",
+    "subtitle_type",
+    "segments",
+    "full_text",
+    "fail_reason",
+    "asr_fail_reason",
+)
+
+
+def _subtitle_result(
+    *,
+    has_subtitle: bool = False,
+    language: str = "",
+    subtitle_type: str = "none",
+    segments: Optional[list] = None,
+    full_text: str = "",
+    fail_reason: str = "",
+    asr_fail_reason: str = "",
+) -> dict:
+    """构造 extract() 的返回值。**本仓唯一允许写出这 7 个键的地方**。
+
+    字段语义（可为空但**键必存**，读方不需要再写 `.get`）：
+
+    - ``has_subtitle``    拿到可读字幕为 True；
+    - ``language``        字幕语言码，取不到为空串；
+    - ``subtitle_type``   ``manual`` / ``auto`` / ``asr`` / ``none``；
+    - ``segments``        逐句列表，恒为 list（不传或传 None 都收成新的空列表）；
+    - ``full_text``       拼好的全文，可为空串；
+    - ``fail_reason``     **平台字幕**为什么没拿到（`FAIL_NO_TRACK` /
+      `FAIL_FETCH_FAILED`），拿到时为空串；
+    - ``asr_fail_reason`` **ASR 兜底**为什么没救回来（`FAIL_ASR_NOT_CONFIGURED` /
+      `FAIL_ASR_FAILED`），救回来时为空串。
+    """
+    return {
+        "has_subtitle": has_subtitle,
+        "language": language,
+        "subtitle_type": subtitle_type,
+        "segments": segments if segments is not None else [],
+        "full_text": full_text,
+        "fail_reason": fail_reason,
+        "asr_fail_reason": asr_fail_reason,
+    }
+
 
 def _find_ffmpeg() -> str:
     """查找 ffmpeg 可执行文件路径。
@@ -120,15 +172,13 @@ class SubtitleExtractor:
 
                 if segments:
                     full_text = self._join_segments(segments, lang)
-                    return {
-                        "has_subtitle": True,
-                        "language": lang,
-                        "subtitle_type": sub_type,
-                        "segments": segments,
-                        "full_text": full_text,
-                        "fail_reason": "",
-                        "asr_fail_reason": "",
-                    }
+                    return _subtitle_result(
+                        has_subtitle=True,
+                        language=lang,
+                        subtitle_type=sub_type,
+                        segments=segments,
+                        full_text=full_text,
+                    )
                 # 轨道存在却拿不到内容：显式记账，不与「没有轨道」混成一谈
                 logger.warning(
                     "字幕轨道存在（%s / %s）但下载或解析为空",
@@ -170,11 +220,7 @@ class SubtitleExtractor:
 
     def _extract_bilibili(self, url: str) -> dict:
         """B 站专用字幕提取"""
-        empty = {
-            "has_subtitle": False, "language": "",
-            "subtitle_type": "none", "segments": [], "full_text": "",
-            "fail_reason": "", "asr_fail_reason": "",
-        }
+        empty = _subtitle_result()
         try:
             bvid = self._parse_bvid(url)
             if not bvid:
@@ -255,15 +301,13 @@ class SubtitleExtractor:
                     })
 
                 full_text = self._join_segments(segments, best.get("lan", ""))
-                return {
-                    "has_subtitle": True,
-                    "language": best.get("lan", "zh"),
-                    "subtitle_type": sub_type,
-                    "segments": segments,
-                    "full_text": full_text,
-                    "fail_reason": "",
-                    "asr_fail_reason": "",
-                }
+                return _subtitle_result(
+                    has_subtitle=True,
+                    language=best.get("lan", "zh"),
+                    subtitle_type=sub_type,
+                    segments=segments,
+                    full_text=full_text,
+                )
         except Exception:
             return empty
 
@@ -472,15 +516,14 @@ def _transcribe_audio(url: str) -> dict:
             full_text = " ".join(s["text"] for s in segments)
 
         has = bool(full_text.strip())
-        return {
-            "has_subtitle": has,
-            "language": "zh",
-            "subtitle_type": "asr" if has else "none",
-            "segments": segments if has else [],
-            "full_text": full_text,
-            "fail_reason": "",
-            "asr_fail_reason": "" if has else FAIL_ASR_FAILED,
-        }
+        return _subtitle_result(
+            has_subtitle=has,
+            language="zh",
+            subtitle_type="asr" if has else "none",
+            segments=segments if has else [],
+            full_text=full_text,
+            asr_fail_reason="" if has else FAIL_ASR_FAILED,
+        )
     except Exception as e:
         logger.warning("Whisper ASR failed: %s", e)
         return _empty_asr(asr_fail_reason=FAIL_ASR_FAILED)
@@ -558,15 +601,8 @@ def _cleanup_asr(*paths):
 
 
 def _empty_asr(language: str = "zh", asr_fail_reason: str = "") -> dict:
-    return {
-        "has_subtitle": False,
-        "language": language,
-        "subtitle_type": "none",
-        "segments": [],
-        "full_text": "",
-        "fail_reason": "",
-        "asr_fail_reason": asr_fail_reason,
-    }
+    """ASR 兜底没能产出字幕时的返回值；形状由 _subtitle_result 统一给。"""
+    return _subtitle_result(language=language, asr_fail_reason=asr_fail_reason)
 
 
 # ── 单次调用的分段协议 ────────────────────────────────
