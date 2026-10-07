@@ -1,7 +1,10 @@
 import os
 import asyncio
+import ipaddress
 import re
+import socket
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -188,22 +191,131 @@ async def get_direct_url(req: DownloadRequest):
 
 # ── 缩略图代理 ──────────────────────────────────────────
 
+def _env_int(name: str, default: int) -> int:
+    """读一个整数环境变量，取不到或不是数字时用默认值。"""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+#: 代理响应体上限（字节）。超了按 502 处理，不透传。
+#:
+#: 为什么要有：无上限意味着「任何人让服务器 GET 任意 URL 并把整块读进内存」，
+#: 一次请求就能把内存吃满。与 15s 超时配套——超时管住慢，占内存这件事
+#: 只能靠大小上限管。
+#:
+#: 读环境变量的形状照抄 `database._env_int`，但**不**从那里 import：
+#: 那是它的私有助手，跨模块 import 私有名等于给它加一条谁都没审过的
+#: 公开契约（工单 #38 立下的规矩）。
+THUMBNAIL_MAX_BYTES = _env_int("VIDDIGEST_THUMBNAIL_MAX_BYTES", 8 * 1024 * 1024)
+
+
+class _BadThumbnailTarget(Exception):
+    """调用方给的地址**本身**就不该被代理（协议不对、没主机名）→ 400。"""
+
+
+class _ThumbnailFetchFailed(Exception):
+    """地址本身合规，但**取回来的东西**不能用（响应超限）→ 502。
+
+    注意与 `_BadThumbnailTarget` 的分工：**地址**的问题归 400，
+    **响应**的问题归 502。上游自己报的 4xx/5xx 走 httpx 的异常，也落 502。
+    """
+
+
+def _resolve_public_ips(host: str) -> list:
+    """解析 host，返回**全部**都是公网地址的 IP 列表。
+
+    判定**按解析结果**而不是按 URL 字面量：`http://evil.example/` 看着无害，
+    解析出来是 127.0.0.1 就该拒。任何一个解析结果落在保留段就整体拒绝——
+    「取第一个地址」会在多 A 记录的场景下漏掉后面那些。
+
+    抛 ``_BadThumbnailTarget`` 表示「这个地址不该被代理」（→ 400）；
+    域名压根解析不出来同样归这里：调用方给的就是一个无效地址。
+    """
+    try:
+        addrinfos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise _BadThumbnailTarget(f"域名解析失败: {exc}") from exc
+
+    ips = []
+    for info in addrinfos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip_text = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_text)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise _BadThumbnailTarget(f"不允许代理内网或保留地址: {ip_text}")
+        ips.append(ip_text)
+
+    if not ips:
+        raise _BadThumbnailTarget(f"域名没有可用地址: {host}")
+    return ips
+
+
 @app.get("/api/proxy/thumbnail")
 async def proxy_thumbnail(url: str = Query(..., description="缩略图URL")):
-    """代理获取视频缩略图，绕过防盗链"""
+    """代理获取视频缩略图，绕过防盗链。
+
+    **刻意不挂鉴权依赖**：社区卡片要显示缩略图，公开可读是对的。要收紧的
+    是「能代理哪些地址」，不是「谁能代理」。
+
+    收紧了什么（工单 #46）：原实现对 ``url`` 零校验，于是任何人可让本服务
+    GET 任意 URL 并把响应体原样吐回来——内网地址（含云环境的
+    ``169.254.169.254`` 元数据服务）都在射程内。现在按**解析后的 IP** 判，
+    且请求**直连已判定的那个 IP**、用 Host 头保留原域名：判完再把域名交回
+    客户端解析，中间那次解析完全可能给出另一个（内网）地址，那是 DNS
+    rebinding。判据与连接在同一步，不留窗口。
+    """
     try:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https"):
+            raise _BadThumbnailTarget("只支持 http/https")
+        host = parts.hostname
+        if not host:
+            raise _BadThumbnailTarget("URL 缺少主机名")
+
+        ips = _resolve_public_ips(host)
+        target = f"{parts.scheme}://{ips[0]}{parts.path or '/'}"
+
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(url, headers={
+            resp = await client.get(target, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": url,
+                # **已判定的那个 IP**，不是原域名：判完再把域名交回客户端解析，
+                # 中间那次解析完全可能给出另一个（内网）地址，那是 DNS rebinding。
+                # 代价是虚拟主机/CDN 要按 IP 路由时会拿错图——所以这一条要
+                # 和真实图床对一遍（见工单 #46 的后续）。
+                "Host": ips[0],
             })
             resp.raise_for_status()
+            if len(resp.content) > THUMBNAIL_MAX_BYTES:
+                raise _ThumbnailFetchFailed("缩略图超过大小上限")
             content_type = resp.headers.get("content-type", "image/jpeg")
             return StreamingResponse(
                 iter([resp.content]),
                 media_type=content_type,
                 headers={"Cache-Control": "public, max-age=86400"},
             )
+    except _BadThumbnailTarget as e:
+        # 调用方给的地址本身就不该被代理 —— 400，比 502 准。
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=502, detail="缩略图加载失败")
 
