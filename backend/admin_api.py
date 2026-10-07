@@ -58,6 +58,7 @@ from database import (
     is_vip_active,
     list_admin_community,
     list_admin_users,
+    QUOTA_KINDS,
     set_user_admin,
     set_user_quota_override,
     update_video_tags,
@@ -86,6 +87,21 @@ QUOTA_OVERRIDE_MAX = 100_000
 
 class QuotaValueError(ValueError):
     """额度值域非法。路由层把它翻译成 400。"""
+
+
+#: 额度种类 → 请求体 / 响应体里那个字段的名字（工单 #38）。
+#:
+#: **这是一条命名约定，不是常量里的数据**：`QUOTA_KINDS` 只给列名，给不出
+#: 「对外叫什么」。收口时最容易犯的错是把它当噪声删掉，于是新增一种额度
+#: 时这一层无人提醒。提成具名函数是为了让它**有唯一的定义处**——
+#: 请求体侧（`QuotaUpdateRequest` 声明、`admin_set_quota` 读）与响应体侧
+#: （`database._admin_user_item` 写）都从这一个名字派生。
+#:
+#: 守卫钉的是「`QuotaUpdateRequest` 声明的字段集 == 本函数在全部种类上的取值」，
+#: 所以新增种类时漏声明 pydantic 字段（它会**静默丢弃**未声明的键）会红。
+def quota_field_name(kind: str) -> str:
+    """额度种类 → 线上协议里的字段名，如 ``parse`` → ``parse_limit``。"""
+    return f"{kind}_limit"
 
 
 def normalize_quota_value(raw: Any, field: str) -> int | None:
@@ -130,6 +146,12 @@ class QuotaUpdateRequest(BaseModel):
       - 缺省（这个 key 压根没出现）→ 不动这一项，只改传了的那项
       - 显式 null → 清除覆盖，回落全局
     两者混为一谈的话，一次只想改对话额度的请求会把解析额度静默清掉。
+
+    ⚠️ **每种额度一个字段，声明必须与 `QUOTA_KINDS` 同步**（工单 #38）。
+    pydantic 静默丢弃未声明的键，所以新增一种额度而忘了在这里加字段时，
+    管理员传了也改不动，且一路 200 成功返回。守卫见
+    `tests/test_quota_kinds_single_source.py`，它会指名缺哪个字段。
+    字段名由 `quota_field_name` 派生（`parse` → `parse_limit`）。
     """
 
     parse_limit: Any = None
@@ -257,13 +279,21 @@ async def admin_set_quota(
     # exclude_unset=True → 只处理请求里真的出现了的 key（见 QuotaUpdateRequest）。
     #
     # 字段名（parse_limit）在这里映射成额度种类（parse）：数据层那套
-    # _QUOTA_KINDS 按种类索引，两种命名混过一次，症状是数据层抛
+    # QUOTA_KINDS 按种类索引，两种命名混过一次，症状是数据层抛
     # 「未知的额度类型 'parse_limit'」——只有真跑起来才看得见的错。
+    # 名字由 quota_field_name 派生，不再手写（工单 #38）。
+    #
+    # ⚠️ 循环遍历 `QUOTA_KINDS`（原来硬写 ("parse", "chat")），但**光遍历不够**：
+    # pydantic 会把 `QuotaUpdateRequest` 没声明的键**静默丢弃**，所以新增一种
+    # 额度而忘了加字段声明时，这里遍历到了那个 kind、supplied 里却压根没有它，
+    # 结果是「改不了且不报错」——与收口前一模一样的症状，只是挪了位置。
+    # 那一层由 tests/test_quota_kinds_single_source.py 守着（它比对本函数在
+    # 全部种类上的取值与模型字段集）。
     supplied = payload.model_dump(exclude_unset=True)
     try:
         overrides = {}
-        for kind in ("parse", "chat"):
-            field = f"{kind}_limit"
+        for kind in QUOTA_KINDS:
+            field = quota_field_name(kind)
             if field in supplied:
                 overrides[kind] = normalize_quota_value(supplied[field], field)
     except QuotaValueError as exc:

@@ -85,6 +85,69 @@ describe('describeQuota', () => {
   })
 })
 
+/**
+ * 「加第三种额度」在前端是什么形状（工单 #38 的后端收口带出来的）。
+ *
+ * 后端已把额度种类收成一个常量（`database.QUOTA_KINDS`），但**前端没有**：
+ * `describeQuota` / `quotaBadgeClass` 在 src/lib/quota.js:41-42、:77 三处
+ * 硬写 `quotaOf(q, 'parse')` 与 `quotaOf(q, 'chat')`。所以后端加了第三种
+ * 额度之后：
+ *
+ *   - 不会崩、不会渲染 undefined/NaN（实测，payload 多一个键完全无害）；
+ *   - **也不会多显示一行**——第三种额度压根没被前端读。
+ *
+ * 这就是后端那张工单正文写错的地方：它称漏一个键会让前端走
+ * `fallbackQuota` 兜底、显示旧口径数字。实测不成立——降级条件是
+ * `!parse && !chat`（**两个都缺**才降级，`src/lib/quota.js:44`），少一个键
+ * 只是安静地少渲染；而第三种额度的形状下，前端从头到尾不看它。
+ *
+ * 这组用例把「多出来的键无害」与「缺失的一半不触发兜底」两件事**真正跑出来**，
+ * 而不是只断言后端契约——后端那张 Python 守卫管不到前端这条路径。
+ */
+describe('第三种额度在前端的形状', () => {
+  const base = {
+    logged_in: true,
+    unlimited: false,
+    parse: { remaining: 2, limit: 3 },
+    chat: { remaining: 7, limit: 10 },
+  }
+
+  test('payload 多出第三种额度时文案逐字不变（前端不读它）', () => {
+    const before = describeQuota(base)
+    const after = describeQuota({ ...base, export: { remaining: 4, limit: 8 } })
+    assert.equal(after, before,
+      '前端硬写 parse/chat 两个 kind（src/lib/quota.js:41-42），第三种不会被渲染——'
+      + '这是已知边界，本条钉住它，别让它悄悄变成 undefined/NaN 或崩溃')
+  })
+
+  test('payload 多出第三种额度时徽章色不变', () => {
+    assert.equal(
+      quotaBadgeClass({ ...base, export: { remaining: 4, limit: 8 } }),
+      quotaBadgeClass(base),
+      '徽章色只看 parse/chat 两个槽位（src/lib/quota.js:77）',
+    )
+  })
+
+  test('只缺 chat 时不触发兜底，输出与只缺 chat 的旧形状一致', () => {
+    // 降级条件是 `!parse && !chat`（src/lib/quota.js:44）——两个都缺才降级。
+    // 这条把工单正文那条「少一个键就走 fallback」的错误判据钉成反面。
+    const missingChat = describeQuota({
+      logged_in: true, unlimited: false,
+      parse: { remaining: 2, limit: 3 },
+    })
+    assert.doesNotMatch(missingChat, /undefined/)
+    assert.doesNotMatch(missingChat, /NaN/)
+    assert.match(missingChat, /解析/, '还剩 parse 可显示，不该降级成旧口径文案')
+  })
+
+  test('两个都缺才降级到旧形状（兼容期回退仍然有效）', () => {
+    const text = describeQuota({
+      logged_in: true, unlimited: false, remaining: 2, limit: 3,
+    })
+    assert.match(text, /2\s*\/\s*3/, '两个槽位都缺时才用顶层 remaining/limit 兜底')
+  })
+})
+
 describe('quotaBadgeClass', () => {
   test('未登录走中性色', () => {
     const cls = quotaBadgeClass({ logged_in: false })

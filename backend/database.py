@@ -84,7 +84,17 @@ DAILY_CHAT_LIMIT = _env_int("VIDDIGEST_DAILY_CHAT_LIMIT", 10)
 #: 第四项是工单 #12 新增的「单人覆盖列」。它必须与前三项**待在同一张表里**：
 #: 把覆盖列名单独开一张映射，就多出一处「新增额度种类时忘了在这里登记」的位置，
 #: 而那种遗漏的表现是 override 永远读不到（静默回落全局），不是报错。
-_QUOTA_KINDS = {
+#:
+#: **本常量是额度种类的唯一出处**（工单 #38）。它原名 `_QUOTA_KINDS`，提成公开
+#: 是因为 `api_summarize` / `admin_api` 都要遍历它——一个以下划线开头的名字被
+#: 别的模块 import 时，名字在说「模块内部用」，而它实际已是跨模块契约。
+#:
+#: ⚠️ 新增第三种额度时**仍有两处改不了**（它们含额度种类的专有数据，不是循环）：
+#:   - `api_summarize._QUOTA_LABELS` 的中文名（循环产不出中文名）
+#:   - `admin_api.QuotaUpdateRequest` 的 `f"{kind}_limit"` 字段声明
+#:     （pydantic 字段必须静态声明，且未声明的键会被**静默丢弃**）
+#: 两处都由 `tests/test_quota_kinds_single_source.py` 守着，漏了会指名缺哪一种。
+QUOTA_KINDS = {
     "parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT",
               "parse_limit_override"),
     "chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT",
@@ -1368,10 +1378,10 @@ def _quota_spec(kind: str) -> tuple[str, str, str, str]:
     拼错的 kind 立刻抛错：静默 fallback 会让「扣了对话额度却记到解析头上」
     这类错误一路走到用户面前才发现。
     """
-    spec = _QUOTA_KINDS.get(kind)
+    spec = QUOTA_KINDS.get(kind)
     if spec is None:
         raise ValueError(
-            f"未知的额度类型 {kind!r}；可用：{sorted(_QUOTA_KINDS)}"
+            f"未知的额度类型 {kind!r}；可用：{sorted(QUOTA_KINDS)}"
         )
     return spec
 
@@ -1466,7 +1476,7 @@ def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
 
 def check_quota(user_id: int) -> dict:
     """一次判定全部额度。键固定为 parse / chat。"""
-    return {kind: check_quota_kind(user_id, kind) for kind in _QUOTA_KINDS}
+    return {kind: check_quota_kind(user_id, kind) for kind in QUOTA_KINDS}
 
 
 def consume_quota(user_id: int, kind: str) -> int:
@@ -1660,7 +1670,7 @@ def _admin_user_item(row) -> dict:
         "created_at": row["created_at"],
     }
     vip_active = is_vip_active(row)
-    for kind, (count_col, date_col, limit_name, override_col) in _QUOTA_KINDS.items():
+    for kind, (count_col, date_col, limit_name, override_col) in QUOTA_KINDS.items():
         limit, source = _resolve_quota_limit(kind, row[override_col], vip_active)
         item[f"{kind}_used"] = _quota_used_today(row, kind)
         item[f"{kind}_limit"] = limit
@@ -1724,7 +1734,7 @@ def set_user_quota_override(user_id: int, overrides: dict) -> int:
     值是 None 表示**清除覆盖**、回落全局。只写传进来的 key，
     没传的 key 一个字都不动。
 
-    列名一律取自 ``_QUOTA_KINDS``，不接受外部传入——拼进 SQL 的必须是
+    列名一律取自 ``QUOTA_KINDS``，不接受外部传入——拼进 SQL 的必须是
     白名单里的常量，不是请求里的字符串。
     """
     if not overrides:

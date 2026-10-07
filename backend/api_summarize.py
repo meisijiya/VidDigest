@@ -22,6 +22,7 @@ from database import (
     get_recent_chat_messages,
     get_video_by_url,
     probe_video,
+    QUOTA_KINDS,
     quota_limit,
     refund_quota,
     regenerate_video,
@@ -36,6 +37,11 @@ logger = logging.getLogger("api_summarize")
 router = APIRouter(prefix="/api", tags=["AI 总结"])
 
 #: 额度种类 → 中文名，只用于「今日XX次数已用完」这类提示文案。
+#:
+#: ⚠️ 这是**收口后仍需手工登记**的一处（工单 #38）：键集必须等于
+#: `database.QUOTA_KINDS`，而中文名是循环产不出来的专有数据。
+#: 漏登记的症状曾是响亮的 `KeyError`（`_check_quota_permission` 直接下标取），
+#: 现在由 `tests/test_quota_kinds_single_source.py` 在门禁里指名缺哪一种。
 _QUOTA_LABELS = {"parse": "解析", "chat": "追问"}
 
 #: 未登录时的提示。提出来是因为这条拒绝要发生两次：
@@ -69,13 +75,23 @@ async def get_quota(user: dict | None = Depends(get_optional_user)):
     解析额度与对话额度是两个独立计数器，各自在次日重置。
     """
     if not user:
+        # 每种额度都占一个键（值恒为 None），键集同样取自常量。
+        # 匿名分支与登录分支的**键集必须一致**——前端 `quotaOf(q, kind)` 按
+        # 键取槽位，少一个键它就少渲染一行，而 `describeQuota` 判的是
+        # `!parse && !chat`（两个都缺才降级），所以单缺一个**不会**触发兜底，
+        # 只会安静地少显示一种额度（工单 #38 实测，输出前后逐字相同）。
         return {"logged_in": False, "unlimited": False, "remaining": None,
-                "limit": quota_limit("parse"), "parse": None, "chat": None}
+                "limit": quota_limit("parse"),
+                **{kind: None for kind in QUOTA_KINDS}}
     return {"logged_in": True, **_quota_payload(user["id"])}
 
 
 def _quota_payload(user_id: int, primary: str = "parse") -> dict:
-    """两个额度各自的 (allowed, remaining, limit)，供前端分别展示。
+    """每种额度各自的 (allowed, remaining, limit)，供前端分别展示。
+
+    种类取自 `database.QUOTA_KINDS`（工单 #38）——原来这里硬写
+    `("parse", "chat")`，漏改不报错：`/api/quota` 少一个键，前端安静地
+    少显示一种额度，而当时没有任何测试会红。
 
     顶层 remaining/limit/unlimited 是留给旧前端的兼容别名，必须跟随
     `primary`——即「这次事件刚动的是哪类额度」。若追问事件里还报 parse
@@ -86,7 +102,7 @@ def _quota_payload(user_id: int, primary: str = "parse") -> dict:
     同样必须带上 user_id（工单 #12）：上限可以按人覆盖，不带就会报出全局值。
     """
     payload = {}
-    for kind in ("parse", "chat"):
+    for kind in QUOTA_KINDS:
         allowed, remaining = check_quota_kind(user_id, kind)
         payload[kind] = {
             "allowed": allowed,
