@@ -31,7 +31,11 @@ FAIL_ASR_NOT_CONFIGURED = "asr_not_configured"  # 落穿到 ASR，但没配 OPEN
 FAIL_ASR_FAILED = "asr_failed"                # 落穿到 ASR，但下载音频或转写失败
 
 # ── extract() 的返回形状：唯一出处（工单 #37）──────────────
-#: 字幕提取结果的键集。**整个后端只有这一份**，而且只有 `_subtitle_result` 负责实现它。
+#: 字幕提取结果的键集。**本模块只有这一份**，而且只有 `_subtitle_result` 负责实现它。
+#:
+#: ⚠️ 「本模块」是字面意思：守卫只扫 `summarizer.py`（`test_subtitle_result_shape.py:50`）。
+#: 后端别处也有带 `has_subtitle` 的 dict —— `api_summarize.py:396` 那个 3 键的 SSE
+#: 回放载荷就是一处 —— 它们**故意是另一种形状**，所以守卫不覆盖、也不该覆盖。
 #:
 #: 构造点曾在 5 处各写一份字面量（`extract` / `_extract_bilibili` 两处 /
 #: `_transcribe_audio` / `_empty_asr`），形状恰好一致所以谁也不报错；而加第 8 个
