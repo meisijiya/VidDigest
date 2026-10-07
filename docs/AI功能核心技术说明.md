@@ -7,7 +7,7 @@ AI 总结功能由三个子系统构成：
 | <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#6b7280" stroke-width="2" style="vertical-align:middle"><hash/></svg> | 模块 | <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#6b7280" stroke-width="2" style="vertical-align:middle"><target/></svg> 职责 |
 |:-:|:-----|:------|
 | 1 | **SubtitleExtractor** | 从视频 URL 提取字幕文本 |
-| 2 | **VideoSummarizer** | 调用 DeepSeek API 生成总结/导图/问答 |
+| 2 | **VideoSummarizer** | 调用 OpenAI 兼容的 AI 服务生成总结/导图/问答 |
 | 3 | **SSE Stream** | FastAPI `EventSourceResponse` 实时推送 |
 
 **整体数据流：**
@@ -30,10 +30,11 @@ AI 总结功能由三个子系统构成：
   └──────────┬──────────┘    └────────────┬────────────┘
              │                            │
              ▼                            ▼
-  ┌──────────────────────────────────────────────┐
+  ┌─────────────────────────────────────────────────┐
   │  前端逐事件渲染                                 │
-  │  subtitle → summary* → mindmap → quota → done │
-  └──────────────────────────────────────────────┘
+  │  subtitle → quota → summary* → mindmap → tags   │
+  │  → done                                        │
+  └─────────────────────────────────────────────────┘
 ```
 
 ---
@@ -52,13 +53,20 @@ AI 总结功能由三个子系统构成：
 {
     "has_subtitle": bool,       # 是否存在字幕
     "language": str,            # 字幕语言代码，如 "zh-Hans"
-    "subtitle_type": str,       # "manual"（人工）| "auto"（自动）| "none"
+    "subtitle_type": str,       # "manual"（人工）| "auto"（平台 ASR）
+                                # | "asr"（Whisper 转写）| "none"
     "segments": [               # 分段字幕
         {"start": 0.0, "end": 1.0, "text": "..."},
     ],
     "full_text": str,           # 所有分段文本拼接（用于 AI 总结）
+    "fail_reason": str,         # 平台字幕为什么没拿到（拿到时为空串）
+    "asr_fail_reason": str,     # ASR 兜底为什么没救回来（救回来时为空串）
 }
 ```
+
+**这 7 个键是契约，不是约定**：`SUBTITLE_RESULT_KEYS`（`backend/summarizer.py:44-52`）是唯一的登记处，`_subtitle_result()` 是**全仓唯一允许写出这个形状的地方**，读方不需要再写 `.get`。`backend/tests/test_subtitle_result_shape.py` 读的就是这个元组。
+
+最后两个键是后加的：加字段时漏改一处构造点，形状照样看着一致，只会在下游炸成 `KeyError` → 500。
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#3b82f6" stroke-width="2" style="vertical-align:middle"><layers/></svg> 三种提取策略
 
@@ -136,19 +144,39 @@ AI 总结功能由三个子系统构成：
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#8b5cf6" stroke-width="2" style="vertical-align:middle"><target/></svg> 职责
 
-调用 DeepSeek API，基于字幕文本生成结构化总结、思维导图和问答。
+调用 OpenAI 兼容的 AI 服务（百炼优先、DeepSeek 兜底，见下方「初始化」），基于字幕文本生成结构化总结、思维导图和问答。
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#8b5cf6" stroke-width="2" style="vertical-align:middle"><settings/></svg> 初始化
 
+`VideoSummarizer.__init__`（`backend/summarizer.py:782` 起）有**三条分支**，不是单一后端：
+
 ```python
+# 1. 用户自带凭据（BYOK）—— credential 不为 None 时走这条，provider="user_credential"
 self.client = OpenAI(
-    api_key=api_key,
-    base_url="https://api.deepseek.com",
+    api_key=credential.reveal(),
+    base_url=user_base_url or os.getenv("ALIYUN_BAILIAN_BASE_URL", ...),
 )
-self.model = "deepseek-chat"
+self.model = user_model or os.getenv("ALIYUN_BAILIAN_MODEL", self._bailian_model)
+
+# 2. 阿里云百炼 —— 平台侧优先级最高，provider="aliyun_bailian"
+self.client = OpenAI(api_key=bailian_key, base_url=DEFAULT_BAILIAN_BASE_URL)
+
+# 3. DeepSeek —— **只是兜底**，provider="deepseek"
+self.client = OpenAI(api_key=deepseek_key, base_url=DEFAULT_DEEPSEEK_BASE_URL)
+self.model = DEFAULT_DEEPSEEK_MODEL
 ```
 
-通过 OpenAI SDK 兼容层调用 DeepSeek API。模型为 `deepseek-chat`（DeepSeek-V3）。
+| 优先级 | 来源 | 触发条件 |
+|---:|---|---|
+| 1 | **用户自带凭据**（BYOK） | 调用方传了 `credential` |
+| 2 | **阿里云百炼**（OpenAI 兼容） | 配了 `ALIYUN_BAILIAN_API_KEY` |
+| 3 | **DeepSeek**（OpenAI 兼容） | 只配了 `DEEPSEEK_API_KEY` |
+
+三条都拿不到时抛 `ValueError`，提示「请配置以下任一组环境变量」。
+
+⚠️ **百炼优先、DeepSeek 兜底**——写文档或排查问题时别把 DeepSeek 当成唯一后端。模型名也不是类属性：百炼的默认模型**每次实例化时从模型清单表读一次**（`self._bailian_model`），后台改默认值不用重启。
+
+BYOK 分支的端点校验不在 `__init__` 里，而在 `credentials.validate_base_url`——那里是唯一一份规则。
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#f59e0b" stroke-width="2" style="vertical-align:middle"><file-text/></svg> 总结摘要（流式）
 
@@ -175,7 +203,7 @@ self.model = "deepseek-chat"
 └─────────────────────────────────────────┘
 ```
 
-**字幕截断：** 前 15000 字符（约 3000-5000 tokens），超出部分丢弃。DeepSeek 上下文窗口远大于此，但截断是为了控制处理延迟和成本。
+**字幕截断：** 前 15000 字符（约 3000-5000 tokens），超出部分丢弃。模型上下文窗口远大于此，但截断是为了控制处理延迟和成本。
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#06b6d4" stroke-width="2" style="vertical-align:middle"><map/></svg> 思维导图（非流式）
 
@@ -205,12 +233,18 @@ self.model = "deepseek-chat"
   ════════════════════════════════════════════════════
   
   event: subtitle     →  字幕元数据 { has_subtitle, language, segments, full_text }
+  event: quota        →  剩余次数 { remaining, limit }
   event: summary      →  总结文本片段（多次发送，前端累加）
   event: mindmap      →  思维导图 Markdown { markdown: "..." }
-  event: quota        →  剩余次数 { remaining, limit }
-  event: error        →  错误信息 { message, need_login?, need_vip? }
+  event: tags         →  标签数组 ["...", ...]
   event: done         →  [DONE]
 ```
+
+⚠️ **`quota` 在 `summary*` 之前下发**（`api_summarize.py:612` vs `:638`）。额度是在真正调模型的那一刻扣的，扣完立刻推一次给前端——不是最后才结算。所以「前端先看到额度变了、再看到总结一点点长出来」是正常顺序，不是竞态。
+
+错误事件走独立分支，不在上面这条主线上：未登录 / 超限时发 `event: error` 带 `need_login` / `need_vip`，额度耗尽那条发的字段是 `{ message, reason }`（`reason: "quota_exhausted"`），**不带** `need_vip`。
+
+复放已缓存结果的路径（不调模型）事件顺序一致：`subtitle → quota → summary → mindmap → tags → done`。
 
 后端使用 `ServerSentEvent` 类构造 SSE 事件。数据均以 JSON 序列化发送，确保中文正确编码（`ensure_ascii=False`）。
 
@@ -317,7 +351,7 @@ consume_quota(user["id"], kind)
   └───────────────────────────────────────┘
   
   ┌───────────────────────────────────────┐
-  │  DeepSeek API 调用失败                 │
+  │  AI 服务调用失败                       │
   │    → except 捕获异常                   │
   │    → event: error + 错误描述           │
   │    → 前端显示错误信息                  │

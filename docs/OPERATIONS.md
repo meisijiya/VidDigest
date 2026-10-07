@@ -31,7 +31,7 @@
 
 ```mermaid
 graph LR
-  U[用户浏览器] -->|HTTPS:5173| FE[Vue 3 SPA<br/>Vite Dev / 静态托管]
+  U[用户浏览器] -->|HTTP:5173| FE[Vue 3 SPA<br/>Vite Dev / 静态托管]
   FE -->|/api/* 代理| BE[FastAPI<br/>Uvicorn :8000]
   BE -->|HTTPS| YT[yt-dlp<br/>1800+ 平台]
   BE -->|HTTPS| DS[DeepSeek API]
@@ -46,7 +46,7 @@ graph LR
 
 | 进程             | 端口   | 依赖                                   | 备注                |
 | :--------------: | :----: | ------------------------------------ | ----------------- |
-| `backend-api`  | 8000 | Python 3.10+ / yt-dlp / DeepSeek Key | FastAPI + Uvicorn |
+| `backend-api`  | 8000 | Python 3.10+ / yt-dlp / 百炼或 DeepSeek Key（任一组） | FastAPI + Uvicorn |
 | `frontend-dev` | 5173 | Node 20.19+ / 22.12+                  | 仅开发期使用，生产替换为静态文件  |
 
 
@@ -263,7 +263,7 @@ worker」这句话仍在多处出现，而它的理由已经换了——照着�
 - **覆盖闸门的 TTL**：`VIDDIGEST_VIDEO_REGENERATE_TTL_SECONDS`（默认 1800 秒）
   必须大于一次覆盖的最长耗时，否则会在持闸者还在干活时把锁偷走。
 
-关于 SQLite 本身：`database.py:196` 的 `sqlite3.connect(get_db_path())` 没传
+关于 SQLite 本身：`database.py:211` 的 `sqlite3.connect(get_db_path())` 没传
 `timeout`，走 Python 默认的 **5.0 秒**等待窗口（2026-10-06 实测：持锁 2s 的写者
 让另一方等 1.62s 后成功；持锁 7s 则等满 5.5s 后抛 `database is locked`）。
 所以**单进程下也可能偶发** `database is locked`——那说明有超过 5 秒的长事务
@@ -474,7 +474,7 @@ hub logs --name backend-api --follow
 | ------------ | ------------------------------------------ | --------------- |
 | backend-api  | `hub logs --name backend-api`              | Uvicorn 访问 + 异常 |
 | frontend-dev | `hub logs --name frontend-dev`             | Vite HMR + 编译错误 |
-| yt-dlp 调试    | 设环境变量 `YT_DLP_OUTPUT=downloads/yt-dlp.log` | 抓取失败详情          |
+| yt-dlp 调试    | 进程内拿不到细节（`downloader.py` 固定 `quiet` + `no_warnings`）；在 `backend/` 下手动跑 `venv/Scripts/yt-dlp -v --no-playlist "<视频链接>"` 看 stderr | 抓取失败详情          |
 | SQLite       | `backend/data/app.db`                      | 用户 / 订单 / 摘要计数  |
 
 
@@ -563,7 +563,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 | uvicorn 端口被占                                     | 8000 被别的进程占            | `netstat -ano | grep 8000` 杀 PID 或换 `--port 8001`                        |
 | vite 端口跳到 5174/5175                              | 5173 被旧实例占             | `taskkill /F /PID <pid>` + 加 `--strictPort`                              |
 | hub 启动报 `CreateProcessW ... 不是有效的 Win32 应用程序`    | 中文 cwd + npx 触发 \0 bug | 用绝对路径 `node node_modules/vite/bin/vite.js`                               |
-| `AI 服务 API Key 未设置`                              | `.env` 缺失或没填           | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY` 或 `DEEPSEEK_API_KEY` → 重启 |
+| `未检测到 AI 服务 API Key，请配置以下任一组环境变量`（`ValueError`） | `.env` 缺失或没填           | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY`（推荐）或 `DEEPSEEK_API_KEY` → 重启 |
 | `RuntimeError: 缺少环境变量 JWT_SECRET`               | `.env` 漏配 / 配了纯空白 / 启动进程读不到 | `openssl rand -hex 32` 生成 64 位随机串，写进 `backend/.env` 后重启            |
 
 
@@ -604,7 +604,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 | -------------------- | ---------------- | ------------------------------------- |
 | `database is locked` | 某次写事务持有写锁**超过 5 秒**（Python `sqlite3.connect` 默认等待窗口，见 5.1.1）；常见来源是备份、批量删除、schema 迁移 | 查是不是有长事务。加 `--workers` 既治不了它（SQLite 写入串行），也不再有静默失效风险——覆盖闸门已落库（ADR 0015）；但也**不会**因此变快 |
 | 用户列表错乱               | 升级数据库 schema 没迁移 | 看 `database.py` 是否有 `ALTER TABLE`，手动补 |
-| **AI 总结一直"正在分析"但无任何事件** | `vip_expire_at` 是 naive datetime，与带时区的 `datetime.now(timezone.utc)` 比较抛 TypeError；异常发生在 SSE `try` 块**之前**，前端拿不到 error 事件就一直转圈 | 读取侧 `is_vip_active` / `_fulfill_order` 对 `tzinfo is None` 做兜底。**写入侧要求**：所有 `vip_expire_at` 统一用 `datetime.now(timezone.utc).isoformat()`（带 `+00:00`） |
+| **AI 总结一直"正在分析"但无任何事件** | `vip_expire_at` 是 naive datetime，与带时区的 `datetime.now(timezone.utc)` 比较抛 TypeError；异常发生在 SSE `try` 块**之前**，前端拿不到 error 事件就一直转圈 | 读取侧 `is_vip_active` / `complete_order` 对 `tzinfo is None` 做兜底。**写入侧要求**：所有 `vip_expire_at` 统一用 `datetime.now(timezone.utc).isoformat()`（带 `+00:00`） |
 
 
 ---
@@ -622,7 +622,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 
 | 场景           | 调优                                                    |
 | ------------ | ----------------------------------------------------- |
-| 高并发解析        | 先把覆盖闸门（`_REGENERATE_INFLIGHT`）换成数据库级实现，再谈加 `--workers`；顺序反了就是多扣额度 + 结果互相覆盖，且不报错。详见 5.1.1                      |
+| 高并发解析        | 闸门已落库（ADR 0015），不再有静默失效风险；加 `--workers` 前真正要盯的是 **SQLite 写入串行**（加 worker 不提升写吞吐）与**覆盖闸门 TTL**（`VIDDIGEST_VIDEO_REGENERATE_TTL_SECONDS` 必须大于一次覆盖的最长耗时，否则会在持闸者还在干活时把锁偷走）。详见 5.1.1                      |
 | 下载慢          | 上 CDN / 引导用户用直链 `/api/direct-url`                     |
 | AI 总结排队      | 换 PostgreSQL + Celery；当前是同步 + SSE                     |
 | downloads 爆盘 | 加 cron `find backend/downloads -mtime +1 -delete` 每天清 |
@@ -692,9 +692,9 @@ VIDDIGEST_ADMIN_EMAILS=you@example.com,other@example.com
 | bcrypt 哈希密码                | ✅   | cost=12 默认                         |
 | JWT 过期 72h                 | ✅   | 短 token + refresh token 更安全        |
 | Stripe Webhook 验签          | ✅   | `STRIPE_WEBHOOK_SECRET` 必填         |
-| 上传文件大小限制                   | ✅   | FastAPI 默认                         |
+| 上传文件大小限制                   | ➖   | 不适用——后端零上传端点，视频只收链接（见 9.2）          |
 | HTTPS                      | ⚠️  | 生产必须（Nginx + Let's Encrypt）        |
-| API Key 不暴露前端              | ✅   | 只走后端                               |
+| 平台 API Key 不暴露前端              | ✅   | 只走后端（`backend/.env`）。**BYOK 用户自带 Key 是例外**：明文存于浏览器 `localStorage`，随请求体上送，后端不落库（ADR 0004） |
 | 速率限制                       | ⛔   | 当前未做，建议加 slowapi / Nginx limit_req |
 
 

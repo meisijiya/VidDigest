@@ -2,8 +2,9 @@
 
 本文档说明：测什么、每类用哪种测试、覆盖目标定在哪、示例用例怎么写、现有覆盖缺什么。
 
-**数据来源**：本文件所有数字都是实测得到的，不是估算。复现命令见文末「如何复现本文数据」。
-采集日期对应的基线：`./init.sh` 退出 0，后端 373 passed，前端 91 pass，工作树干净。
+**数据来源**：本文引用的行覆盖数据来自一次历史快照采集，不是估算，也不是当前值。复现方式见文末「本文数据怎么重新采」。
+
+⚠️ **本文刻意不写死统计数字**（用例条数、覆盖率、模块行数）。写死过一次，代码一增长就过期，而**没有任何东西会报警**——本文自己都不会知道自己错了。要当前值，跑一次门禁或重新采一遍覆盖率。
 
 ---
 
@@ -13,17 +14,17 @@
 
 ### 0.1 这是行覆盖，不是「代码质量」
 
-1859 条可执行语句行、967 行被执行、**52.0%**。这个数字里：
+一次采集给出的行覆盖率里，混合了两类完全不同的东西。用**比例**说而不是绝对值——绝对值每次跑都在动，比例的量级不会骗人：
 
-- **数字偏低的部分是真的**：整块能力从未被任何测试碰过（见第 5 节清单）。
-- **数字精确的部分也是真的**：分母由 AST 节点起始行得出，不含注释、docstring、续行。
+- **比例偏低的部分是真的**：整块能力从未被任何测试碰过（见第 5 节清单）。
+- **比例精确的部分也是真的**：分母由 AST 节点起始行得出，不含注释、docstring、续行。
 
-但 52.0% **不能**被解读成「测试覆盖了一半」。它混合了两类完全不同的东西：
+所以那个百分比**不能**被解读成「测试覆盖了一半」。它混合了两类完全不同的东西：
 
 | 类别 | 例子 | 该不该追 |
 |---|---|---|
 | 可离线测的编排与数据逻辑 | 额度计算、FTS 查询、并发占位行、凭据脱敏 | **应该追到高覆盖** |
-| 必须真网/真模型的 I/O | `douyin.py` 16 个函数、`_extract_bilibili` | 追覆盖率是浪费，应改用契约桩 |
+| 必须真网/真模型的 I/O | `douyin.py` 的解析函数、`_extract_bilibili` | 追覆盖率是浪费，应改用契约桩 |
 
 一个更诚实的说法是：**可测的那部分覆盖得不错，不可测的那部分是 0**。策略的重点因此是前者守住、后者换测法。
 
@@ -31,29 +32,36 @@
 
 报告里函数级的 `X/Y`（`Y` = 命中行 / 函数体物理行范围）会**系统性低估真实覆盖率**，因为分母把多行字符串字面量的物理行算了进去。
 
-实测证据 —— `database.init_db` 显示 5/115：
+实测证据 —— `database.init_db` 报出来是个个位数：
 
 ```
-backend/database.py:197  def init_db():
-backend/database.py:199      with get_db() as conn:
-backend/database.py:200          conn.executescript("""      ← 从这里到 311 是一整段 SQL 字符串字面量
-backend/database.py:201              CREATE TABLE IF NOT EXISTS users (
+backend/database.py:235  def init_db():
+backend/database.py:237      with get_db() as conn:
+backend/database.py:248          conn.executescript("""      ← 从这里到 390 是一整段 SQL 字符串字面量
+backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 ...
 ```
 
-`executescript` 里那 ~110 行是 **SQL 文本，不是 Python 语句**，永远不会产生 `line` 追踪事件。所以 `init_db` 的真实情况是「几乎全执行」，不是 5%。
+`executescript` 里那一百多行是 **SQL 文本，不是 Python 语句**，永远不会产生 `line` 追踪事件。所以 `init_db` 的真实情况是「几乎全执行」，不是报出来的那个个位数。
 
-**结论**：凡涉及多行 SQL / 长 prompt / 模板字符串的函数（`init_db`、`_build_full_prompt` 7/48、`quota_limit` 1/9 等），`Y` 不可信，**不要照着数字定优先级**。定性结论（这个函数有没有被测过）仍然可信，定量结论不可信。
+**结论**：凡涉及多行 SQL / 长 prompt / 模板字符串的函数（`init_db`、`_build_full_prompt`、`quota_limit` 等），`Y` 不可信，**不要照着数字定优先级**。定性结论（这个函数有没有被测过）仍然可信，定量结论不可信。
 
-### 0.3 三个变异装置不在门禁里
+### 0.3 变异装置不在门禁里
 
-仓库里跟踪着三个变异装置：
+仓库里跟踪着若干个变异装置（数量会变，以 `glob **/mutation*` 的实际结果为准）：
 
 | 文件 | 是否被门禁收集 |
 |---|---|
 | `backend/tests/mutation_check.py` | ❌ 不匹配 `test_*.py`，pytest 默认不收集 |
 | `backend/tests/mutation_check_quota.py` | ❌ 同上 |
+| `backend/tests/mutation_prompt.py` | ❌ 同上 |
 | `frontend/tests/mutation_wiring.mjs` | ❌ 不匹配 `*.test.mjs`，`npm test` 不收集 |
+| `frontend/tests/mutation-nav-wall.mjs` | ❌ 既不匹配 `*.test.mjs`，也不匹配 `*.spec.mjs` |
+| `frontend/tests/mutation-ui-fixes.mjs` | ❌ 同上 |
+
+前端那三个**两套 runner 都不收**：`*.test.mjs` 走 `node --test`，`*.spec.mjs` 走 `vitest run`（`vitest.config.js` 的 `include` 写死了），而变异装置两个后缀都不匹配。
+
+（`scripts/mutation_secrets_gate.py` 是另一回事：它是敏感内容扫描关卡**自己的**变异测试，被关卡直接调用，不走这两条收集规则。）
 
 它们是**人工按需运行**的装置，不是回归测试。含义有二：
 
@@ -64,45 +72,60 @@ backend/database.py:201              CREATE TABLE IF NOT EXISTS users (
 
 ## 1. 现状快照
 
-| 项 | 数值 |
+**门禁跑 5 关**（`init.sh`，退出 0 才算通过）：
+
+| # | 关卡 | 判什么 |
+|---:|---|---|
+| 1 | `backend: pytest` | 后端全量用例 |
+| 2 | `backend: compileall` | 全部后端源码能编译 |
+| 3 | `scripts/check_secrets.py` | 跟踪文件 + 全部可达历史里没有内容级凭据 |
+| 4 | `frontend: npm test` | `*.test.mjs`，静态 / 契约断言（`node --test`） |
+| 5 | `frontend: npm run test:mount` | `*.spec.mjs`，真挂载（`vitest run` + jsdom） |
+
+第 3 关扫的是**内容**不是文件名——`.gitignore` 挡得住 `.env`，挡不住「把口令抄进文档」。第 4、5 关是两套独立 runner、分开计数，理由见 3.5。
+
+**用例数与覆盖率不写死**：这几项每次跑都在动，写进文档就等于给自己埋一个永远不会报警的过期数字。当前值跑 `./init.sh` 看输出。
+
+| 项 | 怎么取当前值 |
 |---|---|
-| 后端用例 | 373 passed（14 个 `test_*.py`） |
-| 前端用例 | 91 pass（5 个 `*.test.mjs`） |
-| 门禁检查项 | 3 条（pytest / compileall / npm test） |
-| 后端可执行语句行 | 1859 |
-| 已执行行 | 967（**52.0%**） |
-| 从未被执行的函数/方法 | **63 个** |
-| 被执行但覆盖不全的函数 | 96 个 |
+| 后端用例数 / 文件数 | `init.sh` 第 1 关的 pytest 摘要 |
+| 前端静态断言数 | `init.sh` 第 4 关的 `node --test` 摘要 |
+| 挂载用例数 | `init.sh` 第 5 关的 vitest 摘要 |
+| 行覆盖率 | 需重新采集，见文末「本文数据怎么重新采」 |
+| 从未被执行的函数 | 同上，采集时才产生 |
+| 被执行但覆盖不全的函数 | 同上，采集时才产生 |
 
 ### 分模块行覆盖
 
-| 模块 | 语句行 | 命中 | 覆盖率 | 评价 |
-|---|---:|---:|---:|---|
-| `tags.py` | 21 | 19 | 90.5% | 好 |
-| `credentials.py` | 16 | 14 | 87.5% | 好（BYOK 是重点，值得） |
-| `api_community.py` | 27 | 23 | 85.2% | 好 |
-| `api_summarize.py` | 211 | 186 | 88.2% | 好 |
-| `auth.py` | 52 | 41 | 78.8% | 表面好，**4 个密码函数全未测**（见 5.2） |
-| `api_history.py` | 37 | 25 | 67.6% | 3 个读出口函数全未测 |
-| `database.py` | 465 | 288 | 61.9% | 核心数据层，尚可 |
-| `main.py` | 108 | 59 | 54.6% | **6 个主入口函数全未测**（见 5.1） |
-| `summarizer.py` | 466 | 210 | 45.1% | 多为 I/O，见 0.1 |
-| `api_auth.py` | 47 | 21 | 44.7% | 活跃但近乎裸奔 |
-| `api_payment.py` | 59 | 17 | 28.8% | 活跃但近乎裸奔 |
-| `downloader.py` | 125 | 22 | 17.6% | 真网 I/O |
-| `douyin.py` | 225 | 42 | 18.7% | 真网 + WAF 对抗 |
+**下面的「评价」列仍然有效**，「快照覆盖率」列来自一次历史采集，只用于看**量级**，不要当当前值。
 
-**读法**：覆盖率最高的三块（tags / credentials / community）是最近三期工单主动建测试的地方，数字反映的是投入而非天然质量。反过来，**低覆盖率不等于低优先级** —— `api_auth.py` / `api_payment.py` 覆盖率低但代码是活的（见 5.3）。
+| 模块 | 快照覆盖率 | 评价 |
+|---|---:|---|
+| `tags.py` | 高 | 词表校验是 ADR 0005，值得守 |
+| `credentials.py` | 高 | BYOK 是安全边界，值得守 |
+| `api_community.py` | 高 | 读出口齐（见 5.4 已补齐） |
+| `api_summarize.py` | 高 | 事件契约有测试钉着 |
+| `auth.py` | 表面高，**有欺骗性** | 见 5.2：密码一侧仍有裸奔的部分 |
+| `api_history.py` | 中 | 读出口已被 `test_history_search_favorites.py` 大量走到 |
+| `database.py` | 中 | 核心数据层 |
+| `main.py` | 中 | 主入口已被 `test_audio_download.py` 覆盖（见 5.1） |
+| `summarizer.py` | 低 | 多为真网 / 真模型 I/O，见 0.1 |
+| `api_auth.py` | 低 | 活跃但 `/register`、`/login` 仍裸奔（见 5.2） |
+| `api_payment.py` | 低 | 活跃但裸奔（见 5.3） |
+| `downloader.py` | 低 | 真网 I/O，见 5.5 |
+| `douyin.py` | 低 | 真网 + WAF 对抗，见 5.5 |
 
 ---
 
 ## 2. 测试金字塔在本项目的映射
 
 ```
-        /  冒烟 E2E  \        3 条，只跑门禁能覆盖的
-       /  集成（HTTP 层）\    ~40 条，FastAPI TestClient 真路由
-      /     单元 + 契约   \   ~330 条，纯函数与数据层
+        /  冒烟 E2E  \        极少，只跑门禁能覆盖的
+       /  集成（HTTP 层）\    一批，FastAPI TestClient 真路由
+      /     单元 + 契约   \   主体，纯函数与数据层
 ```
+
+条数不写死——它们每次跑都在动。当前分布跑 `./init.sh` 看两关的摘要。
 
 **这个项目的形状是倒过来的 —— 而且是对的。**
 
@@ -164,11 +187,23 @@ backend/database.py:201              CREATE TABLE IF NOT EXISTS users (
 
 ### 3.5 前端
 
-**现状约定**（`byok.test.mjs` 已写明，且应保持）：`.js` 里的行为**用假 fetch 真跑一遍**；`.vue` 只做**源码接线断言**。渲染结果验证需要挂载环境，超出本仓「`node --test` 零额外依赖」的约定。
+前端有**两套 runner、两类判据**（工单 #18 建的）。判据不是按文件类型分的，是按**这条用例断言的对象**分的：
 
-这是有意的取舍，不是偷懒。它换来的是：`npm test` 在任何机器上都能跑，不需要装 jsdom/vue-test-utils。
+| 断言的对象 | 放哪 | 怎么跑 |
+|---|---|---|
+| 「渲染出了什么」 | `tests/*.spec.mjs` | `vitest run`（`npm run test:mount`），jsdom + `@vue/test-utils` 真挂载组件 |
+| 「源码里不许出现什么」 | `tests/*.test.mjs` | `node --test`（`npm test`），读源码文本断言 |
 
-**代价要认**：源码接线断言**守不住渲染正确性**。模板语法错、条件渲染漏一个分支，这类问题它在绿灯下依然存在。真要覆盖渲染，需要引入挂载环境 —— 那是一个单独的决策，不在本文档范围。
+`.js` 里的行为两种都算：用假 fetch 真跑一遍是 `*.test.mjs` 的主流写法，而组件级行为归 `*.spec.mjs` 挂载。
+
+**为什么文本断言不能一律迁成挂载**：色值字面量、snake_case 取值、转换函数收口这些判据的**对象就是源码文本**。挂载后看不到模板源码了，断言会退化成「界面上没出现那个字符串」—— 而模板写了、只是没渲染到，恰恰是要抓的回归。**迁过去是变弱，不是变强。**
+
+反过来，源码接线断言守不住渲染正确性：模板语法错、条件渲染漏一个分支，文本断言在绿灯下依然存在。挂载层就是为了关掉这个缺口而建的，所以「没有挂载环境」这个老前提**已经不再成立**。
+
+**两个必须守住的 runner 纪律**（都踩过）：
+
+1. `vitest.config.js` 的 `include` **必须显式写死成 `tests/**/*.spec.mjs`**。默认 include 覆盖 `.test`，会顺手吃掉 node:test 的文件；而 vitest 遇到 `describe` 体抛异常时**仍然退出 0**——那会让挂载关卡**恒绿**。
+2. 前端测试**不要在 `describe` 体里做会抛异常的事**（`readFileSync` 之类）。node 对 `describe` 体里抛出的异常给出的退出码是 **0**，runner 还会报 `tests 0 / pass 0 / fail 0`——那个 suite 一条都没注册、没运行。真 AssertionError 被埋在摘要下面，而门禁只看退出码。**要读源码就把 `readFileSync` 提到模块顶层**（模块加载失败是响的）。
 
 ---
 
@@ -185,31 +220,31 @@ backend/database.py:201              CREATE TABLE IF NOT EXISTS users (
 | **C · 契约** | 真网 I/O（`douyin`、`downloader`、`_extract_bilibili`、Stripe） | **不追行覆盖**；改为对「我方契约」建测试：URL 识别、响应字段映射、错误分类 | 每个外部依赖至少一组 fixture 契约测试 |
 | **D · 不测** | `__init__`、纯转发 getter、框架胶水、`features.js` 开关 | 不测 | — |
 
-**关于 52%**：A + B 档的**行为**覆盖应当接近 100%，即使行覆盖数字停在 60% 出头。行覆盖只是 A/B 档是否做够了的**副产品**，不是目标本身。
+**关于行覆盖的绝对值**：A + B 档的**行为**覆盖应当接近 100%，即使行覆盖数字停在六成上下。行覆盖只是 A/B 档是否做够了的**副产品**，不是目标本身。
 
 ---
 
 ## 5. 缺口清单（按优先级）
 
-### 5.1 P0 —— 产品主入口零测试
+### 5.1 P0（已部分消解）—— 产品主入口
 
-**`main.py` 6 个函数从未被执行**：
+⚠️ **本节曾经写着「`main.py` 6 个函数从未被执行」，那句话已经不成立。** 当时的后端测试确实一条都没打过主入口；`backend/tests/test_audio_download.py` 补上之后，至少两个主入口有了真覆盖：
 
-| 函数 | 路由 | 行 |
-|---|---|---:|
-| `ParseRequest.clean_url` | — | 87 |
-| `DownloadRequest.clean_url` | — | 97 |
-| `parse_video` | `POST /api/parse` | 112 |
-| `download_video` | `POST /api/download` | 132 |
-| `get_direct_url` | `POST /api/direct-url` | 164 |
-| `proxy_thumbnail` | — | 183 |
+| 函数 | 路由 | `main.py` 行 | 现状 |
+|---|---|---:|---|
+| `parse_video` | `POST /api/parse` | 115 | ✅ `test_audio_download.py:125`，真 client 打真路由 |
+| `download_video` | `POST /api/download` | 135 | ✅ `test_audio_download.py:355,363,372,380` |
+| `ParseRequest.clean_url` | — | 90 | ⚠️ 被上面两条**间接**走到，但只喂了裸 URL |
+| `DownloadRequest.clean_url` | — | 100 | ⚠️ 同上 |
+| `get_direct_url` | `POST /api/direct-url` | 173 | ❌ 路由层仍无测试（`test_ytdlp_boundary_canonical.py` 只直接调 `downloader.get_direct_url`，不经路由） |
+| `proxy_thumbnail` | `GET /api/proxy/thumbnail` | 192 | ❌ 仍无测试 |
 
-实测确认：`backend/tests/` 下**没有任何测试引用过** `/api/parse`、`/api/download`、
-`/api/direct-url`、`/api/proxy/thumbnail`。（`/api/health` 是唯一被间接打到的。）
+**剩下的真缺口有两处**：
 
-这是最严重的一条。**用户打开产品第一眼点到的功能，一行测试都没有。** 而 `parse_video` / `download_video` 恰好都有 `is_douyin_url` 分支、`run_in_executor` 分支、文件存在性检查、`except HTTPException: raise` 的异常透传 —— 每一条都是会静默出错的结构。
+1. **`/api/direct-url` 与 `/api/proxy/thumbnail` 两条路由零测试。** 前者是直链链路的一环，后者是绕防盗链的代理，两者都有「静默出错但用户只看到图裂了、或下载按钮点了没反应」的结构。
+2. **`clean_url` 的真实契约仍没被钉住。** 它不是「strip 一下」——它的存在理由是**从用户粘贴的分享文案里正则抽出第一个 URL**。现在的测试只喂裸 URL，正好绕过了它唯一有价值的那个行为。删掉字符集里排除中文标点的那部分，现有测试**照样全绿**。
 
-**建议补的用例**（`clean_url` 是纯函数，最容易测）：
+下面这些用例仍然值得补（`clean_url` 是纯函数，最容易测）：
 
 注意 `ParseRequest` 的字段名是 `url`（不是 `video_url`），且 **`clean_url` 不去追踪参数** ——
 它的真实契约是「从用户粘贴的分享文本里正则抽出第一个 URL」：
@@ -230,7 +265,9 @@ def test_clean_url_extracts_first_url_from_share_text():
 
 ```python
 # 2. 分流：抖音 URL 走 douyin_parser，其余走 downloader
-#    断点：把两边的 parse 都换成会记账的桩，断言各自被调了几次
+#    ⚠️ 这条的一半已经被 test_audio_download.py 覆盖（:372 打 /api/download
+#    用抖音 URL，:125 打 /api/parse 用 B 站 URL）。仍缺的是**分流本身**：
+#    断言"走了哪一边"，而不只是"返回了 200"。
 def test_parse_routes_douyin_to_douyin_parser(client, stub_douyin, stub_downloader):
     r = client.post("/api/parse", json={"url": "https://v.douyin.com/abc/"})
     assert stub_douyin.calls == 1 and stub_downloader.calls == 0
@@ -242,24 +279,24 @@ def test_download_video_does_not_swallow_http_exception(...):
     # 若被 except 吞掉会变成 400，说明 except HTTPException: raise 被删了
 ```
 
-第 3 条是**变异友好**的：删掉 `except HTTPException: raise` 它就会转红。
+第 3 条是**变异友好**的：删掉 `except HTTPException: raise` 它就会转红。这条**至今没有任何测试钉住**。
 
 ### 5.2 P0 —— 认证链路活跃但裸奔
 
-`auth.py` 4 个函数 + `api_auth.py` 2 个函数从未执行：
+⚠️ **本节曾经写着「`auth.py` 4 个函数 + `api_auth.py` 2 个函数从未执行」，前半句已经不成立。** `verify_password` 已被 `test_admin_user_lifecycle.py:203-204` 测到（建用户后验一次真密码、验一次错密码）。**其余五个仍未执行**：
 
-| 函数 | 路由/位置 | 行 |
-|---|---|---:|
-| `hash_password` | — | 17 |
-| `verify_password` | — | 21 |
-| `validate_email` | — | 46 |
-| `validate_password` | — | 50 |
-| `register` | `POST /api/auth/register` | 47 |
-| `login` | `POST /api/auth/login` | 70 |
+| 函数 | 路由/位置 | 行 | 现状 |
+|---|---|---:|---|
+| `hash_password` | — | 32 | ❌ 无直接测试（只经 `verify_password` 的夹具间接触达） |
+| `verify_password` | — | 36 | ✅ `test_admin_user_lifecycle.py:203-204` |
+| `validate_email` | — | 61 | ❌ 无直接测试 |
+| `validate_password` | — | 65 | ❌ 无直接测试 |
+| `register` | `POST /api/auth/register` | 60 | ❌ `backend/tests/` 下无任何测试打 `/api/auth/register` |
+| `login` | `POST /api/auth/login` | 83 | ❌ 同上 |
 
-`auth.py` 78.8% 的行覆盖率具有**欺骗性**：高分来自 token 签发/解析（那部分确实测过），而**密码这一侧一行没测**。
+`auth.py` 的行覆盖率具有**欺骗性**：高分来自 token 签发/解析（那部分确实测过），而**密码的写入侧与校验规则仍没测**。
 
-**为什么是 P0 而不是 P1**：`api_auth.py` 行覆盖 44.7% 看着像「测了一部分」，实际是「`/me` 被测过、注册登录完全没测」。`login` / `register` 是 `frontend/src/api/auth.js` 的真实调用目标。
+**为什么还是 P0 而不是 P1**：`/register`、`/login` 是 `frontend/src/api/auth.js` 的真实调用目标，两条路由**零测试**。`validate_email` / `validate_password` 的返回值直接进 400 响应体（`raise HTTPException(detail=err)`），文案一旦变了就是对外可见的 API 变更。
 
 **示例用例**：
 
@@ -294,7 +331,7 @@ def test_login_does_not_leak_which_field_was_wrong(client):
 `validate_password` 那条防的是 off-by-one：把 `len(password) > 50` 改成 `>= 50`，
 用户就在恰好 50 位时被拒。这类改动不会报错，只会让一个边界值莫名其妙登不上去。
 
-**这两个函数不是死代码**：`register`（`api_auth.py:49–53`）逐个调用它们，
+**这两个函数不是死代码**：`register`（`api_auth.py:61-69`）逐个调用它们，
 且 `validate_password` 的返回值**直接进 400 响应体**（`raise HTTPException(detail=err)`）。
 文案一旦变了就是对外可见的 API 变更 —— 钉住它不是洁癖。
 
@@ -304,14 +341,14 @@ def test_login_does_not_leak_which_field_was_wrong(client):
 
 | 函数 | 路由 | 行 | 规模 |
 |---|---|---:|---:|
-| `_generate_order_no` | — | 31 | 3 行 |
-| `create_checkout_session` | `POST /api/payment/create-checkout` | 39 | **54 行** |
-| `stripe_webhook` | `POST /api/payment/webhook` | 102 | **32 行** |
-| `list_orders` | `GET /api/payment/orders` | 140 | 5 行 |
+| `_generate_order_no` | — | 31 | 数行 |
+| `create_checkout_session` | `POST /api/payment/create-checkout` | 40 | 数十行 |
+| `stripe_webhook` | `POST /api/payment/webhook` | 103 | 数十行 |
+| `list_orders` | `GET /api/payment/orders` | 141 | 数行 |
 
-配套的 `database.py` 也全未测：`create_order`(874)、`update_order_stripe_session`(883)、**`complete_order`(891, 48 行)**、`get_user_orders`(942)。
+配套的 `database.py` 也全未测：`create_order`(2035)、`update_order_stripe_session`(2044)、**`complete_order`(2052)**、`get_user_orders`(2103)。
 
-**为什么是 P1 不是「直接删」**：`frontend/src/config/features.js` 明确写着「不做会员制，但后端 VIP 判定与 Stripe 支付代码**保留不删**」，而 `App.vue:341` 仍在调 `create_checkout_session`。**它是活的、但零测试的。**
+**为什么是 P1 不是「直接删」**：`frontend/src/config/features.js` 明确写着「不做会员制，但后端 VIP 判定与 Stripe 支付代码**保留不删**」，而 `App.vue:643` 仍在调 `createCheckoutSession('monthly')`。**它是活的、但零测试的。**
 
 这里测试的价值不在于「测得好」，而在于**钉住它当前的行为**。`stripe_webhook`（32 行，处理外部回调）尤其需要最少限度的一条：**签名校验失败必须拒绝**。
 
@@ -346,47 +383,53 @@ def test_replayed_webhook_does_not_extend_membership_twice(...):
 重复回调测试就会转红。**这类「幂等」断言必须断在效果上**——断调用次数的话，
 把 `complete_order` 换成恒返回 None 也能全绿。
 
-### 5.4 P1 —— 历史读出口未测
+### 5.4 ~~P1 —— 历史读出口未测~~（已消解）
 
-`api_history.py` 3 个函数从未执行：`list_history`(30)、`save_history`(36)、`remove_history`(102)。
+⚠️ **本节曾经写着「`api_history.py` 3 个函数从未执行」，那句话已经不成立。** 当时 `backend/tests/` 下确实没有任何测试打 `/api/history`；现在 `test_history_search_favorites.py` 里有 40+ 处打这个前缀，覆盖了列表、收藏切换、facets、删除等路径。
 
-与 3.3 呼应 —— 工单 #8 的教训正是「**新表的读出口按『谁在读』枚举，不要按『数据在哪张表』枚举**」。这三个函数就是历史相关的读出口，目前无测试。
+| 函数 | 路由 | 行 | 现状 |
+|---|---|---:|---|
+| `list_history` | `GET /api/history` | 38 | ✅ 被 `test_history_search_favorites.py` 大量走到 |
+| `save_history` | `POST /api/history/save` | 55 | ✅ 同上 |
+| `remove_history` | `DELETE /api/history/{id}` | 130 | ✅ 同上 |
+
+3.3 的纪律仍然成立、而且正因为补上了才值得记住：**新表的读出口按「谁在读」枚举，不要按「数据在哪张表」枚举。** 补测试时每个写入者都要有一条**不依赖旧表任何行**的读路径。
 
 ### 5.5 P2 —— C 档：真网 I/O 换测法
 
-`douyin.py`（16 函数全未执行）、`downloader.py`（7）、`summarizer.py`（13）合计 46 个函数。**不要为它们追覆盖率。**
+`douyin.py`、`downloader.py`、`summarizer.py` 三个模块的 I/O 部分**不要追覆盖率**（函数条数以实际采集为准）。
 
 正确做法是对**我方契约**建 fixture 测试：
 
 | 目标 | 测什么 |
 |---|---|
-| `douyin.is_douyin_url` | URL 识别纯函数，值得测（7 行） |
-| `douyin._decode_b64` | b64 解码纯函数（9 行） |
-| `douyin._fmt_duration` | 时长格式化（4 行） |
-| `DouyinParser._extract_video_id` | 从分享链接抽 ID 的规则（21 行） |
-| `douyin._build_result` | 字段映射契约（45 行，最值得） |
-| `summarizer._parse_vtt` | VTT 解析（36 行） |
-| `summarizer.clean_mindmap_markdown` | 思维导图清洗（32 行，**当前零测试**） |
-| `summarizer._time_to_seconds` | 时间解析（7 行） |
+| `douyin.is_douyin_url` | URL 识别纯函数 |
+| `douyin._decode_b64` | b64 解码纯函数 |
+| `douyin._fmt_duration` | 时长格式化 |
+| `DouyinParser._extract_video_id` | 从分享链接抽 ID 的规则 |
+| `douyin._build_result` | 字段映射契约，**最值得** |
+| `summarizer._parse_vtt` | VTT 解析 |
+| `summarizer.clean_mindmap_markdown` | 思维导图清洗，**值得优先** |
+| `summarizer._time_to_seconds` | 时间解析 |
 
 判据很简单：**这个函数的输入输出是确定的吗？** 是 → 用 fixture 测。否（真网、真 WAF 对抗、真模型流）→ 只测它在失败时怎么归类错误。
 
-`clean_mindmap_markdown` 特别值得优先：它是**纯函数**（32 行正则处理），却零测试，而且它的输出直接决定前端 markmap 能不能渲染 —— 错了是「思维导图空白」，用户看不出原因。
+`clean_mindmap_markdown` 特别值得优先：它是**纯函数**，而且它的输出直接决定前端 markmap 能不能渲染 —— 错了是「思维导图空白」，用户看不出原因。
 
 ### 5.6 P3 —— 部分执行的高价值函数
 
-按「值不值得补」排序（非按覆盖率排序）：
+按「值不值得补」排序（非按覆盖率排序）。**「命中/范围」两列来自一次历史采集，只用于看量级，不作判据**——要当前值得重新采集（见文末）。
 
-| 函数 | 命中/范围 | 判断 |
-|---|---|---|
-| `database.publish_video_card` | 8/37 | 值得。卡片「先到先得」语义（ADR 0006）复杂 |
-| `database.search_community_videos` | 21/47 | 值得，搜索是核心功能 |
-| `database.reserve_video` | 22/47 | 值得，并发语义的承重墙 |
-| `tags.validate_tags` | 10/25 | 值得，词表校验是 ADR 0005 |
-| `database._migrate_video_card_columns` | 4/21 | 值得，迁移代码出错不可逆 |
-| `summarizer._build_full_prompt` | 7/48 | 追覆盖率无意义（分母虚高），改为断言**关键约束**：字幕不外传、去重逻辑 |
-| `database.quota_limit` | 1/9 | 同上，改表驱动行为测试 |
-| `database._fts_phrase` | 1/13 | 值得，FTS 短语转义，错了会 SQL 注入或搜不到 |
+| 函数 | 判断 |
+|---|---|
+| `database.publish_video_card` | 值得。卡片「先到先得」语义（ADR 0006）复杂 |
+| `database.search_community_videos` | 值得，搜索是核心功能 |
+| `database.reserve_video` | 值得，并发语义的承重墙 |
+| `tags.validate_tags` | 值得，词表校验是 ADR 0005 |
+| `database._migrate_video_card_columns` | 值得，迁移代码出错不可逆 |
+| `summarizer._build_full_prompt` | 追覆盖率无意义（分母虚高），改为断言**关键约束**：字幕不外传、去重逻辑 |
+| `database.quota_limit` | 同上，改表驱动行为测试 |
+| `database._fts_phrase` | 值得，FTS 短语转义，错了会 SQL 注入或搜不到 |
 
 ---
 
@@ -431,27 +474,21 @@ if ran == 0:
 - **不为 C 档 I/O 追覆盖率。**
 - **不测 `__init__`、纯转发、框架胶水。**
 - **不把变异装置并入门禁**（当前是人工按需运行，这是有意的）。若要自动化，需要独立的 nightly job，不能塞进 PR 门禁 —— 变异运行慢，且会改写生产源码，与并行开发冲突。
-- **不新增覆盖率工具依赖**。当前用 `sys.settrace` 零依赖收集，是为了让盘点不污染 `requirements.txt`。
+- **不把覆盖率数字写进文档**。写死一次就过期一次，而没有任何东西会报警；覆盖率是采集产物，不是文档内容。
 
 ---
 
-## 如何复现本文数据
+## 本文数据怎么重新采
 
 ```bash
-# 1. 基线（唯一门禁入口）
-& 'C:\Program Files\Git\bin\bash.exe' ./init.sh     # 期望：373 passed / 91 pass / 退出 0
-
-# 2. 用例盘点
-backend\venv\Scripts\python.exe .scratch\test_inventory.py
-
-# 3. 行覆盖收集（零依赖，产物 .scratch/lines.json）
-backend\venv\Scripts\python.exe .scratch\cov_plugin.py
-
-# 4. 覆盖报告（分模块 + 从未执行的函数）
-$env:PYTHONIOENCODING='utf-8'
-backend\venv\Scripts\python.exe .scratch\cov_report.py
+# 唯一门禁入口。退出 0 才算通过，输出里带各关的用例摘要。
+& 'C:\Program Files\Git\bin\bash.exe' ./init.sh
 ```
 
-⚠️ 第 3 步会**就地改写生产代码**（变异/trace 装置），必须独占工作树，不要与其它进程并行跑。
+**行覆盖率目前无法用仓库内的脚本复现。** 本文历史上引用过三个采集脚本（用例盘点、行覆盖收集、覆盖报告），它们都放在 `.scratch/` 下、**从未被跟踪**，现在已经不在仓库里了。`.scratch/` 现有内容只有 `gate*.log`、`issue*.md` 与 `verify/`。
 
-**若要更准的覆盖率，装 `pytest-cov` 重新测。** 本仓的自制收集器分母口径见第 0.2 节。
+所以：
+
+- 要**门禁口径**的现状，跑上面的 `init.sh` 看输出。
+- 要**覆盖率**，装 `pytest-cov` 自己跑一次；本仓历史上那套自制收集器的分母口径见第 0.2 节（它把多行字符串字面量的物理行算进了分母，与 `pytest-cov` 不可直接比较）。
+- 别把本文任何百分比当成当前值。

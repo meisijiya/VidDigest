@@ -53,7 +53,7 @@ async def list_history(q: str = "", tag: str = "", favorite: bool = False,
 
 @router.post("/save")
 async def save_history(req: SaveHistoryRequest, user: dict = Depends(get_current_user)):
-    """保存/更新解析历史（同一视频去重，每用户滚动保留 30 条）"""
+    """保存/更新解析历史（同一视频去重，每用户滚动保留 1000 条）"""
     history_id = upsert_parse_history(
         user_id=user["id"],
         video_url=req.url,
