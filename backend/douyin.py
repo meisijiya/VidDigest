@@ -17,6 +17,8 @@ from urllib.parse import urlparse, parse_qs
 
 import requests
 
+from formats import make_format
+
 logger = logging.getLogger("douyin")
 
 DEFAULT_HEADERS = {
@@ -341,22 +343,18 @@ class DouyinParser:
             # 要真的用直链下载，那是产品决定：得先有读出口，而不是先有字段。
             width = video_info.get("width", 0)
             height = video_info.get("height", 0)
-            formats.append({
-                "format_id": VIDEO_FORMAT_ID,
-                "ext": "mp4",
-                "resolution": f"{width}x{height}" if width and height else "原始",
-                "height": height or 720,
-                "width": width or 0,
-                "filesize": None,
-                "filesize_approx": None,
-                "vcodec": "h264",
-                "acodec": "aac",
-                "abr": None,
-                "has_video": True,
-                "has_audio": True,
-                "kind": "video",
-                "label": f"无水印 MP4 ({height}p)" if height else "无水印 MP4 (原始画质)",
-            })
+            formats.append(make_format(
+                format_id=VIDEO_FORMAT_ID,
+                ext="mp4",
+                resolution=f"{width}x{height}" if width and height else "原始",
+                height=height or 720,
+                width=width or 0,
+                vcodec="h264",
+                acodec="aac",
+                has_video=True,
+                has_audio=True,
+                label=f"无水印 MP4 ({height}p)" if height else "无水印 MP4 (原始画质)",
+            ))
 
         # 音频选项。_get_media_url 早就支持 mode="audio"（出 .mp3），
         # 但之前无人调用它，也没在这里公布过 —— 能力写好了却不可达。
@@ -364,22 +362,14 @@ class DouyinParser:
         # 请求换一个大小数字，不值得。界面上就显示「未知大小」。
         music_urls = item_info.get("music", {}).get("play_url", {}).get("url_list", [])
         if music_urls:
-            formats.append({
-                "format_id": AUDIO_FORMAT_ID,
-                "ext": "mp3",
-                "resolution": "",
-                "height": 0,
-                "width": 0,
-                "filesize": None,
-                "filesize_approx": None,
-                "vcodec": None,
-                "acodec": "mp3",
-                "abr": None,
-                "has_video": False,
-                "has_audio": True,
-                "kind": "audio",
-                "label": "纯音频 MP3 (只下音频, 未知大小)",
-            })
+            formats.append(make_format(
+                format_id=AUDIO_FORMAT_ID,
+                ext="mp3",
+                acodec="mp3",
+                has_audio=True,
+                kind="audio",
+                label="纯音频 MP3 (只下音频, 未知大小)",
+            ))
 
         return {
             "id": video_id,

@@ -5,6 +5,7 @@ from typing import Optional
 
 import yt_dlp
 
+from formats import make_format
 from url_canonical import url_for_ytdlp
 
 def _find_ffmpeg_path() -> Optional[str]:
@@ -140,23 +141,18 @@ class VideoDownloader:
                     continue
                 audio_seen.add(key)
                 bitrate = f"{int(abr)}kbps" if abr else "未知码率"
-                audios.append({
-                    "format_id": f.get("format_id", ""),
-                    "ext": ext,
-                    "resolution": "",
-                    "height": 0,
-                    "width": 0,
-                    "filesize": filesize,
-                    "filesize_approx": filesize,
-                    "vcodec": None,
-                    "acodec": acodec,
-                    "abr": int(abr) if abr else None,
-                    "has_video": False,
-                    "has_audio": True,
-                    "kind": "audio",
-                    "label": f"{bitrate} {ext.upper()} (仅音频, "
-                             f"{self._format_filesize(filesize)})",
-                })
+                audios.append(make_format(
+                    format_id=f.get("format_id", ""),
+                    ext=ext,
+                    filesize=filesize,
+                    filesize_approx=filesize,
+                    acodec=acodec,
+                    abr=int(abr) if abr else None,
+                    has_audio=True,
+                    kind="audio",
+                    label=f"{bitrate} {ext.upper()} (仅音频, "
+                          f"{self._format_filesize(filesize)})",
+                ))
                 continue
 
             if not has_video:
@@ -177,22 +173,21 @@ class VideoDownloader:
                 continue
             seen.add(key)
 
-            videos.append({
-                "format_id": f.get("format_id", ""),
-                "ext": ext,
-                "resolution": resolution,
-                "height": height or 0,
-                "width": f.get("width") or 0,
-                "filesize": filesize,
-                "filesize_approx": filesize,
-                "vcodec": vcodec,
-                "acodec": acodec,
-                "abr": None,
-                "has_video": True,
-                "has_audio": has_audio,
-                "kind": "video",
-                "label": label,
-            })
+            videos.append(make_format(
+                format_id=f.get("format_id", ""),
+                ext=ext,
+                resolution=resolution,
+                height=height or 0,
+                width=f.get("width") or 0,
+                filesize=filesize,
+                filesize_approx=filesize,
+                vcodec=vcodec,
+                acodec=acodec,
+                has_video=True,
+                has_audio=has_audio,
+                kind="video",
+                label=label,
+            ))
 
         videos.sort(key=lambda x: x["height"], reverse=True)
         # 码率高的排前面；码率缺失（0）沉底，而不是排到最前面当默认项。
@@ -203,13 +198,13 @@ class VideoDownloader:
         # 如果所有视频格式都没有音频，添加一个合并格式选项
         if videos and not any(r["has_audio"] for r in videos):
             best_video = videos[0]
-            merged = {
+            merged = make_format(**{
                 **best_video,
                 "format_id": "bestvideo+bestaudio/best",
                 "label": f"{best_video['height']}p 最佳 (视频+音频合并)",
                 "has_audio": True,
                 "acodec": "merged",
-            }
+            })
             results.append(merged)
 
         # 上限是 15，但**先给音频留位置**。直接 videos[:15] 再往后拼音频，

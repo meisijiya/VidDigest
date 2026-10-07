@@ -1,44 +1,37 @@
-r"""视频 format 字典的**结构守卫**（工单 #43）。
+r"""视频 format 字典的**结构守卫 · 收口后形态**（工单 #43 建立，#44 改写）。
 
 背景
 ----
-顺着工单 #37（`extract()` 的 7 键形状收口）重问同一族的问法：format 字典
-有没有单一出处？答案是没有——**四处字面量各写一遍**，而且**已经出现过一次
-形状不一致**：`douyin.py:340` 的抖音视频那一处比另外三处多一个 `_direct_url`。
+这个字典原先在四处各写一遍 14 行的字面量。#43 先给它加了守卫并顺手删掉
+唯一一处形状差异（`_direct_url`，写 1 处读 0 处）。#44 用那个守卫当安全网
+做了收口，于是**四条构造点变成一处定义 + 四次调用**。
 
-    douyin.py:340    15 键   ← 多一个 _direct_url（写 1 处、读 0 处、测 0 处）
-    douyin.py:364    14 键
-    downloader.py:143 14 键
-    downloader.py:180 14 键
-    downloader.py:206 14 键   ← `{**best_video, ...}`，展开已有字典，不是独立构造
+守卫随之换形态
+--------------
+收口前它断的是「**所有**字面量构造点的键集合相同」——那条判据在只有一处
+定义之后**恒真**，留着等于不设防。所以改成断「**不该再有第二处定义**」：
 
-`_direct_url` 是抖音下载看起来「应该有直链」时留下的残留字段：实际下载走
-`main.py:141-150` 的 mode 分发（`AUDIO_FORMAT_ID` → audio，否则 video），
-从没用过它。所以它不是「漏掉的出口」，是没人读的字段——**而它恰好是那唯一
-一处形状差异的来源**。
+1. 不许再有含 `format_id` 的字面量字典（有人手写回去就红）。
+2. `make_format(` 的调用点**恰好 4 处**——少一处 = 那个平台的格式选项消失。
+3. `make_format()` 返回的键集合**恰好等于**收口前钉住的那 14 个。
+4. `UI_READ_KEYS` ⊆ `make_format()` 的键集（界面与后端的契约）。
+5. 输出里不许有下划线开头的键（`_direct_url` 的直接教训）。
 
-**当前没有用户可见症状**，这一点写在前面：界面只读的 6 个键在四处构造里
-都在。这份守卫守的不是「现在坏了」，是**下一次有人只改其中一处**——
-症状会是某个平台上某几个字段渲染成 `undefined` 而界面不报错。
+⚠️ **第 1 条与第 2 条必须都断**，只断一条会漏：
+   只断「无字面量」→ 有人把某处整个删掉，守卫全绿而那个平台的选项消失；
+   只断「4 处调用」→ 有人把其中一处改回字面量，数字对上了而形状又分叉。
 
-判据
-----
-1. **形状全等**：所有含 `format_id` 的字面量字典构造点，键集合完全相同。
-2. **契约守卫**：`UI_READ_KEYS` 是**手写常量**，不由扫描结果派生。
-   每一处构造都必须包含它——界面少读一个键时，界面只是少显示一样东西。
-3. **派生点只能覆盖已有键**：`{**base, ...}` 那处不得引入新键名。
-   它引入的键基类没有，基类那一支的平台就会缺字段。
-
-为什么 `UI_READ_KEYS` 必须手写
---------------------------
-派生则判据恒为真：从构造点扫出来的键集当「界面读什么」，那么
-「构造点包含构造点」永远成立，一条也拦不住。真实的读出口在
-`frontend/src/components/VideoResult.vue`（`format_id` / `kind` / `label` /
-`resolution` / `abr` / `ext`）——那是**另一个语言**，Python 侧观察不到，
-所以这里手写并在前端侧另有一条断言。
+**为什么 `UI_READ_KEYS` 必须手写**
+------------------------------
+派生则判据恒为真：从 `make_format()` 的键集扫出来的「界面读什么」，那么
+「构造包含构造」永远成立，一条也拦不住。真实读出口在
+`frontend/src/components/VideoResult.vue`——**另一个语言**，Python 侧
+观察不到，所以这里手写。
 """
 import ast
 from pathlib import Path
+
+import formats
 
 BACKEND = Path(__file__).resolve().parent.parent
 
@@ -53,139 +46,171 @@ UI_READ_KEYS = frozenset({
     "ext",         # 音频标题的兜底
 })
 
-#: 构造 format 字典的两个模块。别把扫描扩到全 backend：
-#: `api_*.py` 里那些是**别的**字典，`model_catalog.py` 里那批是模型条目。
+#: 收口前 #43 在四处构造点实测到的键集合。它是这次收口的**验收基线**：
+#: 收口是纯重构，这 14 个键一个不多一个不少。
+EXPECTED_KEYS = frozenset({
+    "format_id", "ext", "resolution", "height", "width",
+    "filesize", "filesize_approx", "vcodec", "acodec", "abr",
+    "has_video", "has_audio", "kind", "label",
+})
+
+#: 构造 format 的两个模块。别把扫描扩到全 backend。
 SOURCES = ("douyin.py", "downloader.py")
 
 
-def _dict_sites(tree):
-    """把 AST 里所有字面量 dict 分成两类。
+def _literal_format_sites(tree):
+    """含 ``format_id`` 的**字面量** dict（含 ``**`` 展开的那种）。
 
-    返回 ``(构造点, 派生点)``：
-
-    - 构造点：全部键都是字符串常量。没有 ``**`` 解包。
-    - 派生点：含 ``**something`` 解包（键位是 ``None``）。它**继承**基类形状，
-      自己只覆盖列出的那几个键——所以不能当独立构造点计数，
-      但它覆盖的键必须是基类已有的，否则基类那一支的平台会缺字段。
+    收口之后这里应当是空的。它不为空 = 有人绕过 ``make_format`` 手写了。
     """
-    built, derived = [], []
+    out = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Dict):
             continue
-        explicit, unpacked = [], False
-        for k, v in zip(node.keys, node.values):
-            if k is None:                      # **base
-                unpacked = True
-                continue
-            if isinstance(k, ast.Constant) and isinstance(k.value, str):
-                explicit.append(k.value)
-            else:
-                explicit = None
-                break
-        if explicit is None:
-            continue
-        if "format_id" not in explicit:
-            continue
-        (derived if unpacked else built).append(
-            (node.lineno, frozenset(explicit)))
-    return built, derived
+        keys = [k.value for k in node.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+        if "format_id" in keys:
+            out.append((node.lineno, frozenset(keys)))
+    return out
 
 
-def _collect():
-    built, derived = [], []
-    for name in SOURCES:
-        path = BACKEND / name
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        b, d = _dict_sites(tree)
-        built += [(name, ln, keys) for ln, keys in b]
-        derived += [(name, ln, keys) for ln, keys in d]
-    return built, derived
+def _make_format_calls(tree):
+    """``make_format(...)`` 的调用点行号。"""
+    return sorted(n.lineno for n in ast.walk(tree)
+                  if isinstance(n, ast.Call)
+                  and isinstance(n.func, ast.Name)
+                  and n.func.id == "make_format")
 
 
-BUILT, DERIVED = _collect()
+def _make_format_call_nodes(tree):
+    """``make_format(...)`` 的调用节点。"""
+    return [n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "make_format"]
 
 
-def test_we_actually_found_the_construction_sites():
-    """夹具层自检：扫不到东西时，下面全部断言都会**恒真**。
+LITERAL_SITES = []
+CALL_SITES = []
+for _name in SOURCES:
+    _src = (BACKEND / _name).read_text(encoding="utf-8")
+    _tree = ast.parse(_src)
+    # `make_format(**{...})` 里那个 dict 是**合法的**覆盖集，不是绕过。
+    # 它在 AST 里仍是 ast.Dict，直接扫会把它误判成「手写了一份」。
+    # 所以先把这类 dict 的节点 id 收起来，排除掉。
+    _inside = set()
+    for _call in _make_format_call_nodes(_tree):
+        # `**{...}` 在 AST 里是 **keyword（arg=None）** 的值，不是位置参数。
+        # 只扫 args 会漏掉它，于是把合法的覆盖集误判成「手写了一份」。
+        for _arg in list(_call.args) + [k.value for k in _call.keywords
+                                        if k.arg is None]:
+            if isinstance(_arg, ast.Dict):
+                _inside.add(id(_arg))
+    for node in ast.walk(_tree):
+        if isinstance(node, ast.Dict) and id(node) not in _inside:
+            keys = [k.value for k in node.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+            if "format_id" in keys:
+                LITERAL_SITES.append((_name, node.lineno))
+    CALL_SITES += [(_name, n.lineno) for n in _make_format_call_nodes(_tree)]
 
-    这不是形式主义——工单 #38 的第一版探针就因为只扫 `For`/`Assign`
-    而漏掉了 pydantic 字段声明与 `return {...}`，扫出来的「无违规」
-    什么也没说。所以先把「扫到了几个」钉住。
+
+def test_no_bypasses_make_format():
+    """① 收口之后，**不许再有**含 `format_id` 的字面量字典。
+
+    与 ② 一起断才有意义：只断这一条，「有人把某处整个删掉」是绿的。
     """
-    assert len(BUILT) == 4, (
-        f"应当扫到 4 处 format 构造点，实得 {len(BUILT)}："
-        f"{[(f, ln) for f, ln, _ in BUILT]}。"
-        "扫不到 = 下面所有断言恒真 = 守卫失效。"
-        "若确实改了构造点数量，同步更新这里**并说明为什么**")
-    assert len(DERIVED) == 1, (
-        f"应当扫到 1 处 `{{**base}}` 派生点，实得 {len(DERIVED)}："
-        f"{[(f, ln) for f, ln, _ in DERIVED]}")
+    assert not LITERAL_SITES, (
+        f"这些地方绕过 make_format 手写了 format 字面量字典：{LITERAL_SITES}。"
+        "键集合在单一出处（formats.FORMAT_DEFAULTS）里定义才是一处；"
+        "手写回去等于把工单 #44 收掉的东西又放回来。")
 
 
-def test_all_construction_sites_have_the_same_keys():
-    """核心判据：形状全等。多一个键 = 某个平台会多一个字段，少一个 = 少一个。"""
-    shapes = {}
-    for name, ln, keys in BUILT:
-        shapes.setdefault(keys, []).append(f"{name}:{ln}")
-    assert len(shapes) == 1, (
-        "format 字典的键集合在各构造点之间**不一致**：\n"
-        + "\n".join(f"  {len(k):2d} 键 @ {', '.join(v)} -> {sorted(k)}"
-                    for k, v in shapes.items())
-        + "\n\n症状：只在某一条解析路径上出现的字段，前端读到 undefined "
-          "而界面不报错。")
-    (the_one,) = shapes
-    return the_one
+def test_all_four_call_sites_are_still_there():
+    """② 恰好 5 处调用：4 处原始构造 + 1 处「视频+音频合并」的派生。
+
+    「扫不到」和「扫到 6 处」同样是坏消息：少一处 = 那个平台的格式选项消失，
+    多一处 = 有人在别处也造了一份，两边会漂。
+    """
+    assert len(CALL_SITES) == 5, (
+        f"应当恰好 5 处 make_format( 调用，实得 {len(CALL_SITES)}：{CALL_SITES}。"
+        "四处原始构造是 yt-dlp 音频 / yt-dlp 视频 / 抖音视频 / 抖音音频，"
+        "第五处是「所有视频格式都没音频时」的合并项（它展开 videos[0]，"
+        "所以也走 make_format）。")
 
 
-def test_every_construction_site_carries_the_keys_the_ui_reads():
-    """契约守卫：界面读的那 6 个键，每一处都要有。"""
-    missing = {}
-    for name, ln, keys in BUILT:
-        gap = sorted(UI_READ_KEYS - keys)
-        if gap:
-            missing[f"{name}:{ln}"] = gap
+def test_key_set_matches_what_was_measured_before_the_refactor():
+    """③ 收口是纯重构：键集合一个不多一个不少。"""
+    got = frozenset(formats.make_format())
+    assert got == EXPECTED_KEYS, (
+        f"make_format() 的键集合与收口前的实测不一致。\n"
+        f"  多了：{sorted(got - EXPECTED_KEYS)}\n"
+        f"  少了：{sorted(EXPECTED_KEYS - got)}\n"
+        "收口本该是行为无关的重构——键一变就不是了。")
+
+
+def test_every_call_site_only_uses_known_keys():
+    """④ 每个调用点的关键字都必须在 FORMAT_DEFAULTS 里。
+
+    这一条同时覆盖「拼错的键名」：写错一个键，`make_format` 当场抛错，
+    而守卫会告诉你它是在哪一处抛的。
+    """
+    for _name, _ln in CALL_SITES:
+        _tree = ast.parse((BACKEND / _name).read_text(encoding="utf-8"))
+        for node in ast.walk(_tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "make_format"
+                    and node.lineno == _ln):
+                # `**x` 这种解包的 keyword.arg 是 None，不是键名。
+                # 合并项走的就是这条路，不滤掉会被当成「未知键」。
+                used = {k.arg for k in node.keywords if k.arg is not None}
+                spreads = [k for k in node.keywords if k.arg is None]
+                assert used <= set(formats.FORMAT_DEFAULTS), (
+                    f"{_name}:{_ln} 传了未知键 {sorted(used - set(formats.FORMAT_DEFAULTS))}；"
+                    "未知的键会在运行时抛错而不是被忽略")
+                assert len(spreads) <= 1, (
+                    f"{_name}:{_ln} 用了 {len(spreads)} 个 ** 展开，只该有一个")
+                assert node.args == [], (
+                    f"{_name}:{_ln} 用了位置参数 —— 键名只能写字面量，"
+                    "位置参数会让「这个键叫什么」不可读")
+
+
+def test_ui_read_keys_are_all_produced():
+    """⑤ 界面读的 6 个键，每一个都必须由 make_format 产出。"""
+    missing = sorted(UI_READ_KEYS - set(formats.make_format()))
     assert not missing, (
-        "这些构造点缺少界面要读的键："
-        f"{missing}。\n症状：`VideoResult.vue` 读到 undefined，界面不报错——"
+        f"make_format() 不产出界面要读的键 {missing}。"
+        "`VideoResult.vue` 读到 undefined，界面不报错——"
         "而这正是「按数据在哪张表枚举」会漏掉的那一半。")
 
 
-def test_derived_site_only_overrides_existing_keys():
-    """`{**base, ...}` 不得引入基类没有的键。
+def test_unknown_key_raises_instead_of_adding_a_field():
+    """⑥ 未知键抛错，不是静默新增。
 
-    它引入的键，基类那一支的平台就会缺——而基类那一支通常才是被测得最多的。
+    收口的**真正收益**在这里：原先写错一个键名，字典里就多出一个
+    没有任何人读的字段，而所有形状检查都还绿。
     """
-    base_shapes = {keys for _, _, keys in BUILT}
-    for name, ln, keys in DERIVED:
-        for shape in base_shapes:
-            novel = sorted(keys - shape)
-            assert not novel, (
-                f"{name}:{ln} 用 `{{**base}}` 引入了基类没有的键 {novel}，"
-                f"而基类的键集是 {sorted(shape)}。"
-                "派生点只该覆盖，不该新增。")
+    try:
+        formats.make_format(filesize_apporx=1)
+    except KeyError:
+        return
+    raise AssertionError(
+        "make_format(filesize_apporx=1) 没有抛错 —— "
+        "打错的键名被静默塞进了字典，成了一个没人读的字段")
 
 
 def test_no_private_looking_key_crosses_the_wire():
-    """带下划线前缀的键不该出现在要发给前端的 format 里。
+    """⑦ 下划线开头的键不该出现在要发给前端的 format 里。
 
-    这条是 `_direct_url` 的直接后果：它以前就长这样，靠一次人工审查删掉不算
-    守卫——**下次有人再写一个 `_` 开头的键，必须有一条东西拦他**。
-    私有约定靠前缀表达是廉价的，但前缀不会自己拦人。
+    这条是 `_direct_url` 的直接教训：私有约定靠前缀表达是廉价的，
+    但前缀不会自己拦人。
     """
-    for name, ln, keys in BUILT + DERIVED:
-        private = sorted(k for k in keys if k.startswith("_"))
-        assert not private, (
-            f"{name}:{ln} 的 format 字典里有以下划线开头的键 {private}。"
-            "下划线是在说「这是内部字段」，而这个字典是要整个发给前端的 —— "
-            "约定靠前缀表达是廉价的，但前缀不会自己拦人。")
+    private = sorted(k for k in formats.make_format() if k.startswith("_"))
+    assert not private, f"make_format() 的默认键里有以下划线开头的 {private}"
 
 
 def test_ui_read_keys_are_written_down_here_not_derived():
-    """反查表：断言里那份手写清单不是空的、也不是从构造点扫出来的。
-
-    防的是「有人图省事，把 UI_READ_KEYS 改成从 BUILT 派生」——
-    那样「构造点包含 UI_READ_KEYS」永远成立，一条也拦不住。
-    """
+    """⑧ 反查表：那份手写清单不许被改成从 make_format 派生。"""
     assert UI_READ_KEYS == frozenset({
         "format_id", "kind", "label", "resolution", "abr", "ext",
     }), (
