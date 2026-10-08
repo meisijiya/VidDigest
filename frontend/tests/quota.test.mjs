@@ -14,6 +14,22 @@ import { readFileSync } from 'node:fs'
 
 import { describeQuota, quotaBadgeClass } from '../src/lib/quota.js'
 
+// ⚠️ **顶层 eager 读**，不是 describe 体里（工单 #49）。
+//
+// 实测：放在 `describe('VideoSummary 组件接线', …)` 的第一行时，
+// 把 VideoSummary.vue 改名 → 那 3 条用例**一条都没注册**（19 → 16），
+// 而 `node --test` 的退出码**仍是 0** —— 门禁只读退出码，这个回归完全看不见。
+//
+// 原因：node 对 **describe 体里抛出的异常**给出的退出码是 0。
+// 模块顶层抛则会让整个文件加载失败（退出码 1），响得多。
+//
+// 工单 #19 修过 community-tags / theme / ui-fixes 三处同款，这处当时漏了。
+// 归一化行尾：仓库已统一为 LF，这一步只是防止将来混入 CRLF 时切函数体切空。
+const videoSummarySource = readFileSync(
+  new URL('../src/components/VideoSummary.vue', import.meta.url),
+  'utf8',
+).replace(/\r\n/g, '\n')
+
 describe('describeQuota', () => {
   test('未登录时不显示任何数字', () => {
     const text = describeQuota({ logged_in: false })
@@ -193,15 +209,17 @@ describe('quotaBadgeClass', () => {
  *
  * 这里只做源码层面的存在性检查——它证明不了渲染结果，
  * 但能挡住「有人把某条流的 onQuota 摘掉 / 把 parse、chat 丢了」这类
- * 最常见的接线回归。真正的渲染验证需要挂载环境，超出本仓库
- * 「node --test 零额外依赖」的约定。
+ * 最常见的接线回归。真正的渲染验证需要挂载环境 —— 那个环境**已经有了**
+ * （工单 #18 建的 vitest + jsdom + @vue/test-utils，走 `npm run test:mount`），
+ * 本条仍留在文本断言是因为它守的是「applyQuotaEvent 的函数体里必须逐字出现
+ * parse / chat 这两个键」，挂载后看不到函数体，断言会退化成
+ * 「界面上没出现 parse」——而模板写了只是没渲染到，恰恰是要抓的回归。
+ * 详见 TESTING-STRATEGY §3.5：判据按「这条用例断言的对象」分，不按文件类型分。
  */
 describe('VideoSummary 组件接线', () => {
-  // 归一化行尾符：本仓库是 CRLF，直接按 \n 切函数体会切空。
-  const source = readFileSync(
-    new URL('../src/components/VideoSummary.vue', import.meta.url),
-    'utf8',
-  ).replace(/\r\n/g, '\n')
+  // 源码在**模块顶层**已读进 videoSummarySource —— 这里不再读。
+  // 放在 describe 体里的话，改名 .vue 会让整个 suite 静默消失而退出码仍是 0。
+  const source = videoSummarySource
 
   test('applyQuotaEvent 原样保留事件的 parse 与 chat', () => {
     const start = source.indexOf('function applyQuotaEvent(d)')
