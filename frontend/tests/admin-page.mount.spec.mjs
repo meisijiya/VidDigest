@@ -1136,7 +1136,7 @@ describe('模型清单 · 改一行', () => {
 
   it('反向对照：正常行**要**发 models / defaultModel', async () => {
     // 少了这一条，上一条可能是因为「保存整个坏了」而绿——
-    // 那是 AGENTS.md 记过的「什么都没发生」那一族。
+    // 那是 `docs/TESTING-STRATEGY.md` §6.6 说的「什么都没发生」那一族。
     api.updateAdminModel.mockResolvedValue({ item: modelRow(), platformDefault: null })
     const w = await mountAdmin(AdminPage)
     await gotoModels(w)

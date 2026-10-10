@@ -10,7 +10,7 @@
  *  3. **API 层契约**。`deleteHistory` 把 409 翻译成 `refused` 而不是抛异常，
  *     这一条错了界面就会显示「删除失败」，而记录其实好好地还在。
  *
- * ⚠️ 本仓已知坑（AGENTS.md）：`describe` 体里跑会抛异常的东西是隐形的 ——
+ * ⚠️ 本仓已知坑（`docs/TESTING-STRATEGY.md` §3.5 纪律 2）：`describe` 体里跑会抛异常的东西是隐形的 ——
  * node 对 describe 体抛异常给退出码 0 且报 fail 0，那个 suite 的测试一条都
  * 没注册。所以下面所有取值都是惰性的，进了 test() 体内才执行。
  */

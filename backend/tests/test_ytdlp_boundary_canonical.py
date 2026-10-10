@@ -153,7 +153,8 @@ class TestUnrecognizedHostIsUntouched:
             "https://xhslink.com/a/abcdefg",
             # 小红书主页不是笔记，别改写用户的地址。
             "https://www.xiaohongshu.com/user/profile/abc",
-            # 爱奇艺的 .html 有实测理由保留（AGENTS.md），别当脏参数抹掉。
+            # 爱奇艺的 .html 有实测理由保留（见 test_url_canonical.py 的
+            # test_iqiyi_keeps_its_html_suffix），别当脏参数抹掉。
             "https://www.iqiyi.com/v_19rr7depsw.html",
             # 笔记路径后面还挂着东西：不是一条笔记，别把尾巴吃掉。
             # 这条守的是 `_XIAOHONGSHU_NOTE` 的 `$` 锚点——漏了它，

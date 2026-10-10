@@ -48,8 +48,9 @@ const { ls } = vi.hoisted(() => {
   // 必须走 stubGlobal 而不是 `globalThis.localStorage = impl`：
   // jsdom 的 window.localStorage 是**只读 getter**，直接赋值抛
   // "Cannot set property localStorage of [object Window] which has only a getter"，
-  // 而那是在 suite 加载期抛的 —— 一条测试都没注册，形态正是 AGENTS.md 记的
-  // 「describe 体抛异常是隐形的」的同款（这里更早，连 describe 都没进）。
+  // 而那是在 suite 加载期抛的 —— 一条测试都没注册，形态正是
+  // `docs/TESTING-STRATEGY.md` §3.5 纪律 2 记的「describe 体抛异常是隐形的」
+  // 的同款（这里更早，连 describe 都没进）。
   // byok-center.test.mjs 能直接赋值是因为它走 node --test，根本没有 jsdom。
   vi.stubGlobal('localStorage', impl)
   return { ls: impl }

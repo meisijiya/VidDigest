@@ -157,8 +157,8 @@ export function screenText(wrapper) {
  *
  * 后台的标签控件是 `<label>` 包一个 `sr-only` 的 `<input type="checkbox">`，
  * **不是 button**——按按钮找会得到 undefined，而 `find(...).text()` 那时
- * 恰好是空串，断言「不包含 X」直接绿。这正是 AGENTS.md 记的
- * 「断言压根没跑到，却报绿」那一族。
+ * 恰好是空串，断言「不包含 X」直接绿。这正是 `docs/TESTING-STRATEGY.md`
+ * §6.1 说的「断言压根没跑到，却报绿」那一族。
  */
 export function tagCheckbox(wrapper, labelText) {
   const label = wrapper.findAll('label').find((l) => l.text().trim() === labelText)

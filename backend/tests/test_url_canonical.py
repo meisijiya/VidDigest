@@ -139,7 +139,7 @@ def test_recognised_url_is_actually_changed():
 def test_iqiyi_keeps_its_html_suffix():
     """爱奇艺的 `.html` 不能抹掉。
 
-    AGENTS.md 实测：不带 `.html` 不掉进 iqiyi extractor、掉进 `[generic]` 兜底。
+    实测：不带 `.html` 不掉进 iqiyi extractor、掉进 `[generic]` 兜底。
     也就是说把 `.html` 抹掉等于把它变成另一个东西——那不是去重，是改语义。
     """
     with_html = c("https://www.iqiyi.com/v_19rr7depxo.html")
