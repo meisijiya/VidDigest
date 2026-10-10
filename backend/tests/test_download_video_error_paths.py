@@ -19,6 +19,7 @@
 import pytest
 
 import main as main_module
+import douyin as douyin_module
 from seams import make_client
 
 BILIBILI = "https://www.bilibili.com/video/BV163aC6iEc5"
@@ -186,3 +187,107 @@ class TestParseErrorMapping:
         r = client_app.post("/api/parse", json={"url": BILIBILI})
         assert r.status_code == 200
         assert r.json() == {"success": True, "data": {"id": "BV1", "formats": []}}
+
+
+# ── 4. /api/parse 的分流（工单 #56）─────────────────────────────
+#
+# 与上面第 2 节同源：分流此前只有「对侧没被 stub 所以会红」这种隐含判别力，
+# 没有任何用例断言「走了哪一边」。这里按方法分别计数，两个方向都断。
+
+
+@pytest.fixture()
+def parse_calls(monkeypatch):
+    """``/api/parse`` 两条支路的计数桩。
+
+    ``douyin_parser`` 是实例——挂在实例属性上的普通函数**不会被传 self**；
+    ``downloader`` 是模块，函数就是函数。形状不同，写反了报的是
+    ``missing 1 required positional argument``，看着像参数写错。
+    """
+    recorder = {"douyin": [], "ytdlp": []}
+
+    monkeypatch.setattr(
+        main_module.douyin_parser, "parse",
+        lambda url: (recorder["douyin"].append(url) or {"id": "dy"}), raising=True,
+    )
+    monkeypatch.setattr(
+        main_module.downloader, "parse_video",
+        lambda url: (recorder["ytdlp"].append(url) or {"id": "bv"}), raising=True,
+    )
+    return recorder
+
+
+class TestDouyinMatcher:
+    """``is_douyin_url`` 本体——分流用例够不着的那一层。
+
+    为什么必须单独测：分流用例只能证明「这些 URL 走了抖音侧」。
+    而 ``is_douyin_url`` 是**子串匹配**（``any(d in host for d in douyin_domains)``），
+    于是名单里 ``iesdouyin.com`` / ``v.douyin.com`` / ``www.douyin.com`` /
+    ``m.douyin.com`` **四条全是冗余的**——它们的 host 都包含 ``douyin.com``。
+    变异实测：单独删掉其中任何一条，全量照样绿。
+
+    所以「逐个钉住名单里的每一条」在行为层**做不到**，那是这份实现的性质，
+    不是断言的漏洞。能钉住的是「整张名单空了必须变 False」，
+    以及下面那些形态各自的判定结果。
+    """
+
+    @pytest.mark.parametrize("url", [
+        "https://www.douyin.com/video/7300000000000000000",
+        "https://douyin.com/video/7300000000000000000",
+        "https://v.douyin.com/abc123/",
+        "https://www.iesdouyin.com/share/video/7300000000000000000",
+        "https://m.douyin.com/share/video/7300000000000000000",
+    ])
+    def test_recognises_every_douyin_form(self, url):
+        assert douyin_module.is_douyin_url(url) is True, url
+
+    @pytest.mark.parametrize("url", [
+        BILIBILI,
+        "https://www.youtube.com/watch?v=abc",
+        "https://www.bilibili.com/video/BV1",
+    ])
+    def test_rejects_other_platforms(self, url):
+        """反向对照：名单全空时这些仍然是 False——所以它们不是靠「碰巧不匹配」。"""
+        assert douyin_module.is_douyin_url(url) is False, url
+
+    def test_is_case_insensitive(self):
+        assert douyin_module.is_douyin_url("https://WWW.DOUYIN.COM/video/1") is True
+
+    def test_survives_a_url_it_cannot_parse(self):
+        """不是 URL 的输入不许把判定器带崩——它返回 False，不抛。"""
+        assert douyin_module.is_douyin_url("") is False
+        assert douyin_module.is_douyin_url("not a url at all") is False
+
+
+class TestParseRouting:
+    @pytest.mark.parametrize("url", [
+        "https://www.douyin.com/video/7300000000000000000",
+        "https://v.douyin.com/abc123/",
+        "https://www.iesdouyin.com/share/video/7300000000000000000",
+    ])
+    def test_douyin_urls_go_to_the_douyin_parser(self, client_app, parse_calls, url):
+        """域名名单里的三种形态都走抖音侧，yt-dlp **零调用**。"""
+        client_app.post("/api/parse", json={"url": url})
+        assert parse_calls["douyin"] == [url]
+        assert parse_calls["ytdlp"] == []
+
+    @pytest.mark.parametrize("url", [BILIBILI, "https://www.youtube.com/watch?v=abc"])
+    def test_other_urls_go_to_yt_dlp(self, client_app, parse_calls, url):
+        """反向对照：非抖音 URL 必须走 yt-dlp 侧，抖音侧**零调用**。
+
+        两个方向都断才分得清「走反了」与「都没走」。
+        """
+        client_app.post("/api/parse", json={"url": url})
+        assert parse_calls["ytdlp"] == [url]
+        assert parse_calls["douyin"] == []
+
+    def test_the_canonical_url_is_what_reaches_the_downstream_call(
+        self, client_app, parse_calls
+    ):
+        """下游拿到的是**归一后**的 URL，不是用户粘贴的整段文案。
+
+        归一只许在 yt-dlp 边界生效：数据库与社区卡片回显仍用原文
+        （ADR 0016）。这条断言锁住「归一的结果真的流到了出口」——
+        归一函数被调用过不等于它的结果被用上了。
+        """
+        client_app.post("/api/parse", json={"url": "复制打开 https://v.douyin.com/abc123/ 看看"})
+        assert parse_calls["douyin"] == ["https://v.douyin.com/abc123/"]
