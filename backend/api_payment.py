@@ -99,6 +99,23 @@ async def create_checkout_session(
 
 # ── Webhook 回调处理 ──────────────────────────────────────
 
+
+def _stripe_field(obj, key: str, default=""):
+    """从 ``stripe.Webhook.construct_event`` 的嵌套对象里安全取一个字段。
+
+    那个对象是 ``StripeObject``，**不是 dict**：
+
+    · 它没有 ``.get()`` —— 调它抛 ``AttributeError: 'get' is a dict method``；
+    · ``obj[缺失键]`` 抛 ``KeyError``。
+
+    之前这里直接写 ``session.get("payment_status")``，于是
+    **每一次付款成功的回调都在这一行崩掉**：500 → Stripe 按重试策略一直重投
+    → 会员永远开不出来，而前端看不出任何原因。
+    ``in`` 在 ``StripeObject`` 上是可用的，所以用它判存在性。
+    """
+    return obj[key] if key in obj else default
+
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request):
     """
@@ -123,13 +140,13 @@ async def stripe_webhook(request: Request):
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        if session.get("payment_status") == "paid":
-            payment_intent_id = session.get("payment_intent", "")
+        if _stripe_field(session, "payment_status") == "paid":
+            payment_intent_id = _stripe_field(session, "payment_intent")
             result = complete_order(session["id"], payment_intent_id)
 
     elif event["type"] == "checkout.session.async_payment_succeeded":
         session = event["data"]["object"]
-        payment_intent_id = session.get("payment_intent", "")
+        payment_intent_id = _stripe_field(session, "payment_intent")
         complete_order(session["id"], payment_intent_id)
 
     return JSONResponse(status_code=200, content={"received": True})
