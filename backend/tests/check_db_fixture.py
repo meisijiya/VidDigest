@@ -97,11 +97,112 @@ DB_FUNCS = {
 DB_FIXTURE_ARGS = {"db", "client_app", "legacy_db"}
 
 
-def find_offenders(path: Path) -> list:
-    """返回「会触库却没取 db 夹具」的测试名清单。"""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    offenders = []
+def _fixture_map(tree: ast.Module) -> dict[str, set[str]]:
+    """本文件里 ``@pytest.fixture`` 函数 -> 它声明的参数（多半是别的夹具）。"""
+    out = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        decorated = any(
+            (isinstance(d, ast.Attribute) and d.attr == "fixture")
+            or (isinstance(d, ast.Name) and d.id == "fixture")
+            or (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and d.func.attr == "fixture")
+            for d in node.decorator_list
+        )
+        if decorated:
+            out[node.name] = {a.arg for a in node.args.args}
+    return out
 
+
+def _collect_functions(tree: ast.Module) -> dict[str, dict]:
+    """本文件里每个函数 -> 它直接调到的 DB 函数 + 它调到的本地函数。"""
+    local_names = {
+        n.name for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    out = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        db_calls, local_calls = set(), set()
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            if isinstance(func, ast.Attribute):
+                name = func.attr
+            else:
+                name = getattr(func, "id", None)
+            if name is None:
+                continue
+            if name in DB_FUNCS:
+                db_calls.add(name)
+            elif name in local_names:
+                local_calls.add(name)
+        out[node.name] = {"db": db_calls, "local": local_calls}
+    return out
+
+
+def _reachable_db(funcs: dict, name: str, seen: set | None = None) -> set:
+    """函数 ``name``（**传递地**）触到的 DB 函数集合。
+
+    传递是必需的：`test_x` 自己不调 ``get_db``，它调 ``_seed()``，后者才调。
+    只看直接调用的话，「测试不取夹具却经 helper 写库」这个形状完全看不见——
+    工单 #57 的由来（那次事故真的把两行用户写进了 ``backend/data/app.db``，
+    而本门禁全程没报）。
+    """
+    seen = seen if seen is not None else set()
+    if name in seen or name not in funcs:
+        return set()
+    seen.add(name)
+    found = set(funcs[name]["db"])
+    for child in funcs[name]["local"]:
+        found |= _reachable_db(funcs, child, seen)
+    return found
+
+
+def _has_db_fixture(args: set, fixtures: dict, _seen: set | None = None) -> bool:
+    """这组参数是否真的拿到了 db 隔离。
+
+    ``DB_FIXTURE_ARGS`` 是**契约名**（``db`` / ``client_app`` / ``legacy_db``
+    三个会改写 ``database.DB_PATH`` 的夹具），不是「函数签名里恰好出现这个词」。
+    所以这里顺着夹具的依赖往下走：本文件里的 ``client_app(db)``、
+    ``user(app, make_user)``、以及 ``conftest.py`` 里的 ``make_user(db)``
+    都会被认成「取了 db」。
+
+    解析传递依赖是为了让守卫陈述事实，而不是逼人把夹具改名成某个词表里的名字。
+    """
+    if args & DB_FIXTURE_ARGS:
+        return True
+    seen = _seen if _seen is not None else set()
+    for arg in args:
+        if arg in seen or arg not in fixtures:
+            continue
+        seen.add(arg)
+        if _has_db_fixture(fixtures[arg], fixtures, seen):
+            return True
+    return False
+
+
+def _conftest_fixtures() -> dict[str, set[str]]:
+    path = TESTS_DIR / "conftest.py"
+    if not path.exists():
+        return {}
+    return _fixture_map(ast.parse(path.read_text(encoding="utf-8")))
+
+
+def find_offenders(path: Path) -> list:
+    """返回「会触库却没取 db 夹具」的测试名清单。
+
+    判定走两跳：(1) 测试**传递地**触库（含经由本文件里的 helper）；
+    (2) 它的参数**传递地**取到了 db 隔离（经由夹具依赖，含 conftest.py）。
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    funcs = _collect_functions(tree)
+    fixtures = {**_conftest_fixtures(), **_fixture_map(tree)}
+
+    offenders = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -109,17 +210,10 @@ def find_offenders(path: Path) -> list:
             continue
 
         args = {a.arg for a in node.args.args}
-        if args & DB_FIXTURE_ARGS:
+        if _has_db_fixture(args, fixtures):
             continue
 
-        calls = set()
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Call):
-                func = sub.func
-                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-                if name in DB_FUNCS:
-                    calls.add(name)
-
+        calls = _reachable_db(funcs, node.name)
         if calls:
             offenders.append((node.name, sorted(calls)))
 

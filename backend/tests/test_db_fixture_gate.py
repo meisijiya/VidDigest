@@ -175,3 +175,149 @@ def test_gate_actually_goes_blind_without_the_entry():
     finally:
         probe.unlink(missing_ok=True)
         close_all_thread_connections()
+
+
+# ── 工单 #57：门禁自身漏掉的两个形状 ───────────────────────────
+#
+# 下面两条探针都写成**真的测试文件**，再交给 find_offenders 判——
+# 不用伪造 AST。判别力的来源是两条探针只差一个夹具参数，
+# 结果必须相反：门禁越权（把合规的也报出来）比漏报更严重，所以反向对照必须绿。
+
+PROBE_VIA_HELPER = '''
+import database
+
+
+def _seed(email="x@example.com"):
+    return database.create_user(email, "h")
+
+
+def test_uses_helper_without_any_fixture():
+    _seed()
+
+
+def test_uses_helper_with_db_fixture(db):
+    _seed()
+'''
+
+PROBE_VIA_CUSTOM_FIXTURE = '''
+import pytest
+
+import database
+from seams import make_client
+
+
+def _seed():
+    return database.create_user("x@example.com", "h")
+
+
+@pytest.fixture()
+def my_client(db):
+    """名字不在 DB_FIXTURE_ARGS 里，但它依赖 db —— 门禁必须认出来。"""
+    import main as main_module
+
+    return make_client(main_module.app)
+
+
+def test_via_custom_fixture(my_client):
+    _seed()
+'''
+
+PROBE_HELPER_ONLY = '''
+import database
+
+
+def _seed():
+    return database.create_user("x@example.com", "h")
+
+
+def test_ok(db):
+    _seed()
+'''
+
+
+def _scan_source(tmp_path, source, name="test_zzz_probe.py"):
+    probe = tmp_path / name
+    probe.write_text(source.lstrip(), encoding="utf-8")
+    return check_db_fixture.find_offenders(probe)
+
+
+def test_helper_touching_the_db_is_not_invisible(tmp_path):
+    """helper 触库 + 测试不取夹具 → 必须报出来，且报的是**测试名**。
+
+    工单 #57 的由来：这个形状此前完全看不见，于是工单 #51 的测试
+    把两行用户写进了真实 backend/data/app.db，而门禁全程没吭声。
+    """
+    offenders = _scan_source(tmp_path, PROBE_VIA_HELPER)
+    names = [n for n, _ in offenders]
+    assert names == ["test_uses_helper_without_any_fixture"], (
+        f"应当只报出没取夹具的那条，实得 {offenders}。"
+        "报出 helper 自己的名字说明门禁在拿 helper 当测试，"
+        "那样给人指路时指错了地方。"
+    )
+    assert offenders[0][1] == ["create_user"], offenders
+
+
+def test_the_same_helper_is_fine_when_the_fixture_is_taken(tmp_path):
+    """反向对照：**同一个文件**里两条测试走同一个 helper，只差一个 ``db`` 参数。
+
+    结果必须只有一条被报出来。门禁越权比漏报更严重——它会训练所有人
+    给无关测试也塞一个 ``db`` 参数。
+
+    （对照不能写成「同一个源文件扫两次」：那份源里本来就含一条违规测试，
+    拿它断言 ``== []`` 是我第一版的写法，红得莫名其妙——红的是断言写错了，
+    不是门禁越权。）
+    """
+    offenders = _scan_source(tmp_path, PROBE_VIA_HELPER)
+    names = [n for n, _ in offenders]
+    assert names == ["test_uses_helper_without_any_fixture"], (
+        f"取了 db 夹具的那条也被报出来了：{offenders} —— 门禁越权"
+    )
+    assert _scan_source(tmp_path, PROBE_HELPER_ONLY) == [], \
+        "整个文件都合规却被报出来了 —— 门禁越权"
+
+
+def test_fixture_dependency_is_resolved_transitively(tmp_path):
+    """自定义夹具名（``my_client``）依赖 db 时必须被认成合规。
+
+    这条是工单 #57 的第二半：``DB_FIXTURE_ARGS`` 是**契约名**而不是词表。
+    早先的门禁只看函数自己的参数，于是私有名 ``client_app(db)`` 会被误报，
+    而唯一的「修法」是把夹具改名成词表里的名字——门禁在教人迎合词表，
+    而不是陈述事实。
+    """
+    assert _scan_source(tmp_path, PROBE_VIA_CUSTOM_FIXTURE) == [], \
+        "依赖 db 的自定义夹具没被解析出来 —— 门禁在逼人改夹具名"
+
+
+def test_removing_the_test_prefix_filter_would_misattribute(tmp_path):
+    """变异：拿掉 ``startswith("test_")`` 过滤 → 报出来的名字必须变。
+
+    判别力靠**名字**：不加过滤时门禁会把 helper 自己当成一条「没取夹具的测试」，
+    于是 offenders 里出现的是 ``_seed`` 而不是测试名。上面那条断言因此转红。
+
+    这条同时说明那行过滤不是摆设：它保证报出来的是**该去修的那条测试**。
+    """
+    import ast as _ast
+
+    tree = _ast.parse(PROBE_VIA_HELPER.lstrip())
+    funcs = check_db_fixture._collect_functions(tree)
+    fixtures = check_db_fixture._fixture_map(tree)
+    fixtures.update(check_db_fixture._conftest_fixtures())
+
+    every = []
+    for node in _ast.walk(tree):
+        if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        args = {a.arg for a in node.args.args}
+        if check_db_fixture._has_db_fixture(args, fixtures):
+            continue
+        calls = check_db_fixture._reachable_db(funcs, node.name)
+        if calls:
+            every.append((node.name, sorted(calls)))
+
+    names = [n for n, _ in every]
+    assert "test_uses_helper_without_any_fixture" in names, every
+    assert "_seed" in names, (
+        f"去掉 test_ 前缀过滤后应当连 helper 自己都被算进来，实得 {every}。"
+        "如果这条红了，说明 _reachable_db 根本没在看 helper —— "
+        "那上面三条断言全部恒真。"
+    )
