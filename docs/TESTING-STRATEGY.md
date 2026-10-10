@@ -228,21 +228,27 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 ### 5.1 P0（已部分消解）—— 产品主入口
 
-⚠️ **本节曾经写着「`main.py` 6 个函数从未被执行」，那句话已经不成立。** 当时的后端测试确实一条都没打过主入口；`backend/tests/test_audio_download.py` 补上之后，至少两个主入口有了真覆盖：
+⚠️ **本节曾经写着「`main.py` 6 个函数从未被执行」，那句话已经不成立。** 当时的后端测试确实一条都没打过主入口；`test_audio_download.py` 与 `test_main_routes.py` 补上之后，主入口与两条辅助路由都有了真覆盖。
+
+行号一律取**函数定义行**（不是装饰器行，也不是类行）：
 
 | 函数 | 路由 | `main.py` 行 | 现状 |
 |---|---|---:|---|
-| `parse_video` | `POST /api/parse` | 115 | ✅ `test_audio_download.py:125`，真 client 打真路由 |
-| `download_video` | `POST /api/download` | 135 | ✅ `test_audio_download.py:355,363,372,380` |
-| `ParseRequest.clean_url` | — | 90 | ⚠️ 被上面两条**间接**走到，但只喂了裸 URL |
-| `DownloadRequest.clean_url` | — | 100 | ⚠️ 同上 |
-| `get_direct_url` | `POST /api/direct-url` | 173 | ❌ 路由层仍无测试（`test_ytdlp_boundary_canonical.py` 只直接调 `downloader.get_direct_url`，不经路由） |
-| `proxy_thumbnail` | `GET /api/proxy/thumbnail` | 192 | ❌ 仍无测试 |
+| `parse_video` | `POST /api/parse` | 118 | ✅ `test_audio_download.py:125`，真 client 打真路由 |
+| `download_video` | `POST /api/download` | 138 | ✅ `test_audio_download.py:355,363,372,380`（四条全走抖音分支） |
+| `ParseRequest.clean_url` | — | 93 | ⚠️ 被上面两条**间接**走到，但只喂了裸 URL |
+| `DownloadRequest.clean_url` | — | 103 | ⚠️ 同上。`test_main_routes.py:166` 喂过分享文案，但 URL 后面紧跟的是半角空格（已被字符集里的 `\s` 排除） |
+| `get_direct_url` | `POST /api/direct-url` | 176 | ✅ `test_main_routes.py` 的 `TestDirectUrlRoute` 3 条 |
+| `proxy_thumbnail` | `GET /api/proxy/thumbnail` | 271 | ✅ `test_main_routes.py` 15 条：SSRF 判定 5 条、公网走通与上游失败映射 10 条 |
 
-**剩下的真缺口有两处**：
+**剩下的真缺口有四条**，每条一个工单：
 
-1. **`/api/direct-url` 与 `/api/proxy/thumbnail` 两条路由零测试。** 前者是直链链路的一环，后者是绕防盗链的代理，两者都有「静默出错但用户只看到图裂了、或下载按钮点了没反应」的结构。
-2. **`clean_url` 的真实契约仍没被钉住。** 它不是「strip 一下」——它的存在理由是**从用户粘贴的分享文案里正则抽出第一个 URL**。现在的测试只喂裸 URL，正好绕过了它唯一有价值的那个行为。删掉字符集里排除中文标点的那部分，现有测试**照样全绿**。
+| # | 缺口 | 去向 |
+|---|---|---|
+| 1 | **`clean_url` 的中文标点字符集变异存活。** 它存在的理由是「从分享文案里抽出 URL 且截断在中文标点前」，而现有唯一一条非裸 URL 用例后面跟的是半角空格（早已被 `\s` 排除）。另有 `match is None → strip()` 退化分支零覆盖。该正则在 `main.py` 两处与前端两处共四处复制，无一钉住。 | #52 |
+| 2 | **`download_video` 的 `except HTTPException: raise` 零测试。** 现有 4 条用例因桩真写文件而永远走不到 500 分支，删掉那两行全量照样绿。 | #53 |
+| 3 | **平台分流没有显式断言。** 现有判别力全靠「对侧没被 stub 所以会红」，没有任何用例断言「走了哪一边」；在有网的机器上它可能变成慢红或假绿。 | #56 |
+| 4 | **`/api/download` 的非抖音分支与 `/api/parse` 的错误映射路由层零覆盖。** 全仓 4 处该路由调用全是抖音域名；`_parse()` 助手自带 `assert 200`，把错误分支永久挡在测试之外。 | #53 |
 
 下面这些用例仍然值得补（`clean_url` 是纯函数，最容易测）：
 
@@ -294,6 +300,8 @@ def test_download_video_does_not_swallow_http_exception(...):
 | `register` | `POST /api/auth/register` | 60 | ❌ `backend/tests/` 下无任何测试打 `/api/auth/register` |
 | `login` | `POST /api/auth/login` | 83 | ❌ 同上 |
 
+以上五行由 **#51** 一张单处理。两条路由都是前端 `src/api/auth.js` 的真实调用目标（活端点，不是孤儿）。
+
 `auth.py` 的行覆盖率具有**欺骗性**：高分来自 token 签发/解析（那部分确实测过），而**密码的写入侧与校验规则仍没测**。
 
 **为什么还是 P0 而不是 P1**：`/register`、`/login` 是 `frontend/src/api/auth.js` 的真实调用目标，两条路由**零测试**。`validate_email` / `validate_password` 的返回值直接进 400 响应体（`raise HTTPException(detail=err)`），文案一旦变了就是对外可见的 API 变更。
@@ -337,16 +345,18 @@ def test_login_does_not_leak_which_field_was_wrong(client):
 
 ### 5.3 P1 —— 支付链路活跃但裸奔
 
-`api_payment.py` 4 个函数全部从未执行：
+`api_payment.py` 4 个函数里只有 `create_checkout_session` 有真覆盖（工单 #42 补的 5 条），其余三条零覆盖：
 
-| 函数 | 路由 | 行 | 规模 |
-|---|---|---:|---:|
-| `_generate_order_no` | — | 31 | 数行 |
-| `create_checkout_session` | `POST /api/payment/create-checkout` | 40 | 数十行 |
-| `stripe_webhook` | `POST /api/payment/webhook` | 103 | 数十行 |
-| `list_orders` | `GET /api/payment/orders` | 141 | 数行 |
+| 函数 | 路由 | 行 | 现状 |
+|---|---|---:|---|
+| `_generate_order_no` | — | 31 | ⚠️ 只被 `create_checkout_session` 间接调用，无直接断言 |
+| `create_checkout_session` | `POST /api/payment/create-checkout` | 40 | ✅ `test_endpoint_coverage_gaps.py` 5 条 |
+| `stripe_webhook` | `POST /api/payment/webhook` | 103 | ❌ 零覆盖 |
+| `list_orders` | `GET /api/payment/orders` | 141 | ❌ 零覆盖，且**前端无任何调用方**（孤儿端点） |
 
-配套的 `database.py` 也全未测：`create_order`(2035)、`update_order_stripe_session`(2044)、**`complete_order`(2052)**、`get_user_orders`(2103)。
+配套的 `database.py` 四个函数同样没有真覆盖：`create_order`(2035) 只在 `test_admin_user_lifecycle.py:130` 被当作建数调用（测的是删号 409，不是订单逻辑）；`update_order_stripe_session`(2044) 与 `complete_order`(2052)、`get_user_orders`(2103) **零覆盖** —— 后两者正是 webhook 幂等与订单列表的实际落点。
+
+以上由 **#54** 一张单处理。
 
 **为什么是 P1 不是「直接删」**：`frontend/src/config/features.js` 明确写着「不做会员制，但后端 VIP 判定与 Stripe 支付代码**保留不删**」，而 `App.vue:643` 仍在调 `createCheckoutSession('monthly')`。**它是活的、但零测试的。**
 
