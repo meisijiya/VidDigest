@@ -113,16 +113,6 @@ def _is_bilibili_url(url: str) -> bool:
     return "bilibili.com" in url or "b23.tv" in url
 
 
-def _is_douyin_url(url: str) -> bool:
-    douyin_domains = ["douyin.com", "iesdouyin.com", "v.douyin.com"]
-    from urllib.parse import urlparse
-    try:
-        host = urlparse(url).netloc.lower()
-        return any(d in host for d in douyin_domains)
-    except Exception:
-        return False
-
-
 def _time_to_seconds(ts: str) -> float:
     """将 HH:MM:SS.mmm 格式转换为秒数"""
     parts = ts.replace(",", ".").split(":")
@@ -541,8 +531,11 @@ def _download_audio_for_asr(url: str) -> str | None:
     download_dir = VideoDownloader().DOWNLOAD_DIR
     os.makedirs(download_dir, exist_ok=True)
 
-    if _is_douyin_url(url):
-        from douyin import DouyinParser
+    # douyin 在这里才导入：ASR 只是这条路径上的一种取音频方式，
+    # 判定也用它那一份，不在本模块另写一份名单（工单 #58）。
+    from douyin import DouyinParser, is_douyin_url
+
+    if is_douyin_url(url):
         parser = DouyinParser(download_dir=download_dir)
         try:
             logger.info("Downloading Douyin video for ASR...")

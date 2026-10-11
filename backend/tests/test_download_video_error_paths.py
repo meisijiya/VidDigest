@@ -220,14 +220,14 @@ class TestDouyinMatcher:
     """``is_douyin_url`` 本体——分流用例够不着的那一层。
 
     为什么必须单独测：分流用例只能证明「这些 URL 走了抖音侧」。
-    而 ``is_douyin_url`` 是**子串匹配**（``any(d in host for d in douyin_domains)``），
-    于是名单里 ``iesdouyin.com`` / ``v.douyin.com`` / ``www.douyin.com`` /
-    ``m.douyin.com`` **四条全是冗余的**——它们的 host 都包含 ``douyin.com``。
-    变异实测：单独删掉其中任何一条，全量照样绿。
 
-    所以「逐个钉住名单里的每一条」在行为层**做不到**，那是这份实现的性质，
-    不是断言的漏洞。能钉住的是「整张名单空了必须变 False」，
-    以及下面那些形态各自的判定结果。
+    判定规则是**域名边界**——``host == d or host.endswith("." + d)``，名单只有
+    ``douyin.com`` 与 ``iesdouyin.com`` 两条（工单 #58）。子域（``v.`` / ``www.``
+    / ``m.``）由第一条覆盖，写进名单是死重量；``iesdouyin.com`` 是另一个
+    **注册域**，不是 ``douyin.com`` 的子域，删掉它会丢一整类真实分享链接。
+
+    「每一条名单项都独占一种形态」在行为层只能表达成断言 + 变异：断言在这里，
+    删掉某一条必须转红由 ``scripts/mutation_platform_routing.py`` 的 M2/M5 实证。
     """
 
     @pytest.mark.parametrize("url", [
@@ -238,6 +238,45 @@ class TestDouyinMatcher:
         "https://m.douyin.com/share/video/7300000000000000000",
     ])
     def test_recognises_every_douyin_form(self, url):
+        assert douyin_module.is_douyin_url(url) is True, url
+
+    @pytest.mark.parametrize("url", [
+        "https://www.douyin.com/video/7300000000000000000",           # 只有 douyin.com 认
+        "https://www.iesdouyin.com/share/video/7300000000000000000",  # 只有 iesdouyin.com 认
+    ])
+    def test_each_listed_domain_owns_a_form_of_its_own(self, url):
+        """名单里每一条都得**独占**一种形态，否则它就是死重量。
+
+        断言本身只说这两种形态现在都认。让它有牙齿的是变异：
+        ``scripts/mutation_platform_routing.py`` 的 M2（删 ``douyin.com``）
+        与 M5（删 ``iesdouyin.com``）各打掉一条，对应用例必须转红。
+        """
+        assert douyin_module.is_douyin_url(url) is True, url
+
+    @pytest.mark.parametrize("url", [
+        "https://notdouyin.com/x",            # 含 douyin，注册域却不是抖音
+        "https://douyin.com.evil.example/x",  # 后缀命中，前面挂着别人的域
+        "https://my-douyin.com/x",            # 含 douyin，但不是它的子域
+    ])
+    def test_rejects_hosts_that_only_look_like_douyin(self, url):
+        """看着像、其实不是抖音的 host 必须判 False。
+
+        子串匹配下这三条会走 ``DouyinParser.parse``，去出网请求那个 host
+        再失败——用户看到的是「解析失败」，而不是「这个平台不支持」。
+        """
+        assert douyin_module.is_douyin_url(url) is False, url
+
+    @pytest.mark.parametrize("url", [
+        "https://douyin.com:443/video/1",
+        "https://www.douyin.com:8443/video/1",
+        "https://user@www.iesdouyin.com/share/video/1",
+    ])
+    def test_port_and_userinfo_do_not_hide_a_real_host(self, url):
+        """判定读的是 ``hostname`` 而不是 ``netloc``。
+
+        后者带着端口与 userinfo，收紧成域名边界会把这两类链接一起弄丢，
+        而它们今天靠子串是认的——那是能用的链接，不许因为收紧而少一条。
+        """
         assert douyin_module.is_douyin_url(url) is True, url
 
     @pytest.mark.parametrize("url", [

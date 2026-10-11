@@ -46,15 +46,31 @@ MOBILE_HEADERS = {
 _URL_PATTERN = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 
 
+#: 抖音的**注册域**，分流判定只认这两条。子域（``v.`` / ``www.`` / ``m.`` …）
+#: 由第一条覆盖，写进名单是死重量：实测单独删掉任何一条，全量测试照样绿（工单 #58）。
+#:
+#: ``iesdouyin.com`` 是另一个注册域，不是 ``douyin.com`` 的子域，删不得——本模块的
+#: 公开 API 与 iteminfo 取值都在那个域上，短链 ``v.douyin.com`` 也 302 到那里
+#: （跳转链见 yt-dlp issue #9557）。
+#:
+#: ⚠️ ``url_canonical._DOUYIN_HOSTS`` 是**另一份**名单，语义不同：它管的是
+#: 「哪些 host 的路径要重写成规范形态」，不是分流判定。两份不合并。
+_DOUYIN_DOMAINS = ("douyin.com", "iesdouyin.com")
+
+
 def is_douyin_url(url: str) -> bool:
-    """判断是否为抖音链接"""
-    douyin_domains = [
-        "douyin.com", "iesdouyin.com", "v.douyin.com",
-        "www.douyin.com", "m.douyin.com",
-    ]
+    """判断是否为抖音链接——按**域名边界**，不是按子串。
+
+    子串匹配下 ``notdouyin.com`` / ``douyin.com.evil.example`` 都会被认成抖音，
+    于是 ``DouyinParser.parse`` 去出网请求那个 host 再失败，用户看到的是
+    「解析失败」而不是「这个平台不支持」。
+
+    读 ``hostname`` 而不是 ``netloc``：后者带着端口与 userinfo，
+    ``https://douyin.com:443/video/1`` 会因此被漏掉。
+    """
     try:
-        host = urlparse(url).netloc.lower()
-        return any(d in host for d in douyin_domains)
+        host = urlparse(url).hostname or ""
+        return any(host == d or host.endswith("." + d) for d in _DOUYIN_DOMAINS)
     except Exception:
         return False
 

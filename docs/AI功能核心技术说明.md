@@ -123,9 +123,9 @@ AI 总结功能由三个子系统构成：
 
 找到匹配字幕 URL 后，`_download_subtitle_json()` 下载并解析为 segments。如果没有直接 URL，`_download_and_parse_via_ytdlp()` 通过 yt-dlp 下载 VTT 字幕文件，再用 `_parse_vtt()` 解析为分段。
 
-#### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#ef4444" stroke-width="2" style="vertical-align:middle"><x/></svg> 3. 抖音（提前终止）
+#### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#ef4444" stroke-width="2" style="vertical-align:middle"><x/></svg> 3. 抖音（落穿到 ASR）
 
-抖音视频没有外部字幕轨道。`_is_douyin_url()` 检测到抖音域名后直接返回 `has_subtitle: false`，避免 yt-dlp 的 Douyin extractor 报错。
+抖音视频没有平台字幕轨道，最终由 ASR 兜底。ASR 先要拿到音频：`_download_audio_for_asr()` 按域名分流——抖音链接交给 `DouyinParser` 下载，其余交给 yt-dlp。
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#3b82f6" stroke-width="2" style="vertical-align:middle"><table/></svg> 字幕类型判断
 
