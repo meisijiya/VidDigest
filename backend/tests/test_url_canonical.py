@@ -46,7 +46,9 @@ YOUTUBE_FORMS = [
 
 DOUYIN_FORMS = [
     "https://www.douyin.com/video/7234567890123456789",
+    "https://douyin.com/video/7234567890123456789",
     "https://www.iesdouyin.com/share/video/7234567890123456789",
+    "https://iesdouyin.com/share/video/7234567890123456789",
 ]
 
 
@@ -80,8 +82,37 @@ def test_douyin_every_form_maps_to_one_value(form):
     assert c(form) == "https://www.douyin.com/video/7234567890123456789"
 
 
-def test_douyin_two_forms_collapse_to_one():
+def test_douyin_four_forms_collapse_to_one():
+    """裸域与 www 域指向同一份内容，和 B 站那组同一个道理。
+
+    名单里那两条裸域（``douyin.com`` / ``iesdouyin.com``）就靠这条撑着：
+    少了它们，`scripts/mutation_url_canonical.py` 的 C2/C3 存活。
+    """
     assert len({c(f) for f in DOUYIN_FORMS}) == 1
+
+
+def test_a_foreign_host_with_a_douyin_shaped_path_is_left_alone():
+    """**host** 才是闸门，path 长得像不算数。
+
+    ``_DOUYIN_VIDEO`` 只管形状、不管这是谁家的站。少了这条，把判定写成
+    ``if True:`` 全量照样绿——那等于任何站上的 ``/video/123`` 都会被
+    改写成一条抖音视频，两条不同的视频在库里塌成一行且不报错。
+    """
+    url = "https://notdouyin.com/video/7234567890123456789"
+    assert c(url) == url
+
+
+def test_douyin_short_link_is_left_alone():
+    """短链不在归一范围内——模块 docstring 里既定的那条策略。
+
+    判别力要说清楚：``_DOUYIN_VIDEO`` 要求 path 含 ``/video/<数字>``，而短链的
+    path 是 ``/abc123``，所以**精确匹配与子域判定在这里给出同一个结果**
+    （``scripts/mutation_url_canonical.py`` 的 C6 实测为 GREEN）。
+    它防的是「有人顺手给短链加一条改写规则」，
+    不是「把名单从精确匹配换成子域写法」——后者这条抓不住，也不该由它抓。
+    """
+    url = "https://v.douyin.com/abc123/"
+    assert c(url) == url
 
 
 # ── 不同视频绝不能塌成一行 ─────────────────────────────────────

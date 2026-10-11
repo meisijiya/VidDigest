@@ -71,6 +71,19 @@ _XIAOHONGSHU_NOTE = re.compile(
 
 #: 这些 host 归一到哪一个（大小写无关）。B 站的三个域名指向同一份内容。
 _BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
+#: 抖音这份**刻意是精确匹配，不是子域判定**（工单 #59）。
+#: 实测：在 `_DOUYIN_VIDEO` 这条正则下，两种写法对用户真会粘的形态**行为等价**
+#: —— 短链的 path 是 `/abc123`，压根不含 `/video/<数字>` 那一段，子域写法
+#: 收进 `v.douyin.com` 也改写不了它（`scripts/mutation_url_canonical.py` 的 C6
+#: 跑的就是这条等价性）。选精确匹配，是要让名单读起来就是「我们认这四个 host」。
+#: `v.douyin.com` 不在名单里：短链要先出网解析跳转才知道自己是谁
+#: （模块 docstring 已记，不在本工单范围内）。
+#: 裸域那两条不是死重量：`https://douyin.com/video/<id>` 与
+#: `https://iesdouyin.com/share/video/<id>` 都是用户真会粘的形态，
+#: 去掉任何一条就会少认一种（`scripts/mutation_url_canonical.py` 守着）。
+#:
+#: ⚠️ 与 `douyin._DOUYIN_DOMAINS` **不是同一份**：那是分流判定用的。
+#: 两份语义不同，不合并。
 _DOUYIN_HOSTS = {"douyin.com", "www.douyin.com", "iesdouyin.com", "www.iesdouyin.com"}
 _XIAOHONGSHU_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com", "m.xiaohongshu.com"}
 
