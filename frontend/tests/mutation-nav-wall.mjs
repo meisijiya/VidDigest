@@ -493,17 +493,26 @@ function firstFailure(out) {
   // TAP：CI 里是 Node 22，node --test 默认吐 TAP；本地是 Node 24，吐 spec。
   // 两种都得认——只认一种，就会在另一个平台上把「杀它的是另一条断言」当成结论。
   for (let i = 0; i < lines.length; i++) {
-    const tap = lines[i].match(/^not ok \d+ - (.+)$/)
+    // TAP 里失败的**断言**那一层是缩进的（not ok 5 - 用例名），
+    // 断言消息在它自己的 error: 块里；describe 汇总那一层在顶格。
+    // 只认顶格 ⇒ 拿到的是 describe 汇总，里面没有断言消息，
+    // 于是每条变异都被判成「杀它的是另一条断言」。
+    const tap = lines[i].match(/^\s*not ok \d+ - (.+)$/)
     if (!tap) continue
+    const title = tap[1].trim()
+    // 文件级汇总（not ok 1 - tests/xxx.test.mjs）不是一条用例，跳过它，
+    // 继续往下找真正挂掉的那条子用例。
+    if (/\.(mjs|cjs|js|ts)$/.test(title)) continue
     const buf = []
     for (let j = i + 1; j < lines.length; j++) {
-      if (/^(not ok|ok) \d+ - /.test(lines[j]) || /^# (Subtest|tests|pass|fail|todo)/.test(lines[j])) break
+      if (/^\s*not ok \d+ - /.test(lines[j]) || /^# (Subtest|tests|pass|fail|todo)/.test(lines[j])) break
       buf.push(lines[j])
     }
     const block = buf.join('\n')
-    const msg = block.match(/message:\s*'((?:[^'\\]|\\.)*)'/) || block.match(/message:\s*"([^"]*)"/)
-    const title = tap[1].trim()
-    const detail = msg ? msg[1].replace(/\\'/g, "'").replace(/\\n/g, '\n') : '(没抓到断言消息)'
+    // TAP 的 YAML 里断言消息在 error: 字段（有时是 '...'，有时是 |- 块）。
+    // 不要拿 message: 去挑：实测会被 actual: 里 dump 出来的源码行骗到
+    // （比如 App.vue 里 errorModal 的 message: ''），整块 YAML 都算证据。
+    const detail = block.trim() || '(没抓到断言消息)'
     return { title, text: `${title}\n${detail}` }
   }
   const marker = lines.findIndex((l) => /^✖ failing tests:/.test(l))
@@ -560,7 +569,10 @@ for (const m of MUTANTS) {
         process.execPath,
         // 必须用与 `npm test` 相同的 glob：传单个文件路径时 node --test
         // 不产出 TAP 计数，「跑不起来」与「全绿」长得一模一样。
-        ['--test', '--test-timeout=10000', 'tests/**/*.test.mjs'],
+        // reporter 显式钉成 tap：默认 reporter 跟 stdout 是不是 TTY 走
+        // （TTY → spec，非 TTY → tap），CI 里是非 TTY、本地是 TTY，
+        // 同一份判据在两个平台上读到的格式不一样 —— 坑就是这么来的。
+        ['--test', '--test-reporter=tap', '--test-timeout=10000', 'tests/**/*.test.mjs'],
         { cwd: FE, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
       )
       ok = true
