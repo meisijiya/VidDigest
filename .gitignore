@@ -26,6 +26,9 @@ TEST_ACCOUNTS.md
 # 本机 agent 的工作日志。含本机绝对路径与用户名，且是逐会话的过程记录，
 # 对读者没有价值 —— 过程归 handoff 产物，不进版本库。
 .workbuddy/
+# 逐会话交接产物。同上：含本机绝对路径、投递策略与未修复缺陷的内部说明，
+# 本仓是 PUBLIC，这些内容不进版本库；交接看本地文件即可。
+docs/handoff-*.md
 
 # 测试与构建缓存（不带 gitignore 的 pytest 缓存会被 git add . 带进去）
 .pytest_cache/
