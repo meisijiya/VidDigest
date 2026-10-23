@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded by ADR-0018
 date: 2026-10-23
 ---
 
 # 前端路由：轻量自实现，不引 vue-router
+
+> **本文已被 ADR 0018 取代**（2026-10-23）。前端改用 `vue-router`，四条真实
+> 路径取代手写路由。本文保留，记录当时为什么这么判、现在为什么推翻。
 
 **决定**：前端不引入 `vue-router`。URL 与 `currentPage` 的双向同步由一段自实现代码
 承担（`frontend/src/App.vue` 的 `PATHS` / `pageFromPath` / `pushPage` /
