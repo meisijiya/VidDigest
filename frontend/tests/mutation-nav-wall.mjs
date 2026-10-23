@@ -490,6 +490,22 @@ function applyPairs(src, pairs) {
  */
 function firstFailure(out) {
   const lines = out.split('\n')
+  // TAP：CI 里是 Node 22，node --test 默认吐 TAP；本地是 Node 24，吐 spec。
+  // 两种都得认——只认一种，就会在另一个平台上把「杀它的是另一条断言」当成结论。
+  for (let i = 0; i < lines.length; i++) {
+    const tap = lines[i].match(/^not ok \d+ - (.+)$/)
+    if (!tap) continue
+    const buf = []
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^(not ok|ok) \d+ - /.test(lines[j]) || /^# (Subtest|tests|pass|fail|todo)/.test(lines[j])) break
+      buf.push(lines[j])
+    }
+    const block = buf.join('\n')
+    const msg = block.match(/message:\s*'((?:[^'\\]|\\.)*)'/) || block.match(/message:\s*"([^"]*)"/)
+    const title = tap[1].trim()
+    const detail = msg ? msg[1].replace(/\\'/g, "'").replace(/\\n/g, '\n') : '(没抓到断言消息)'
+    return { title, text: `${title}\n${detail}` }
+  }
   const marker = lines.findIndex((l) => /^✖ failing tests:/.test(l))
   const start = marker >= 0 ? marker + 1 : 0
   for (let i = start; i < lines.length; i++) {

@@ -239,7 +239,7 @@ for (const m of MUTANTS) {
       survivors.push(`${m.name} —— 存活（${nRan} 条测试全绿，测试没在验这一条）`)
     } else {
       killed++
-      const which = out.match(/✖ ([^\n(]+)/)
+      const which = out.match(/✖ ([^\n(]+)/) || out.match(/^not ok \d+ - (.+)$/m)
       console.log(`KILLED  ${m.name}  (ran=${nRan})`)
       console.log(`        被杀于: ${which ? which[1].trim() : '(见输出)'}`)
     }
