@@ -24,6 +24,36 @@ DATA = ["tests/test_quota_split.py"]
 ROUTES = ["tests/test_quota_routes.py", "tests/test_summarize_routes.py"]
 
 
+def _loose_find(text: str, pattern: str):
+    """在 text 里找 pattern，忽略空白差异，返回 (start, end) 或 None。
+
+    非空白字符仍要逐字相同、顺序不变，只允许它们之间多出空白（换行、缩进、
+    逗号后加空格……）。这些是格式化工具造成的样子，不是代码变了。
+
+    刻意不用正则：把 \s* 挂在每个字符后面会让回溯指数爆炸，源文件一大
+    就能把进程卡死。这里是双指针扫描，复杂度 O(n*m)，没有回溯。
+    """
+    chars = [c for c in pattern if not c.isspace()]
+    if not chars:
+        return (0, 0) if not text.strip() else None
+    n = len(text)
+    for start in range(n):
+        if text[start] != chars[0]:
+            continue
+        ti = start
+        ok = True
+        for c in chars:
+            while ti < n and text[ti].isspace():
+                ti += 1
+            if ti >= n or text[ti] != c:
+                ok = False
+                break
+            ti += 1
+        if ok:
+            return (start, ti)
+    return None
+
+
 def mutate_bytes(data: bytes, pattern: str, replacement: str = "") -> bytes:
     """按行尾符不敏感的方式替换；未命中时原样返回（不抛不猜）。"""
     crlf = b"\r\n" in data
@@ -31,8 +61,13 @@ def mutate_bytes(data: bytes, pattern: str, replacement: str = "") -> bytes:
     if crlf:
         text = text.replace("\r\n", "\n")
     if pattern not in text:
-        return data
-    text = text.replace(pattern, replacement)
+        # 精确匹配落空时再试一次「空白宽松」：重排版不算代码变了。
+        span = _loose_find(text, pattern)
+        if span is None:
+            return data  # 未命中：原样返回，让调用方识别
+        text = text[: span[0]] + replacement + text[span[1] :]
+    else:
+        text = text.replace(pattern, replacement)
     if crlf:
         text = text.replace("\n", "\r\n")
     return text.encode("utf-8")
@@ -41,11 +76,12 @@ def mutate_bytes(data: bytes, pattern: str, replacement: str = "") -> bytes:
 MUTATIONS = [
     # ── 双计数器隔离 ──
     ("Q1 parse 与 chat 指向同一个计数字段", DB_FILE,
-     '"parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT"),',
-     '"parse": ("daily_chat_count", "last_parse_date", "DAILY_PARSE_LIMIT"),',
+     '"parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT",\n              "parse_limit_override"),',
+     '"parse": ("daily_chat_count", "last_parse_date", "DAILY_PARSE_LIMIT",\n              "parse_limit_override"),',
      DATA),
     ("Q2 扣减写错字段：parse 写到 chat 列", DB_FILE,
-     "            f\"UPDATE users SET {count_col} = 1, {date_col} = ? WHERE id = ?\",",
+     "            f\"UPDATE users SET {count_col} = 1, {date_col} = ? \"\n"
+     "            f\"WHERE id = ? AND {date_col} IS NOT ?\",",
      "            \"UPDATE users SET daily_chat_count = 1, \" + date_col + \" = ? WHERE id = ?\",",
      DATA),
     ("Q3 两个上限用同一个值", DB_FILE,
@@ -59,8 +95,8 @@ MUTATIONS = [
      "",
      DATA),
     ("Q5 两个计数器共用同一个日期字段", DB_FILE,
-     '"chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT"),',
-     '"chat": ("daily_chat_count", "last_parse_date", "DAILY_CHAT_LIMIT"),',
+     '"chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT",\n             "chat_limit_override"),',
+     '"chat": ("daily_chat_count", "last_parse_date", "DAILY_CHAT_LIMIT",\n             "chat_limit_override"),',
      DATA),
 
     # ── 环境变量上限 ──
@@ -97,7 +133,7 @@ MUTATIONS = [
      '            f"WHERE id = ?",',
      DATA),
     ("Q12 跨天也回滚（给今天白送额度）", DB_FILE,
-     "        if user[date_col] != today:\n            return limit",
+     "        if user[date_col] != today:\n            return QUOTA_UNLIMITED if limit < 0 else limit",
      "        if False:\n            return limit",
      DATA),
 
@@ -145,7 +181,7 @@ MUTATIONS = [
      '        row = conn.execute(\n'
      '            f"SELECT {count_col} FROM users WHERE id = ?", (user_id,)\n'
      "        ).fetchone()\n"
-     "        return limit - (row[count_col] or 0)",
+      "        return QUOTA_UNLIMITED if limit < 0 else limit - (row[count_col] or 0)",
      '            f"UPDATE users SET {count_col} = ? WHERE id = ?",\n'
      "            (max(0, (user[count_col] or 0) - 1), user_id),\n"
      "        )\n"

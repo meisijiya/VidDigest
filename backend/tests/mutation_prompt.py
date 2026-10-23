@@ -24,7 +24,7 @@ from venv_python import venv_python
 TESTS = Path(__file__).resolve().parent
 BACKEND = TESTS.parent
 PY = venv_python()
-PROMPT_FILE = BACKEND / "summarizer.py"
+PROMPT_FILE = BACKEND / "prompts" / "summarize_full.md"
 
 TARGET = ["tests/test_summarize_routes.py", "-k", "TestSummaryPromptContentDemand"]
 

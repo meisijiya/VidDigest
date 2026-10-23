@@ -18,6 +18,43 @@ const FE = join(HERE, '..')
 const BE = join(FE, '..', 'backend')
 
 /** 每个变异：破坏什么、期望哪条测试转红 */
+// 空白宽松匹配：模式串的每个字符之间都允许插入任意空白。
+// 非空白字符仍要逐字相同——所以它不放宽判据，只是不怕 prettier 重排。
+function looseFind(text, pattern) {
+  // 在 text 里找 pattern，忽略空白差异，返回 [start, end] 或 null。
+  //
+  // 非空白字符仍要逐字相同、顺序不变，只允许它们之间多出空白（换行、缩进、
+  // 逗号后加空格……）。这些是格式化工具造成的样子，不是代码变了。
+  //
+  // 刻意不用正则：把 \s* 挂在每个字符后面会让回溯指数爆炸，源文件一大
+  // 就能把进程卡死。这里是双指针扫描，复杂度 O(n*m)，没有回溯。
+  const chars = Array.from(pattern).filter((ch) => !/\s/.test(ch))
+  if (chars.length === 0) return null
+  const n = text.length
+  for (let start = 0; start < n; start += 1) {
+    if (text[start] !== chars[0]) continue
+    let ti = start
+    let ok = true
+    for (const c of chars) {
+      while (ti < n && /\s/.test(text[ti])) ti += 1
+      if (ti >= n || text[ti] !== c) {
+        ok = false
+        break
+      }
+      ti += 1
+    }
+    if (ok) return [start, ti]
+  }
+  return null
+}
+
+function replaceLoose(src, from, to) {
+  if (src.includes(from)) return { out: src.replace(from, to), matched: true }
+  const span = looseFind(src, from)
+  if (!span) return { out: src, matched: false }
+  return { out: src.slice(0, span[0]) + to + src.slice(span[1]), matched: true }
+}
+
 const MUTANTS = [
   {
     name: 'M1 卡片退回 div+@click（点空白处没反应）',
@@ -52,7 +89,7 @@ const MUTANTS = [
   {
     name: 'M5 自动拉取条件去掉开关（无脑自动 = 会扣额度）',
     file: join(FE, 'src/components/VideoSummary.vue'),
-    from: 'if (newUrl && props.hasCommunityResult) {',
+    from: 'if (newUrl && (props.hasCommunityResult || props.regenerateRequested)) {',
     to: 'if (newUrl) {',
     expect: /没有自动发起|为真时自动发起/,
   },
@@ -87,8 +124,8 @@ const MUTANTS = [
   {
     name: 'M10 额度面板只列一个计数器（拆分对用户不可见）',
     file: join(FE, 'src/components/AppHeader.vue'),
-    from: "[['parse', '解析'], ['chat', '追问']]",
-    to: "[['parse', '解析']]",
+    from: "['chat', '追问'],",
+    to: '',
     expect: /没有同时列出解析与追问两个额度/,
   },
   {
@@ -101,15 +138,15 @@ const MUTANTS = [
   {
     name: 'M12 handleOpenRecord 不再查社区（历史页自动展示永不触发）',
     file: join(FE, 'src/App.vue'),
-    from: 'async function handleOpenRecord(detail) {',
-    to: 'async function handleOpenRecordUnused(detail) {',
+    from: 'async function handleOpenRecord(detail: HistoryDetail) {',
+    to: 'async function handleOpenRecordUnused(detail: HistoryDetail) {',
     expect: /没找到|没有查社区/,
   },
   {
     // 真实 bug：点击请求都发出去了，但社区页没让开，用户看到的是「没反应」。
     name: 'M13 点卡片不切回首页（请求发出但页面不动）',
     file: join(FE, 'src/App.vue'),
-    from: "  currentPage.value = 'home'\r\n  handleParse(item.video_url)",
+    from: "  router.push('/')\n  handleParse(item.video_url)",
     to: '  handleParse(item.video_url)',
     expect: /没切回首页/,
   },
@@ -137,8 +174,8 @@ const MUTANTS = [
   {
     name: 'M17 把像素网格搬回历史页空状态（母题被复制，三处一起闪）',
     file: join(FE, 'src/components/HistoryPage.vue'),
-    from: '<p class="text-sm mb-1">暂无解析历史</p>',
-    to: '<div class="grid grid-cols-3 gap-1 mb-5" aria-hidden="true"><span class="w-2.5 h-2.5 rounded-[2px] bg-violet/40 animate-pixel-blink"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-purple/40 animate-pixel-blink delay-1"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-pink/40 animate-pixel-blink delay-2"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-purple/40 animate-pixel-blink delay-3"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/40 animate-pixel-blink delay-4"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/40 animate-pixel-blink delay-5"></span></div><p class="text-sm mb-1">暂无解析历史</p>',
+    from: "<p class=\"text-sm mb-1\">{{ hasFilters ? '没有匹配的记录' : '暂无解析历史' }}</p>",
+    to: '<div class="grid grid-cols-3 gap-1 mb-5" aria-hidden="true"><span class="w-2.5 h-2.5 rounded-[2px] bg-violet/40 animate-pixel-blink"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-purple/40 animate-pixel-blink delay-1"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-pink/40 animate-pixel-blink delay-2"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-purple/40 animate-pixel-blink delay-3"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/40 animate-pixel-blink delay-4"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/40 animate-pixel-blink delay-5"></span></div><p class="text-sm mb-1">{{ hasFilters ? \'没有匹配的记录\' : \'暂无解析历史\' }}</p>',
     expect: /母题被复制了一份/,
   },
 ]
@@ -160,17 +197,20 @@ for (const m of MUTANTS) {
     broken.push(`${m.name} —— 读取失败: ${e.message}`)
     continue
   }
-  if (!src.includes(m.from)) {
-    // 锚点没命中**必须**算失败。静默跳过会让「这条变异没跑过」
-    // 看起来像「这条变异存活了」，或者干脆消失在报告里 ——
-    // 而这两件事的处置完全相反。
+  // 锚点没命中**必须**算失败。静默跳过会让「这条变异没跑过」
+  // 看起来像「这条变异存活了」，或者干脆消失在报告里 ——
+  // 而这两件事的处置完全相反。
+  // 但「重排版」（prettier 改了换行与缩进）不算代码变了：
+  // 先精确匹配，再退到空白宽松（只改空白，非空白字符仍逐字相同）。
+  const mutation = replaceLoose(src, m.from, m.to)
+  if (!mutation.matched) {
     broken.push(`${m.name} —— 锚点没命中（代码已变或换行符不符？先更新变异脚本，别跳过）`)
     continue
   }
 
   copyFileSync(m.file, backup)
   try {
-    writeFileSync(m.file, src.replace(m.from, m.to), 'utf8')
+    writeFileSync(m.file, mutation.out, 'utf8')
     let out = ''
     let ran = -1
     try {

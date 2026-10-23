@@ -236,9 +236,14 @@ def _import_auth_in_subprocess(tmp_path, env_overrides):
     # 子进程从脚本所在目录（tmp_path）起 sys.path，必须显式给 backend 路径
     env["PYTHONPATH"] = str(ROOT_BACKEND)
     env.update(env_overrides)
+    # 子进程打印的是中文报错。父进程必须按 UTF-8 解码，
+    # 否则 Windows 上会按系统默认的 GBK 解，直接 UnicodeDecodeError
+    # （Linux 默认 UTF-8，CI 上不复现——只在开发机上现形的坑）。
+    env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, str(script)],
-        env=env, capture_output=True, text=True, timeout=120,
+        env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=120,
     )
 
 

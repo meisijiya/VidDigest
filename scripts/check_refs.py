@@ -117,6 +117,34 @@ def has_ignored_segment(rel):
     return any(p in IGNORED_SEGMENTS for p in parts)
 
 
+def git_ignored(paths):
+    """问 git：这些路径里哪些被 .gitignore 排除。
+
+    运行期产物（backend/.env、backend/data/app.db、backend/logs/app.log、
+    backend/backups/*.db）都不在版本库里。文档里写它们是在描述**运行期状态**，
+    不是在指一个仓库内的文件；按文件存在性去查它们，会让「本机碰巧有」
+    变成「门禁绿」的理由——换一台机器、换一个干净克隆，同样的文档就该转红。
+    那是误报，而且是 2026-10-23 在 CI 上第一次暴露的（CI 没有 backend/.env）。
+
+    所以判据交给 .gitignore：被排除的不查，其余照查。
+    放行规则也由 .gitignore 自己说：`.env*` 被排除，但 `!.env.example`
+    放行模板，所以 .env.example 仍然要查。
+    """
+    uniq = sorted({p for p in paths if p})
+    if not uniq:
+        return set()
+    payload = ("\n".join(uniq) + "\n").encode("utf-8")
+    proc = subprocess.run(
+        ["git", "-C", REPO, "check-ignore", "--stdin"],
+        input=payload,
+        capture_output=True,
+    )
+    if proc.returncode not in (0, 1):
+        sys.stderr.write("ERROR: git check-ignore 失败，无法判断运行期产物。\n")
+        sys.exit(2)
+    return {p for p in proc.stdout.decode("utf-8", "replace").splitlines() if p}
+
+
 def existing_adr_ids():
     adr_dir = os.path.join(REPO, "docs", "adr")
     ids = set()
@@ -181,6 +209,7 @@ def main():
     adr_ids = existing_adr_ids()
     files = tracked_files()
     checked = 0
+    candidates = []
 
     for rel in files:
         if not rel.lower().endswith(TEXT_SUFFIXES):
@@ -239,21 +268,28 @@ def main():
                         )
                     continue
 
-                target = os.path.join(REPO, norm)
-                if not os.path.exists(target):
-                    violations.append("%s:%d: 路径不存在：%s" % (rel, num, shown))
-                    continue
-                start = m.group("start")
-                if not (is_code and start and os.path.isfile(target)):
-                    continue
-                target_text = read_text(norm)
-                if target_text is None:
-                    continue
-                total_lines = len(target_text.splitlines())
-                if total_lines and int(start) > total_lines:
-                    violations.append(
-                        "%s:%d: 行号越界：%s 只有 %d 行" % (rel, num, norm, total_lines)
-                    )
+                # 存在性与行号边界统一放到扫描之后判：先收集所有候选路径，
+                # 再一次性问 git 哪些被 .gitignore 排除（运行期产物不查）。
+                candidates.append((rel, num, norm, shown, m.group("start"), is_code))
+
+    ignored = git_ignored({c[2] for c in candidates})
+    for rel, num, norm, shown, start, is_code in candidates:
+        if norm in ignored:
+            continue
+        target = os.path.join(REPO, norm)
+        if not os.path.exists(target):
+            violations.append("%s:%d: 路径不存在：%s" % (rel, num, shown))
+            continue
+        if not (is_code and start and os.path.isfile(target)):
+            continue
+        target_text = read_text(norm)
+        if target_text is None:
+            continue
+        total_lines = len(target_text.splitlines())
+        if total_lines and int(start) > total_lines:
+            violations.append(
+                "%s:%d: 行号越界：%s 只有 %d 行" % (rel, num, norm, total_lines)
+            )
 
     if violations:
         print("refs: %d 处引用失配" % len(violations))

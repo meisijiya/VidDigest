@@ -18,6 +18,14 @@ from venv_python import venv_python
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = venv_python()
 SCANNER = os.path.join(REPO, "scripts", "check_secrets.py")
+
+# Windows 控制台默认 GBK：扫描器输出的行里可能有非 GBK 字符，
+# 直接 print 会抛 UnicodeEncodeError，把「关卡红了」变成「脚本自己崩了」。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 DOC = os.path.join(REPO, "docs", "OPERATIONS.md")
 
 
@@ -27,12 +35,30 @@ def run_scanner():
 
 
 def real_env_value(key):
-    """取 backend/.env 里的真值，只在本进程内使用，不打印。"""
-    with open(os.path.join(REPO, "backend", ".env"), encoding="utf-8", errors="replace") as fh:
+    """取 backend/.env 里的真值，只在本进程内使用，不打印。
+
+    没有这个文件时（干净克隆、CI 上就没有）返回 None。
+    那时改测同形态的合成值 —— 判据是「像密钥的值出现在已 stage 的文档里要转红」，
+    不该依赖某台机器上恰好有真凭据。2026-10-23 在 CI 上就是这里炸的：
+    FileNotFoundError: backend/.env。
+    """
+    path = os.path.join(REPO, "backend", ".env")
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8", errors="replace") as fh:
         for raw in fh:
             if raw.strip().startswith(key + "="):
                 return raw.strip().split("=", 1)[1].strip().strip('"').strip("'")
     return None
+
+
+def synthetic_secret():
+    """拼一个密钥形状的合成值。
+
+    源码里不能出现相邻字面量：扫描器会扫到这个脚本自己并把它判红
+    （那正是关卡该做的事），所以这个脚本就不能入库。拆开写。
+    """
+    return "s" + "k" + "-" + ("a1b2c3d4" * 4)
 
 
 CASES = [
@@ -120,8 +146,9 @@ for name, injection, expect_fail in CASES:
 
 # A 维度单独验：真值反查必须能转红
 key = "ALIYUN_BAILIAN_API_KEY"
-val = real_env_value(key)
-if val and len(val) >= 8:
+env_val = real_env_value(key)
+val = env_val if (env_val and len(env_val) >= 8) else synthetic_secret()
+if True:
     target = os.path.join(REPO, "docs", "ADR_TMP.md")
     try:
         with open(target, "wb") as fh:
@@ -133,7 +160,8 @@ if val and len(val) >= 8:
         verdict = "OK" if rc == 1 else "BAD"
         if rc != 1:
             fails.append("M6 A 维度真值反查没转红（rc=%d）——最关键的一条" % rc)
-        print("\n[%s] M6 A 维度：把 .env 真值放进一个已 stage 的文档" % verdict)
+        print("\n[%s] M6 A 维度：把密钥形状的值放进一个已 stage 的文档（%s）"
+              % (verdict, "本机 .env 真值" if env_val else "合成值（干净克隆/CI 没有 .env）"))
         print("     期望 fail=True，实得 rc=%d" % rc)
         for ln in out.splitlines():
             if "ADR_TMP" in ln:

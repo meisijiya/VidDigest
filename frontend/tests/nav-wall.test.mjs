@@ -44,6 +44,7 @@ function stripComments(src) {
 
 const appVue = stripComments(read('../src/App.vue'))
 const headerVue = stripComments(read('../src/components/AppHeader.vue'))
+const homeView = stripComments(read('../src/views/HomeView.vue'))
 const heroVueRaw = read('../src/components/HeroSection.vue')
 const heroVue = stripComments(heroVueRaw)
 
@@ -209,7 +210,7 @@ describe('社区入口 · 在顶部导航里常驻', () => {
   })
 
   test('首页那个孤立的「浏览社区 →」按钮已下线（否则是两个入口）', () => {
-    assert.doesNotMatch(appVue, /浏览社区/, '首页营销区还留着「浏览社区 →」按钮 —— 入口重复，用户会不知道该点哪个')
+    assert.doesNotMatch(homeView, /浏览社区/, '首页营销区还留着「浏览社区 →」按钮 —— 入口重复，用户会不知道该点哪个')
   })
 
   test('入口是常驻的：AppHeader 挂在 <main> 之外，没有被条件渲染包住', () => {
@@ -305,9 +306,14 @@ describe('城墙 · 底边固定，凸起上下浮', () => {
   })
 
   test('浮动延迟真的绑到了每个 <g> 上（数据里有 delay，模板没绑 = 全员同相位）', () => {
+    // 只看 <g ...> 这一个标签本身。
+    // 跨到子节点去匹配的话，子节点里的同名绑定会替它把这条守卫顶绿——
+    // 而绑在子节点上没用：浮动作用在 <g> 上，绑在里面的 rect 上等于没绑。
+    const stepTag = heroVue.match(/<g v-for="s in wallSteps"[^>]*>/)
+    assert.ok(stepTag, '找不到挂 wall-step 的 <g> 标签')
     assert.match(
-      heroVue,
-      /<g v-for="s in wallSteps"[\s\S]*?:style="\{ animationDelay: s\.delay \+ 's' \}"/,
+      stepTag[0],
+      /:style="\{ animationDelay: s\.delay \+ 's' \}"/,
       'wall-step 的 <g> 上没有 animationDelay 绑定 —— 每段 delay 都白算了',
     )
   })
@@ -650,7 +656,11 @@ describe('城墙 · 顶线渐变显现', () => {
       /:fill="s\.line"/,
       '又加回了一条 :fill="s.line" 的实心线 —— 线条会全程可见，' + '那正是「线条完全显现」这个形态',
     )
-    assert.doesNotMatch(g, /stop-color="#fff"/, '渐变里混进了白色高光 —— 白带画在实线上就是「光点在动」')
+    // 渐变在 <defs> 里，不在 <g> 块里；拿 <g> 块去查渐变的颜色，
+    // 查的是另一个地方，守卫就永远轮不到触发。
+    const defs = heroVue.match(/<defs>[\s\S]*?<\/defs>/)
+    assert.ok(defs, '没有 <defs>')
+    assert.doesNotMatch(defs[0], /stop-color="#fff"/, '渐变里混进了白色高光 —— 白带画在实线上就是「光点在动」')
   })
 
   test('渐变和引用它的 rect 绑在同一个 id 上（对不上 = 静默失效）', () => {

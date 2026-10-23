@@ -28,12 +28,50 @@ const FE = join(HERE, '..')
 const HEADER = join(FE, 'src/components/AppHeader.vue')
 const APP = join(FE, 'src/App.vue')
 const HERO = join(FE, 'src/components/HeroSection.vue')
+const HOME = join(FE, 'src/views/HomeView.vue')
 
 /** 多行锚点拼起来：写成数组比在字符串里手写 \n 更好读，
  *  也顺带躲开了模板字符串对 ${} 的插值（源码里有 `url(#wall-shine-${s.id})`）。 */
 const L = (...lines) => lines.join('\n')
 
 /** 每个变异：破坏什么、期望哪条断言转红 */
+// 空白宽松匹配：模式串的每个字符之间都允许插入任意空白。
+// 非空白字符仍要逐字相同——所以它不放宽判据，只是不怕 prettier 重排。
+function looseFind(text, pattern) {
+  // 在 text 里找 pattern，忽略空白差异，返回 [start, end] 或 null。
+  //
+  // 非空白字符仍要逐字相同、顺序不变，只允许它们之间多出空白（换行、缩进、
+  // 逗号后加空格……）。这些是格式化工具造成的样子，不是代码变了。
+  //
+  // 刻意不用正则：把 \s* 挂在每个字符后面会让回溯指数爆炸，源文件一大
+  // 就能把进程卡死。这里是双指针扫描，复杂度 O(n*m)，没有回溯。
+  const chars = Array.from(pattern).filter((ch) => !/\s/.test(ch))
+  if (chars.length === 0) return null
+  const n = text.length
+  for (let start = 0; start < n; start += 1) {
+    if (text[start] !== chars[0]) continue
+    let ti = start
+    let ok = true
+    for (const c of chars) {
+      while (ti < n && /\s/.test(text[ti])) ti += 1
+      if (ti >= n || text[ti] !== c) {
+        ok = false
+        break
+      }
+      ti += 1
+    }
+    if (ok) return [start, ti]
+  }
+  return null
+}
+
+function replaceLoose(src, from, to) {
+  if (src.includes(from)) return { out: src.replace(from, to), matched: true }
+  const span = looseFind(src, from)
+  if (!span) return { out: src, matched: false }
+  return { out: src.slice(0, span[0]) + to + src.slice(span[1]), matched: true }
+}
+
 const MUTANTS = [
   // ── 导航社区入口 ──────────────────────────────────────
   {
@@ -51,10 +89,8 @@ const MUTANTS = [
   {
     name: 'N3 openCommunity 不切页',
     file: APP,
-    pairs: [
-      ["  currentPage.value = 'community'\n  window.scrollTo({ top: 0 })\n}", '  window.scrollTo({ top: 0 })\n}'],
-    ],
-    expect: /没有把 currentPage 切到 community/,
+    pairs: [["router.push('/community')", "router.push('/home')"]],
+    expect: /没有 router\.push\('\/community'\)/,
   },
   {
     name: 'N4 社区按钮不随当前页高亮',
@@ -69,7 +105,7 @@ const MUTANTS = [
   },
   {
     name: 'N5 首页那个孤立的「浏览社区 →」按钮被加回来（两个入口）',
-    file: APP,
+    file: HOME,
     pairs: [
       ['<FeatureSection />', '<button @click="currentPage = \'community\'">浏览社区 →</button><FeatureSection />'],
     ],
@@ -170,7 +206,7 @@ const MUTANTS = [
   {
     name: 'W8c 某个凸起没有颜色（垛口变秃，而且和前一段连成两个凹）',
     file: HERO,
-    pairs: [["{ x: 240,  y: 32, line: '#a78bfa' },", '{ x: 240,  y: 32 },']],
+    pairs: [["{ x: 240, y: 32, line: '#1b5a79' },", '{ x: 240, y: 32 },']],
     expect: /是两个凹挨着|凸起有 \d+ 段|凹有 \d+ 段|没有合法颜色/,
   },
   {
@@ -366,31 +402,31 @@ const MUTANTS = [
   {
     name: 'W25 相邻两个凸起同色（两座垛口看成一根长条）',
     file: HERO,
-    pairs: [["line: '#a78bfa' },", "line: '#7c3aed' },"]],
+    pairs: [["line: '#1b5a79' },", "line: '#2fa1da' },"]],
     expect: /并排同色/,
   },
   {
     name: 'W26 循环接缝那对凸起同色（末尾与开头撞色）',
     file: HERO,
-    pairs: [["line: '#06b6d4' },", "line: '#7c3aed' },"]],
+    pairs: [["line: '#e17d0c' },", "line: '#2fa1da' },"]],
     expect: /循环接缝/,
   },
   {
     name: 'W26b 某个颜色不是 @theme 里的（露出不属于本站色系的杂色）',
     file: HERO,
-    pairs: [["line: '#ec4899' },", "line: '#00ff00' },"]],
+    pairs: [["line: '#67abcd' },", "line: '#00ff00' },"]],
     expect: /@theme 里不存在/,
   },
   {
     name: 'W26c 某个品牌色族被换掉（四族少一族，色谱断了）',
     file: HERO,
-    pairs: [["line: '#a855f7' },", "line: '#c4b5fd' },"]],
-    expect: /没有 violet|没有 purple|没有 pink|没有 cyan|色谱断了/,
+    pairs: [["line: '#60ebc6' },", "line: '#248cc0' },"]],
+    expect: /少于 3 个就不是色谱|色族/,
   },
   {
     name: 'W26d 渐变不再按凸起过滤（给凹也生成一条没人用的渐变）',
     file: HERO,
-    pairs: [['v-for="s in wallSteps.filter(w => w.line)"', 'v-for="s in wallSteps"']],
+    pairs: [['v-for="s in wallSteps.filter((w) => w.line)"', 'v-for="s in wallSteps"']],
     expect: /没有按凸起遍历|没有按 line 过滤/,
   },
   {
@@ -404,7 +440,7 @@ const MUTANTS = [
     // 目标：让第 1 个和第 4 个凸起同色 —— 中间隔着两座，
     // 「相邻不同」那条查不到，只有「一个都不重复」那条能抓。
     file: HERO,
-    pairs: [["line: '#ec4899' },", "line: '#7c3aed' },"]],
+    pairs: [["line: '#f49a34' },", "line: '#2fa1da' },"]],
     expect: /颜色重复了/,
   },
   {
@@ -416,7 +452,7 @@ const MUTANTS = [
   {
     name: 'W28 两段 x 相同（段距不等宽，底部露参差的口子）',
     file: HERO,
-    pairs: [["{ x: 720,  y: 34, line: '#ec4899'", "{ x: 240,  y: 34, line: '#ec4899'"]],
+    pairs: [["{ x: 720, y: 34, line: '#60ebc6'", "{ x: 240, y: 34, line: '#60ebc6'"]],
     expect: /没有递增|段距不等宽/,
   },
 ]
@@ -432,8 +468,11 @@ function applyPairs(src, pairs) {
   const crlf = src.includes('\r\n')
   let text = crlf ? src.replace(/\r\n/g, '\n') : src
   for (const [from, to] of pairs) {
-    if (!text.includes(from)) return null
-    text = text.split(from).join(to)
+    // 空白宽松：prettier 重排过的锚点不该算「代码变了」。
+    // 只替换第一处命中——一处变异只该动一个地方。
+    const r = replaceLoose(text, from, to)
+    if (!r.matched) return null
+    text = r.out
   }
   if (crlf) text = text.replace(/\n/g, '\r\n')
   return text

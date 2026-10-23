@@ -216,9 +216,12 @@ def _run_child(script, db_path, url, owner):
            "BACKEND_DIR": backend_dir,
            "DB_FILE": str(db_path),
            "VIDEO_URL": url,
-           "OWNER_ID": str(owner)}
+           "OWNER_ID": str(owner),
+           # 子进程输出按 UTF-8 解码：Windows 默认 GBK 会把中文判成解码失败
+           "PYTHONIOENCODING": "utf-8"}
     out = subprocess.run([sys.executable, str(script)], env=env,
-                         capture_output=True, text=True, timeout=60)
+                         capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", timeout=60)
     assert out.returncode == 0, (
         f"子进程退出了 {out.returncode}：\nstdout={out.stdout}\nstderr={out.stderr}")
     return out.stdout.strip().splitlines()[-1]
