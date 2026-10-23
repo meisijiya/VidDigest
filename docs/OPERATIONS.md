@@ -1007,6 +1007,12 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 | 数据库 | 文件存在且 `PRAGMA integrity_check` 通过 |
 | 数据目录 | 占用不超过阈值（默认 1024 MB） |
 | 日志新鲜度 | 日志文件存在且最近有写入（默认 24 小时内） |
+| 前端入口缓存 | 入口页响应带 `Cache-Control: no-store`（默认 http://127.0.0.1:8080/） |
+
+最后一项的由来：静态资源带内容哈希，可以长期缓存；`index.html` 里写着当前 bundle
+的文件名，浏览器捏着旧入口页就会去加载旧 bundle，页面「改了没生效」——
+排查半天才发现是缓存，不是代码。所以入口页必须每次回源（见 `frontend/nginx.conf`
+里的 `location = /index.html`）。
 
 任一项不达标 → 退出码非零。巡检报告如果永远显示「一切正常」，它就只是输出文字，
 不是判据。

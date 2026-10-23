@@ -324,6 +324,18 @@ describe('AuthModal 挂载 · 关闭', () => {
     w.unmount()
   })
 
+  test('关闭按钮有可访问名（读屏能念出来，自动化也选得到）', async () => {
+    const w = await mountModal({ initialMode: 'login' })
+
+    // 这个按钮里只有一个 svg，没有文字。缺了 aria-label，它对读屏用户就是
+    // 「一个按钮」，对自动化就是「只能按坐标点」——这是可访问性缺口，
+    // 不是测试写法问题，所以判据钉在「必须有可访问名」上。
+    const closeBtn = [...body().querySelectorAll('button')].find((b) => b.getAttribute('type') === 'button')
+    expect(closeBtn, '没有 type=button 的关闭按钮').toBeTruthy()
+    expect((closeBtn.getAttribute('aria-label') || '').trim(), '关闭按钮没有可访问名（aria-label）').not.toBe('')
+    w.unmount()
+  })
+
   test('切换登录/注册时按钮文案跟着换', async () => {
     const w = await mountModal({ initialMode: 'login' })
     const switchBtn = [...body().querySelectorAll('button')].find((b) => b.textContent.includes('去注册'))

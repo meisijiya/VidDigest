@@ -8,6 +8,8 @@
         >
           <!-- 关闭按钮 -->
           <button
+            type="button"
+            aria-label="关闭"
             @click="$emit('close')"
             class="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-all"
           >
