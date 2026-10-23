@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import httpx
 import yt_dlp
@@ -733,6 +733,32 @@ def _bailian_default_model() -> str:
     return model_catalog.platform_default_model("bailian") or _FALLBACK_BAILIAN_MODEL
 
 
+# ── 流式响应帧的读取 ────────────────────────────────────
+def _iter_delta_text(response) -> Iterator[str]:
+    """把一次流式响应摊平成纯文本块。
+
+    OpenAI 兼容的网关有两种收尾帧：
+
+    1. ``choices`` 非空、``delta.content`` 为空、``finish_reason`` 有值——正常收尾；
+    2. **只带 usage 的空帧**：``choices`` 是空数组。本地聚合网关与自建推理服务
+       （Ollama / vLLM / 各类代理）都这么发，官方 OpenAI 端点不这么发。
+
+    直接写 ``chunk.choices[0].delta`` 会在第 2 种帧上抛 IndexError。症状极具误导性：
+    正文已经整段到达用户面前，**之后**才弹一句「凭据无效或调用失败」——看起来像
+    key 坏了，其实 key 好的，坏的是收尾帧的读法（工单 #65）。
+
+    所以只认「有 choices、有 delta、有 content」的帧，其余一律跳过。
+    """
+    for chunk in response:
+        choices = getattr(chunk, "choices", None)
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        content = getattr(delta, "content", None)
+        if content:
+            yield content
+
+
 class VideoSummarizer:
     """
     ────────────────────────────────────────────────────────────
@@ -890,10 +916,8 @@ class VideoSummarizer:
             temperature=0.7,
             max_tokens=4096,
         )
-        for chunk in response:
-            delta = chunk.choices[0].delta
-            if delta.content:
-                yield delta.content
+        for content in _iter_delta_text(response):
+            yield content
 
     @staticmethod
     def clean_mindmap_markdown(md: str) -> str:
@@ -947,10 +971,8 @@ class VideoSummarizer:
             temperature=0.7,
             max_tokens=2048,
         )
-        for chunk in response:
-            delta = chunk.choices[0].delta
-            if delta.content:
-                yield delta.content
+        for content in _iter_delta_text(response):
+            yield content
 
     # ── Prompt 设计 ────────────────────────────────────
 
