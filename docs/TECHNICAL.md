@@ -45,7 +45,7 @@
 | 业务表 | 6 张 + 1 个 FTS5 虚表 + 4 个触发器 | 建表语句（A10） |
 | 设计决策 | 19 篇 ADR（18 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
 | 受管理的 Markdown | 34 个 | `git ls-files '*.md'`（A12） |
-| 编码代理的工单 | 67 条（本文档的工单 #67 关闭后全部关闭） | `gh issue list --state all`（A13） |
+| 编码代理的工单 | 68 条（全部关闭） | `gh issue list --state all`（A13） |
 
 ### 1.2 两条主线
 
@@ -443,7 +443,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A10 | 6 表 + 1 虚表 + 4 触发器 | 建表 / 建虚表 / 建触发器语句 | `grep -rnE 'CREATE (VIRTUAL )?TABLE\|CREATE TRIGGER' backend --include=*.py` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
 | A11 | 19 | `docs/adr/` 下的文件数（18 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
 | A12 | 34 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
-| A13 | 67 | 工单总数（#67 为本文档工单，关闭后全部关闭） | `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
+| A13 | 68 | 工单总数（全部关闭） | `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A16 | 1800 | 覆盖闸门 TTL（秒） | `grep -n 'VIDEO_REGENERATE_TTL_SECONDS' backend/database.py` | `backend/database.py` | 常量可改 |
