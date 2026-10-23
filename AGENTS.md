@@ -52,11 +52,11 @@ The five canonical triage roles, using the default label strings verbatim. See `
 
 ### Domain docs
 
-Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `docs/agents/domain.md`。
+Single-context: one `GLOSSARY.md` at the repo root, ADRs under `docs/adr/`. See `docs/agents/domain.md`。
 
 ## 社区 / BYOK 功能
 
-`CONTEXT.md` 与 `docs/adr/0001`–`0006` 记录了 2026-10-01 grill 敲定的社区/BYOK 设计。
+`GLOSSARY.md` 与 `docs/adr/0001`–`0006` 记录了 2026-10-01 grill 敲定的社区/BYOK 设计。
 动这块前先读那两份文档，别重新推导已经定过的东西。
 
 **实现进度不要从本文件读**——工单会一张张关掉，本文件不会跟着变。判据是工单自身：
@@ -107,7 +107,7 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 
 ## 范围边界
 
-- 领域定义在 `CONTEXT.md`，设计决策在 `docs/adr/`。动社区/BYOK/管理后台之前先读 `0001`–`0013`，别重新推导已定过的东西。
+- 领域定义在 `GLOSSARY.md`，设计决策在 `docs/adr/`。动社区/BYOK/管理后台之前先读 `0001`–`0013`，别重新推导已定过的东西。
 - **明确不做**：会员制、点赞/收藏/评论/关注、内容审核与举报**流程**（请举报、复审、自动违规录制）、视频下载功能本身的改动（**纯音频下载除外**，见下一条）、推荐算法与个性化排序、移动端原生应用、多语言界面、**社区视频的下架（软删除）**、**封禁 / 解封账号**。
 - **例外 · 纯音频下载**（用户明确要求，已实现）：`_extract_formats` 曾用 `if not has_video: continue` 把 yt-dlp 的纯音频流整批丢掉——DASH 源（B站 / YouTube）本来就只给分离的视频流和音频流，于是「只下音频」在界面上根本不是选项。抖音侧 `_get_media_url(mode="audio")` 早写好了却无人调用，`main.py` 也不传 mode，选了音频会**静默**下回视频。现在：每条格式自报 `kind`（`video`/`audio`），15 项上限内**先给音频留位**，前端分「选择画质」/「纯音频」两块，按钮文案随选中项变。**只提供原生音频容器（m4a / webm-opus / mp3），不做 MP3 转码。**
 - **已纳入管理后台**（ADR 0012）：建号、删号、管理员标记。删号语义是**有名下订单或解析历史就 409，绝不级联**；VIP 不在其中（仍只能由订单支付写入）。
@@ -146,7 +146,7 @@ Single-context: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `
 
 - [x] `AGENTS.md`（本文件，工程档，承接方已具名）
 - [x] `init.sh`（可执行门禁，三项检查都是真命令，不存在占位）
-- [x] `CONTEXT.md` + `docs/adr/`（领域词汇与设计决策）
+- [x] `GLOSSARY.md` + `docs/adr/`（领域词汇与设计决策）
 - [x] `docs/agents/`（tracker、标签、领域三份约定）
 
 状态与交接产物**不在此列**——它们归 `to-tickets` 与 `handoff`，本文件不代建。
