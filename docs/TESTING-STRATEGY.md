@@ -72,7 +72,7 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 ## 1. 现状快照
 
-**门禁跑 5 关**（`init.sh`，退出 0 才算通过）：
+**门禁跑 7 关**（`init.sh`，退出 0 才算通过）：
 
 | # | 关卡 | 判什么 |
 |---:|---|---|
@@ -81,8 +81,12 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 | 3 | `scripts/check_secrets.py` | 跟踪文件 + 全部可达历史里没有内容级凭据 |
 | 4 | `frontend: npm test` | `*.test.mjs`，静态 / 契约断言（`node --test`） |
 | 5 | `frontend: npm run test:mount` | `*.spec.mjs`，真挂载（`vitest run` + jsdom） |
+| 6 | `scripts/check_refs.py` | 源码注释与文档里的 ADR 编号、路径锚点指向真实存在的东西 |
+| 7 | `scripts/check_gate_consistency.py` | 文档里写的关卡数等于 `init.sh` 真跑的关卡数 |
 
 第 3 关扫的是**内容**不是文件名——`.gitignore` 挡得住 `.env`，挡不住「把口令抄进文档」。第 4、5 关是两套独立 runner、分开计数，理由见 3.5。
+
+第 6、7 关守的是**门禁自身**：第 6 关查「指令与注释指着的东西还在不在」——AGENTS.md、ADR、源码注释互指着，那一头没了，没有任何一条既有用例会红；第 7 关查「文档里写的关卡数是不是真的关卡数」——真值只在 `init.sh` 里，脚本从那里数，不硬编码。
 
 **用例数与覆盖率不写死**：这几项每次跑都在动，写进文档就等于给自己埋一个永远不会报警的过期数字。当前值跑 `./init.sh` 看输出。
 

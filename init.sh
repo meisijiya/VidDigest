@@ -43,7 +43,7 @@ if [ -x "$PY" ]; then
       -x 'venv[\\/]' . )
   RAN=$((RAN + 1))
 
-  # 敏感内容扫描（第 4 道关卡）。
+  # 敏感内容扫描（第 3 关）。
   #
   # 为什么它必须在门禁里，而不是只写成 .gitignore 里的一条注释：
   # .gitignore 是**文件名级**的。它挡得住 .env，挡不住「把 .env 里那条口令
@@ -91,6 +91,29 @@ else
   echo "ERROR: 找不到 frontend/package.json，门禁拒绝通过。"
   exit 1
 fi
+
+# ── 门禁自身：引用与口径 ─────────────────────────────────────
+# 下面两关守的是「指令文件与注释本身有没有烂掉」。
+#
+# 为什么要有它们：本仓库的规约（AGENTS.md）、设计决策（docs/adr/）、
+# 测试策略（docs/TESTING-STRATEGY.md）与源码注释之间**互相指着**。
+# 指着的那一头被改写或删掉时，**没有任何一条既有用例会红**——
+# 用例断言的是行为，不是「你写的这句话还指得对」。
+# 这不是假设：frontend/src/App.vue 里那句「不引 vue-router（ADR 0010）」
+# 就指着错的那一篇（ADR 0010 记的是管理后台范围与鉴权）。
+# 文档与注释腐烂之后**仍在产生约束力**，而它们自己不会报警。
+# 这两关把「腐烂」变成「门禁红」。
+echo ""
+echo "=== refs: ADR 与路径引用一致性 ==="
+"$PY" scripts/check_refs.py
+RAN=$((RAN + 1))
+
+# 第 7 关：门禁有几关，只有 init.sh 知道。文档里写的数字必须跟着它走。
+# 真值从 init.sh 里数出来，不在脚本里硬编码。
+echo ""
+echo "=== gate: 关卡数口径一致性 ==="
+"$PY" scripts/check_gate_consistency.py
+RAN=$((RAN + 1))
 
 if [ "$RAN" -eq 0 ]; then
   echo ""

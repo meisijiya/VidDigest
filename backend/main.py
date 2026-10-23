@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from cors_config import cors_kwargs
 from downloader import VideoDownloader
 from douyin import AUDIO_FORMAT_ID, DouyinParser, is_douyin_url
 from database import init_db, seed_admin_emails_from_env
@@ -51,13 +52,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 跨域白名单：默认不开，确有跨域部署时用 VIDDIGEST_ALLOWED_ORIGINS 显式开口（逗号分隔）。
+# 为什么这里不再是 allow_origins=["*"]：`*` 与 allow_credentials=True 并存时，
+# starlette 会把请求的 Origin 原样回显进 Access-Control-Allow-Origin，
+# 等于对任意来源开放带凭据的跨域读取，而本仓库的鉴权走 Cookie 里的 JWT。
+# 取舍与理由写在 backend/cors_config.py，改这一行之前先读它。
+app.add_middleware(CORSMiddleware, **cors_kwargs())
 
 
 #: 请求模型里**绝不能出现在 422 校验错误体**里的字段名。

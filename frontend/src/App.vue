@@ -185,7 +185,7 @@ const authModalMode = ref('login')
 const isAdmin = ref(!!(currentUser.value && currentUser.value.is_admin))
 
 /**
- * 轻路由：URL 与 currentPage 双向同步，**不引 vue-router**（ADR 0010）。
+ * 轻路由：URL 与 currentPage 双向同步，**不引 vue-router**（ADR 0017）。
  *
  * 只认 /admin 一个真实路径：主页、历史、社区都留在 '/'，
  * 因为这三个页签之间来回跳时 URL 变化对用户没有信息量，
