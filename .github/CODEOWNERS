@@ -1,0 +1,18 @@
+# 代码归属：改动这些路径需要 @meisijiya 复核
+# 说明：这条文件在「要求 PR 复核」的保护规则打开之前只是声明，不是强制；
+# 它的作用是把「谁该看这块改动」写进仓库，而不是留在某个人脑子里。
+
+# 默认所有文件
+* @meisijiya
+
+# 安全边界：凭据、门禁脚本与 CI 流程
+/backend/.env.example   @meisijiya
+/scripts/check_secrets.py @meisijiya
+/scripts/check_refs.py    @meisijiya
+/scripts/check_gate_consistency.py @meisijiya
+/scripts/mutation_*       @meisijiya
+/.github/workflows/       @meisijiya
+
+# 领域与决策
+/GLOSSARY.md   @meisijiya
+/docs/adr/     @meisijiya

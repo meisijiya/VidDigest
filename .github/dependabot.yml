@@ -1,0 +1,41 @@
+# 依赖更新：每天看一眼，但同一批只开一个 PR，免得噪声盖过信号。
+version: 2
+
+updates:
+  # 后端：requirements.txt / requirements-dev.txt 只有下界、没有锁文件，
+  # 所以这里盯的是「有没有新的上界约束出现」，真正的可复现性要靠钉版解决。
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - backend
+    groups:
+      backend-deps:
+        patterns:
+          - "*"
+
+  # 前端：package-lock.json 已跟踪，npm 这一路是可复现的。
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - frontend
+    groups:
+      frontend-deps:
+        patterns:
+          - "*"
+
+  # CI 本身：Actions 版本升级容易悄悄改行为，单独看。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - ci
