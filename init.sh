@@ -101,6 +101,30 @@ if [ -f frontend/package.json ]; then
   echo "=== frontend: npm run test:mount (真挂载) ==="
   ( cd frontend && npm run test:mount )
   RAN=$((RAN + 1))
+
+  # 类型检查（工单 #63 之后接上的三关）。
+  #
+  # 为什么把类型检查、静态检查、格式检查放进门禁：它们不是"锦上添花的
+  # 质量指标"，是**换一种实现就会红**的判据。`.js` 迁到 `.ts` 之后，
+  # 一次类型检查能挡住的东西比人眼审 53 个组件快得多。
+  #
+  # 三关各自独立：typecheck 看类型，lint 看写法与未使用的变量，
+  # format:check 看格式。混在一起就看不出是哪一类红了——
+  # 而"红色的那一类是哪一类"，正是要回答的问题。
+  echo ""
+  echo "=== frontend: npm run typecheck (vue-tsc --noEmit) ==="
+  ( cd frontend && npm run typecheck )
+  RAN=$((RAN + 1))
+
+  echo ""
+  echo "=== frontend: npm run lint (eslint) ==="
+  ( cd frontend && npm run lint )
+  RAN=$((RAN + 1))
+
+  echo ""
+  echo "=== frontend: npm run format:check (prettier) ==="
+  ( cd frontend && npm run format:check )
+  RAN=$((RAN + 1))
 else
   echo "ERROR: 找不到 frontend/package.json，门禁拒绝通过。"
   exit 1
@@ -122,7 +146,7 @@ echo "=== refs: ADR 与路径引用一致性 ==="
 "$PY" scripts/check_refs.py
 RAN=$((RAN + 1))
 
-# 第 7 关：门禁有几关，只有 init.sh 知道。文档里写的数字必须跟着它走。
+# 第 10 关：门禁有几关，只有 init.sh 知道。文档里写的数字必须跟着它走。
 # 真值从 init.sh 里数出来，不在脚本里硬编码。
 echo ""
 echo "=== gate: 关卡数口径一致性 ==="
