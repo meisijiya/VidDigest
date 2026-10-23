@@ -13,8 +13,10 @@ import os
 import subprocess
 import sys
 
+from venv_python import venv_python
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PY = os.path.join(REPO, "backend", "venv", "Scripts", "python.exe")
+PY = venv_python()
 SCANNER = os.path.join(REPO, "scripts", "check_secrets.py")
 DOC = os.path.join(REPO, "docs", "OPERATIONS.md")
 

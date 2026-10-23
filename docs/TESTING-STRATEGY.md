@@ -88,6 +88,10 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 第 6、7 关守的是**门禁自身**：第 6 关查「指令与注释指着的东西还在不在」——AGENTS.md、ADR、源码注释互指着，那一头没了，没有任何一条既有用例会红；第 7 关查「文档里写的关卡数是不是真的关卡数」——真值只在 `init.sh` 里，脚本从那里数，不硬编码。
 
+**跑之前先装环境**：`bash scripts/bootstrap.sh` 建虚拟环境、装后端依赖、前端按锁文件安装；
+`init.sh` 自己只管跑，不负责装。门禁的解释器路径按存在性挑选（Windows 走 `venv/Scripts/python.exe`，
+Linux/macOS 走 `venv/bin/python`），挑不到就拒绝通过——它不静默回退到系统 Python。
+
 **用例数与覆盖率不写死**：这几项每次跑都在动，写进文档就等于给自己埋一个永远不会报警的过期数字。当前值跑 `./init.sh` 看输出。
 
 | 项 | 怎么取当前值 |

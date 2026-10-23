@@ -17,7 +17,9 @@ import io
 import subprocess
 import sys
 
-PY = "backend/venv/Scripts/python.exe"
+from venv_python import venv_python
+
+PY = venv_python()
 #: 平台分流有两个出口，两个都得在变异装置的射程内——只跑一个，
 #: 另一个出口上的新出口就拿不到「结构被改坏时会红」这条确认。
 TARGETS = (

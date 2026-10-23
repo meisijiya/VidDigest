@@ -22,7 +22,9 @@ import re
 import subprocess
 import sys
 
-PY = "backend/venv/Scripts/python.exe"
+from venv_python import venv_python
+
+PY = venv_python()
 TARGET = "backend/tests/test_url_canonical.py"
 CANON = "backend/url_canonical.py"
 

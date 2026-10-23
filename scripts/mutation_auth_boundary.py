@@ -18,7 +18,9 @@ import io
 import subprocess
 import sys
 
-PY = "backend/venv/Scripts/python.exe"
+from venv_python import venv_python
+
+PY = venv_python()
 TARGET = "backend/tests/test_auth_validation.py"
 AUTH = "backend/auth.py"
 API_AUTH = "backend/api_auth.py"

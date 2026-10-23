@@ -11,7 +11,9 @@ import io
 import subprocess
 import sys
 
-PY = "backend/venv/Scripts/python.exe"
+from venv_python import venv_python
+
+PY = venv_python()
 TARGET = "backend/tests/test_payment_webhook.py"
 PAYMENT = "backend/api_payment.py"
 DATABASE = "backend/database.py"

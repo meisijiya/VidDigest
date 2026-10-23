@@ -8,7 +8,9 @@ import io
 import subprocess
 import sys
 
-PY = "backend/venv/Scripts/python.exe"
+from venv_python import venv_python
+
+PY = venv_python()
 TARGET = "backend/tests/test_db_fixture_gate.py"
 GATE = "backend/tests/check_db_fixture.py"
 

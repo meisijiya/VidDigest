@@ -77,6 +77,9 @@
 
 ## 🚀 Quick start
 
+> 💡 One command sets up both stacks: `bash scripts/bootstrap.sh` — it creates
+> `backend/venv`, installs the backend requirements and runs `npm ci` in `frontend/`.
+
 ```bash
 # Backend (Windows; Linux/macOS below)
 cd backend

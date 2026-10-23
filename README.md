@@ -142,6 +142,9 @@ npm run release:build            # 发布用：先清空 dist/ 再构建（避�
 
 ## ✅ 验证
 
+第一次跑之前先装环境（两栈一起装）：`bash scripts/bootstrap.sh`
+——它会建 `backend/venv`、装后端依赖，并在 `frontend/` 跑 `npm ci`。
+
 本仓库只有一个门禁，它决定一次改动能不能算「做完了」：
 
 ```bash

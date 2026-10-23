@@ -2,10 +2,13 @@
 # VidDigest 验证门禁。退出码 0 之前，任何工单都不得标记为完成。
 #
 # 跑法（Windows + Git Bash）：
-#   cd 'D:\26code\简历项目\universal-video-downloader'
+#   cd 'D:\26code\新简历项目\universal-video-downloader'
 #   & 'C:\Program Files\Git\bin\bash.exe' ./init.sh
 #
-# 这里的解释器路径是硬约束，不是风格问题：系统 Python 版本不对，
+# 第一次跑之前先装环境：bash scripts/bootstrap.sh
+# （backend/venv 与 frontend/node_modules 都不在版本库里，门禁依赖它们。）
+#
+# 解释器路径是硬约束，不是风格问题：系统 Python 版本不对，
 # 必须用 backend 自己的 venv。AGENTS.md「环境事实」一节记的是同一条。
 
 set -e
@@ -25,49 +28,60 @@ trap explain_failure ERR
 # 一个跑不了任何检查却打印 "Verification Complete" 并退出 0 的门禁不是门禁。
 RAN=0
 
-# ── 后端：测试 ──────────────────────────────────────────────
-PY="backend/venv/Scripts/python.exe"
-
-if [ -x "$PY" ]; then
-  echo ""
-  echo "=== backend: pytest ==="
-  ( cd backend && ./venv/Scripts/python.exe -m pytest tests -q )
-  RAN=$((RAN + 1))
-
-  # 静态检查：编译全部后端源码，跳过 venv 与缓存目录。
-  # 用的是同一个 venv 解释器，因此不依赖系统 PATH 上的 python 版本。
-  echo ""
-  echo "=== backend: compileall ==="
-  ( cd backend && ./venv/Scripts/python.exe -m compileall -q \
-      -x '(^|[\\/])(\.?venv|env|node_modules|build|dist|__pycache__)([\\/]|$)' \
-      -x 'venv[\\/]' . )
-  RAN=$((RAN + 1))
-
-  # 敏感内容扫描（第 3 关）。
-  #
-  # 为什么它必须在门禁里，而不是只写成 .gitignore 里的一条注释：
-  # .gitignore 是**文件名级**的。它挡得住 .env，挡不住「把 .env 里那条口令
-  # 抄进 docs/OPERATIONS.md」。本仓库真的发生过一次——TEST_ACCOUNTS.md 按
-  # 规矩移出了版本库，可同一批明文口令与本机用户名留在了运维手册和一个
-  # agent 日志目录里，直到推上 PUBLIC 远端。护栏必须在**内容**上。
-  #
-  # 这条检查自身有变异测试兜着：每种要抓的形态都故意放回去确认它转红，
-  # 否则「跑完是绿的」证明不了关卡有效。见 scripts/mutation_secrets_gate.py。
-  #
-  # 用 $PY（仓库根相对）而不是 ./venv/...：上面两关跑在 ( cd backend && … )
-  # 子 shell 里，cwd 改动不外泄，所以这一关仍在仓库根 —— 写 ./venv/Scripts
-  # 会得到 "No such file or directory"，退出码 127。检查脚本自己按 __file__
-  # 推算仓库根，与 cwd 无关。
-  echo ""
-  echo "=== secrets: content-level scan of tracked files ==="
-  "$PY" scripts/check_secrets.py
-  RAN=$((RAN + 1))
+# 解释器路径：Windows 与 Linux/macOS 各一条路，按存在性挑。
+#
+# 为什么必须挑、而不是写死一条：写死 Windows 那条，Linux/macOS 上 clone
+# 下来的仓库连门禁都跑不起来，CI 也就无从谈起——**一个只有作者能跑的
+# 门禁，等于没有门禁**。
+#
+# 为什么挑不到就退出、而不是回退到系统 Python：系统 Python 的版本不对
+# （AGENTS.md「环境事实」一节记的是同一条），拿它跑测试，测的是另一个
+# 解释器下的行为。
+if [ -x "backend/venv/Scripts/python.exe" ]; then
+  PY="backend/venv/Scripts/python.exe"
+  PY_IN_BACKEND="./venv/Scripts/python.exe"
+elif [ -x "backend/venv/bin/python" ]; then
+  PY="backend/venv/bin/python"
+  PY_IN_BACKEND="./venv/bin/python"
 else
-  echo "ERROR: 找不到 $PY —— 后端虚拟环境没装好，门禁拒绝通过。"
-  echo "在 backend/ 下重建 venv 后重跑。"
+  echo "ERROR: 找不到 backend/venv 里的解释器 —— 后端虚拟环境没装好，门禁拒绝通过。"
+  echo "先跑 scripts/bootstrap.sh（或在 backend/ 下重建 venv）再重跑。"
   exit 1
 fi
 
+echo ""
+echo "=== backend: pytest ==="
+( cd backend && "$PY_IN_BACKEND" -m pytest tests -q )
+RAN=$((RAN + 1))
+
+# 静态检查：编译全部后端源码，跳过 venv 与缓存目录。
+# 用的是同一个 venv 解释器，因此不依赖系统 PATH 上的 python 版本。
+echo ""
+echo "=== backend: compileall ==="
+( cd backend && "$PY_IN_BACKEND" -m compileall -q \
+    -x '(^|[\\/])(\.?venv|env|node_modules|build|dist|__pycache__)([\\/]|$)' \
+    -x 'venv[\\/]' . )
+RAN=$((RAN + 1))
+
+# 敏感内容扫描（第 3 关）。
+#
+# 为什么它必须在门禁里，而不是只写成 .gitignore 里的一条注释：
+# .gitignore 是**文件名级**的。它挡得住 .env，挡不住「把 .env 里那条口令
+# 抄进 docs/OPERATIONS.md」。本仓库真的发生过一次——TEST_ACCOUNTS.md 按
+# 规矩移出了版本库，可同一批明文口令与本机用户名留在了运维手册和一个
+# agent 日志目录里，直到推上 PUBLIC 远端。护栏必须在**内容**上。
+#
+# 这条检查自身有变异测试兜着：每种要抓的形态都故意放回去确认它转红，
+# 否则「跑完是绿的」证明不了关卡有效。见 scripts/mutation_secrets_gate.py。
+#
+# 用 $PY（仓库根相对）而不是 venv 里的相对路径：上面两关跑在 ( cd backend && … )
+# 子 shell 里，cwd 改动不外泄，所以这一关仍在仓库根 —— 在仓库根写 ./venv/...
+# 会得到 "No such file or directory"，退出码 127。检查脚本自己按 __file__
+# 推算仓库根，与 cwd 无关。
+echo ""
+echo "=== secrets: content-level scan of tracked files ==="
+"$PY" scripts/check_secrets.py
+RAN=$((RAN + 1))
 # ── 前端：测试 ──────────────────────────────────────────────
 if [ -f frontend/package.json ]; then
   echo ""
