@@ -328,7 +328,7 @@ class TestDeletedUserTokenIs401OnLiveEndpoints:
     """
 
     def test_history_detail_rejects_deleted_user_token(self, client_app, make_user):
-        """`GET /api/history/{id}` —— `frontend/src/api/history.js:76`
+        """`GET /api/history/{id}` —— `frontend/src/api/history.ts:76`
         的 `fetchHistoryDetail` 真的在调它，所以这个端点是活的。
         """
         app, mk = client_app
@@ -345,7 +345,7 @@ class TestDeletedUserTokenIs401OnLiveEndpoints:
         )
 
     def test_auth_me_rejects_deleted_user_token(self, client_app, make_user):
-        """`GET /api/auth/me` —— `frontend/src/api/auth.js:43` 真的在调它。
+        """`GET /api/auth/me` —— `frontend/src/api/auth.ts:43` 真的在调它。
 
         第二个活端点，防止「只有一条断言」的偶然：单条断言可能因为任何
         偶然原因变弱（那条路由的鉴权恰好写得更严、或那条测试的路径恰好

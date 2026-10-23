@@ -12,7 +12,7 @@ date: 2026-10-03
 
 改动前实测：模型清单**前后端各写一份，且内容已经不一致**——
 
-- `frontend/src/lib/byok.js:38-88` 硬编码 7 个厂商（platform / bailian / deepseek / moonshot / openai / ollama / custom）
+- `frontend/src/lib/byok.ts:38-88` 硬编码 7 个厂商（platform / bailian / deepseek / moonshot / openai / ollama / custom）
 - `backend/summarizer.py:706-709` 只认 2 个（bailian / deepseek）
 - 默认模型也不一致：前端 `qwen-plus`（`byok.js:50`）vs 后端 `qwen-turbo`（`summarizer.py:707`）
 

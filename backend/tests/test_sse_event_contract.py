@@ -3,13 +3,13 @@ r"""SSE 事件名的前后端契约守卫（工单 #39）。
 背景
 ----
 后端 `ServerSentEvent(event=...)` 共 **30 处**，分布在 4 个函数里；前端
-`frontend/src/api/summarize.js` 有两张路由表（`SUMMARY_ROUTES` /
+`frontend/src/api/summarize.ts` 有两张路由表（`SUMMARY_ROUTES` /
 `CHAT_ROUTES`）加一个 `streamSse` 里的 `done` 独立分支。**两边没有任何
 机器可读的契约清单**，改一边忘了另一边没有任何东西会响。
 
 失败形状是**静默丢弃**，这是本守卫存在的唯一理由：
 
-    // frontend/src/api/summarize.js:164 与 :192
+    // frontend/src/api/summarize.ts:164 与 :192
     route: (event, data) => callbacks[SUMMARY_ROUTES[event]]?.(data)
 
 `?.` 是**可选调用**：`SUMMARY_ROUTES[event]` 对未知事件名求值得到
@@ -73,7 +73,7 @@ from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parent.parent
 API_SUMMARIZE = BACKEND / "api_summarize.py"
-FRONTEND_API = BACKEND.parent / "frontend" / "src" / "api" / "summarize.js"
+FRONTEND_API = BACKEND.parent / "frontend" / "src" / "api" / "summarize.ts"
 
 #: 后端逐端点该发的事件集合。**故意写死在这里**，不由扫描结果生成——
 #: 让它从扫描结果派生的话，「后端发了什么」就永远等于真值，判据恒为真。
@@ -260,11 +260,11 @@ class TestFrontendRoutesEveryEvent:
                     f"backend::{func} 发了 {sorted(unrouted)}，"
                     f"而前端 {table_name} 没有它们\n"
                     f"  {table_name} = {sorted(routed)}\n"
-                    "  症状：事件被 summarize.js:164/:192 的 `?.` **静默丢弃**——"
+                    "  症状：事件被 summarize.ts:164/:192 的 `?.` **静默丢弃**——"
                     "不抛错、不进 catch、不写日志")
         assert not offenders, (
             "SSE 事件没有前端路由：\n" + "\n".join(offenders)
-            + "\n\n修法：在 summarize.js 的对应路由表里补上并映射到回调。"
+            + "\n\n修法：在 summarize.ts 的对应路由表里补上并映射到回调。"
               "若该事件确实该被忽略，写明理由并登记进豁免，不要默默留着。")
 
     def test_no_dead_routes(self):
@@ -335,12 +335,24 @@ class TestFrontendRoutesEveryEvent:
     def test_unknown_events_are_still_silently_dropped(self):
         """**实测**未知事件名当前被静默丢弃——把现状钉住，别悄悄变。
 
-        这是本守卫存在的前提。哪天有人把 `?.` 改成必调（正确但破坏
+        这是本守卫存在的前提。哪天有人把丢弃改成必调（正确但破坏
         滚动发布顺序），本条会红，那正是要重新评估契约清单的信号。
+
+        2026-10-23 改过一次形状：前端把两处内联的可选调用
+        `callbacks[SUMMARY_ROUTES[event]]?.(data)` 抽成了一个 dispatch
+        辅助函数（frontend/src/api/summarize.ts 的 dispatch()）。**行为没变**
+        ——事件名不在表里就早退、回调不在就跳过——但那两个字面量没了。
+        所以本条不再数「可选调用出现几次」，改成两条语义约束：
+          1. 不能出现**无保护**的调用（查表结果直接当函数用）——
+             那会让未知事件名抛 TypeError，而不是被静默丢弃；
+          2. 必须存在「查不到就早退」的守卫。
         """
         src = read_source(FRONTEND_API)
-        opt_calls = re.findall(r"callbacks\[\w+_ROUTES\[event\]\]\?\.\(data\)", src)
-        assert len(opt_calls) == 2, (
-            f"两处 route() 的形状变了，找到 {len(opt_calls)} 处可选调用：{opt_calls}\n"
-            "若是有意改成未知事件即报错/记日志，**连同本条断言一起**改，"
-            "并在工单里写明它对前后端发布顺序的影响。")
+        unguarded = re.findall(r"callbacks\[\w*_ROUTES\[event\]\]\s*\(", src)
+        assert not unguarded, (
+            f"出现了无保护调用 {unguarded}：未知事件名会抛 TypeError，"
+            "而不是被静默丢弃。")
+        guarded = re.search(r"if \(!name\) return|ROUTES\[event\]\]\?\.\(", src)
+        assert guarded, (
+            "找不到「查不到就早退」的守卫：未知事件名要么被静默丢弃、要么抛错，"
+            "本条要求前者。")

@@ -312,7 +312,7 @@ def test_download_video_does_not_swallow_http_exception(...):
 
 `auth.py` 的行覆盖率具有**欺骗性**：高分来自 token 签发/解析（那部分确实测过），而**密码的写入侧与校验规则仍没测**。
 
-**为什么还是 P0 而不是 P1**：`/register`、`/login` 是 `frontend/src/api/auth.js` 的真实调用目标，两条路由**零测试**。`validate_email` / `validate_password` 的返回值直接进 400 响应体（`raise HTTPException(detail=err)`），文案一旦变了就是对外可见的 API 变更。
+**为什么还是 P0 而不是 P1**：`/register`、`/login` 是 `frontend/src/api/auth.ts` 的真实调用目标，两条路由**零测试**。`validate_email` / `validate_password` 的返回值直接进 400 响应体（`raise HTTPException(detail=err)`），文案一旦变了就是对外可见的 API 变更。
 
 **示例用例**：
 
@@ -366,7 +366,7 @@ def test_login_does_not_leak_which_field_was_wrong(client):
 
 以上由 **#54** 一张单处理。
 
-**为什么是 P1 不是「直接删」**：`frontend/src/config/features.js` 明确写着「不做会员制，但后端 VIP 判定与 Stripe 支付代码**保留不删**」，而 `App.vue:643` 仍在调 `createCheckoutSession('monthly')`。**它是活的、但零测试的。**
+**为什么是 P1 不是「直接删」**：`frontend/src/config/features.ts` 明确写着「不做会员制，但后端 VIP 判定与 Stripe 支付代码**保留不删**」，而 `App.vue:643` 仍在调 `createCheckoutSession('monthly')`。**它是活的、但零测试的。**
 
 这里测试的价值不在于「测得好」，而在于**钉住它当前的行为**。`stripe_webhook`（32 行，处理外部回调）尤其需要最少限度的一条：**签名校验失败必须拒绝**。
 

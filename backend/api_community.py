@@ -136,7 +136,7 @@ async def community_video_detail(
 
     ## ⚠️ 本端点当前**没有任何调用方**（工单 #19 第 3 项，2026-10-06 核实）
 
-    - 前端：`frontend/src/api/community.js` 只有 5 个出口
+    - 前端：`frontend/src/api/community.ts` 只有 5 个出口
       （`/videos` 列表、`/tags`、`/videos/by-url`、`/search`、`/cards`），
       **没有一个打这个端点**。
     - 后端：除本路由自己调 `get_community_video` 外，**无其他调用方**。

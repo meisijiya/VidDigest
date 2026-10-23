@@ -546,7 +546,7 @@ class TestPayloadCarriesEveryKind:
 
         工单称漏键会让 `quota.js` 走 `fallbackQuota`、显示旧口径数字。
         实测不成立：`describeQuota` 的降级条件是 `!parse && !chat`
-        （**两个都缺**才降级，`frontend/src/lib/quota.js:44`），少一个键时它
+        （**两个都缺**才降级，`frontend/src/lib/quota.ts:44`），少一个键时它
         只是安静地少渲染一种额度，输出与不少**逐字相同**。
 
         ⚠️ **前端那条路径由 `frontend/tests/quota.test.mjs` 真跑，本文件不测它。**

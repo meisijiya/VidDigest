@@ -9,9 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+from venv_python import venv_python
+
 TESTS = Path(__file__).resolve().parent
 BACKEND = TESTS.parent
-PY = BACKEND / "venv" / "Scripts" / "python.exe"
+PY = venv_python()
 DB_FILE = BACKEND / "database.py"
 SEAMS_FILE = TESTS / "seams.py"
 AUTH_FILE = BACKEND / "auth.py"

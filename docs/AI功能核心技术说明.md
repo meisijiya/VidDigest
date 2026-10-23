@@ -250,7 +250,7 @@ BYOK 分支的端点校验不在 `__init__` 里，而在 `credentials.validate_b
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#10b981" stroke-width="2" style="vertical-align:middle"><globe/></svg> 前端（ReadableStream）
 
-**<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#6b7280" stroke-width="2" style="vertical-align:middle"><file/></svg> 文件：** `frontend/src/api/summarize.js`
+**<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#6b7280" stroke-width="2" style="vertical-align:middle"><file/></svg> 文件：** `frontend/src/api/summarize.ts`
 
 `summarizeVideo(url, language, callbacks)` 函数：
 

@@ -82,7 +82,7 @@ Token 有效期 **72 小时**，过期需重新登录。
 | POST | `/api/payment/webhook` | — | Stripe Webhook 回调（验签） |
 | GET | `/api/payment/orders` | 必需 | 查看订单历史 |
 
-> 会员制入口已关闭（`frontend/src/config/features.js` 的 `MEMBERSHIP_ENABLED = false`）。
+> 会员制入口已关闭（`frontend/src/config/features.ts` 的 `MEMBERSHIP_ENABLED = false`）。
 > 上述三个端点与 `orders` 表属于**契约的一部分**，动它们前先读 ADR 0010 / 0012。
 
 ---

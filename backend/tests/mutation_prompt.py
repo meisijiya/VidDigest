@@ -18,9 +18,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+from venv_python import venv_python
+
 TESTS = Path(__file__).resolve().parent
 BACKEND = TESTS.parent
-PY = BACKEND / "venv" / "Scripts" / "python.exe"
+PY = venv_python()
 PROMPT_FILE = BACKEND / "summarizer.py"
 
 TARGET = ["tests/test_summarize_routes.py", "-k", "TestSummaryPromptContentDemand"]

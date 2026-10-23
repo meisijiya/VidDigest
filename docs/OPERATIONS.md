@@ -3,7 +3,7 @@
 > 本文档面向**运维 / 部署 / 故障排查**场景。开发期的快速启动请看 [README.md](../README.md)，API 细节请看 [API.md](API.md)。
 
 > **会员制不启用**：所有用户统一为每日 3 次免费额度。
-> 前端付费入口由 `frontend/src/config/features.js` 的 `MEMBERSHIP_ENABLED = false` 关闭。
+> 前端付费入口由 `frontend/src/config/features.ts` 的 `MEMBERSHIP_ENABLED = false` 关闭。
 > 后端 `api_payment.py`、`is_vip_active()`、`orders` 表与 Stripe 配置位属于契约的一部分，
 > 动它们前先读 ADR 0010 / 0012。下方涉及 Stripe 的章节当前无需配置。
 
