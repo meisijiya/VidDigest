@@ -162,13 +162,16 @@ bash ./init.sh          # exit code 0 = verified
 
 | # | Check | What it proves |
 |---|-------|----------------|
-| 1 | `backend: pytest` | 1261 backend tests pass (pytest, standard-library sqlite fixtures) |
+| 1 | `backend: pytest` | 1269 backend tests pass (pytest, standard-library sqlite fixtures) |
 | 2 | `backend: compileall` | Every backend module compiles |
 | 3 | `secrets: content-level scan` | No credential-shaped string in tracked files **or in reachable git history** — `.gitignore` is filename-level and does not stop a pasted key |
 | 4 | `frontend: npm test` | 496 static / contract assertions (node:test) |
-| 5 | `frontend: npm run test:mount` | 191 mounted-component tests (Vitest) — a separate runner on purpose, so a green layer cannot hide a red one |
-| 6 | `refs: ADR 与路径引用一致性` | Every `ADR NNNN` reference and every source path mentioned in docs or comments still resolves |
-| 7 | `gate: 关卡数口径一致性` | The number of checks this README claims is the number the gate really runs — counted from `init.sh`, never hard-coded |
+| 5 | `frontend: npm run test:mount` | 192 mounted-component tests (Vitest) — a separate runner on purpose, so a green layer cannot hide a red one |
+| 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` reports no type errors |
+| 7 | `frontend: npm run lint` | ESLint reports no problems |
+| 8 | `frontend: npm run format:check` | Every file matches Prettier |
+| 9 | `refs: ADR 与路径引用一致性` | Every `ADR NNNN` reference and every source path mentioned in docs or comments still resolves |
+| 10 | `gate: 关卡数口径一致性` | The number of checks this README claims is the number the gate really runs — counted from `init.sh`, never hard-coded |
 
 Two properties make the gate trustworthy rather than decorative:
 
@@ -238,7 +241,7 @@ result of a real trade-off.
 | 0007 | The owner of a parse may regenerate their own summary; later visitors may not |
 | 0008 | Visual identity: graphite + lake blue (the blue ramp is no longer remapped to violet) |
 | 0009 | Light and dark themes override CSS variables instead of introducing semantic tokens |
-| 0010 | Admin console: an `/admin` route in the same Vue app, read + quota scope, no account lifecycle |
+| 0010 | Admin console: an `/admin` route in the same Vue app — scope and authentication (extended by ADR 0012 / 0013) |
 | 0011 | The model catalogue lives in the database; platform and user keys stay in `.env` |
 | 0012 | Account lifecycle moves into the admin console: create, flag as admin, delete (409 when content exists) |
 | 0013 | Community moderation: retag and delete entries — deleting the community row only, never a user's history |
@@ -247,6 +250,7 @@ result of a real trade-off.
 | 0016 | URL canonicalisation: compare by canonical form, echo the original |
 | 0017 | ~~Lightweight hand-written routing, no vue-router~~ — superseded by ADR 0018 |
 | 0018 | Adopt `vue-router` with four real paths, replacing the hand-written router |
+| 0019 | Containerised delivery: two services, one compose file, scripts that operate on the running data |
 
 ---
 

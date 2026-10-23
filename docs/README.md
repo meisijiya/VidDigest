@@ -14,6 +14,7 @@
 | [运维手册](OPERATIONS.md) | 部署架构、启动 / 关停、进程管理、故障排查、安全清单、升级维护 |
 | [测试策略](TESTING-STRATEGY.md) | 测什么、每类用哪种测试、覆盖目标、缺口清单、示例用例写法 |
 | [AI 功能核心技术说明](AI功能核心技术说明.md) | 字幕提取、AI 总结 / 导图 / 问答、SSE 事件流、额度与组件数据流 |
+| [技术文档](TECHNICAL.md) | 当前实现的机制、可复现的数字口径、故障定位表、已知边界 |
 
 ### 架构决策与代理约定
 
@@ -33,24 +34,37 @@ universal-video-downloader/
 │   ├── douyin.py         # 抖音解析
 │   ├── summarizer.py     # 字幕提取 + AI（总结 / 导图 / 问答 / ASR 回退）
 │   ├── prompt_template.py# 总结与导图的 prompt 模板
+│   ├── prompts/          # prompt 模板正文（改措辞改这里）
 │   ├── formats.py        # 清晰度 / 音轨的格式归类
 │   ├── url_canonical.py  # 视频链接的比较用归一（ADR 0016）
 │   ├── tags.py           # 固定标签词表与校验（ADR 0005）
 │   ├── credentials.py    # BYOK 用户凭据的解析与脱敏（ADR 0004）
 │   ├── model_catalog.py  # 模型清单表与默认模型（ADR 0011）
 │   ├── auth.py           # JWT + bcrypt
+│   ├── logging_setup.py  # JSON 行日志与轮转
 │   ├── database.py       # SQLite 数据层 + 迁移
 │   ├── api_*.py          # API 路由模块（auth / community / history / payment / summarize）
 │   ├── admin_api.py      # 管理后台路由
+│   ├── tests/            # 后端测试与变异装置
 │   └── .env.example      # 环境变量模板
 ├── frontend/         # Vue 3 SPA
-│   └── src/
-│       ├── api/          # HTTP + SSE 请求
-│       ├── components/   # UI 组件
-│       ├── composables/  # 组合式函数
-│       ├── config/       # 功能开关
-│       └── lib/          # 纯逻辑（BYOK 状态、标签筛选等）
-└── docs/             # 文档
-    ├── adr/         # 架构决策记录
-    └── agents/      # 编码代理约定
+│   ├── src/
+│   │   ├── api/          # HTTP + SSE 请求
+│   │   ├── components/   # UI 组件
+│   │   ├── composables/  # 组合式函数
+│   │   ├── config/       # 功能开关
+│   │   ├── lib/          # 纯逻辑（BYOK 状态、标签筛选等）
+│   │   ├── router/       # 四条真实路径的路由表
+│   │   ├── stores/       # Pinia store（登录态）
+│   │   └── views/        # 路由级页面
+│   ├── tests/        # 两套 runner 的用例与变异装置
+│   └── Dockerfile    # 构建产物 → nginx 运行段
+├── scripts/          # 门禁脚本、变异装置、运维脚本（备份 / 巡检）
+├── docs/             # 文档
+│   ├── adr/         # 架构决策记录
+│   ├── agents/      # 编码代理约定
+│   └── *.md         # API / 运维 / 测试策略 / 技术文档
+├── init.sh           # 门禁入口（唯一）
+├── docker-compose.yml# 容器化编排
+└── .github/workflows/# CI 工作流
 ```

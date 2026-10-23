@@ -46,27 +46,29 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 **结论**：凡涉及多行 SQL / 长 prompt / 模板字符串的函数（`init_db`、`_build_full_prompt`、`quota_limit` 等），`Y` 不可信，**不要照着数字定优先级**。定性结论（这个函数有没有被测过）仍然可信，定量结论不可信。
 
-### 0.3 变异装置不在门禁里
+### 0.3 变异装置不在 `init.sh` 里，但都在 CI 矩阵里
 
-仓库里跟踪着若干个变异装置（数量会变，以 `glob **/mutation*` 的实际结果为准）：
+仓库里跟踪着 16 个变异装置（以 `glob **/mutation*` 的实际结果为准）：`scripts/` 下 10 个、`backend/tests/` 下 3 个、`frontend/tests/` 下 3 个。
 
-| 文件 | 是否被门禁收集 |
-|---|---|
-| `backend/tests/mutation_check.py` | ❌ 不匹配 `test_*.py`，pytest 默认不收集 |
-| `backend/tests/mutation_check_quota.py` | ❌ 同上 |
-| `backend/tests/mutation_prompt.py` | ❌ 同上 |
-| `frontend/tests/mutation_wiring.mjs` | ❌ 不匹配 `*.test.mjs`，`npm test` 不收集 |
-| `frontend/tests/mutation-nav-wall.mjs` | ❌ 既不匹配 `*.test.mjs`，也不匹配 `*.spec.mjs` |
-| `frontend/tests/mutation-ui-fixes.mjs` | ❌ 同上 |
+`init.sh` 里的 pytest 与两套前端 runner 都**不收集** `tests/` 目录下这几个文件——目录位置不决定收集行为，文件名模式才决定：
+
+| 文件 | 是否被 `init.sh` 收集 | 是否在 CI 里跑 |
+|---|---|---|
+| `backend/tests/mutation_check.py` | ❌ 不匹配 `test_*.py`，pytest 默认不收集 | ✅ 后端变异矩阵 |
+| `backend/tests/mutation_check_quota.py` | ❌ 同上 | ✅ 后端变异矩阵 |
+| `backend/tests/mutation_prompt.py` | ❌ 同上 | ✅ 后端变异矩阵 |
+| `frontend/tests/mutation_wiring.mjs` | ❌ 不匹配 `*.test.mjs`，`npm test` 不收集 | ✅ 前端变异矩阵 |
+| `frontend/tests/mutation-nav-wall.mjs` | ❌ 既不匹配 `*.test.mjs`，也不匹配 `*.spec.mjs` | ✅ 前端变异矩阵 |
+| `frontend/tests/mutation-ui-fixes.mjs` | ❌ 同上 | ✅ 前端变异矩阵 |
 
 前端那三个**两套 runner 都不收**：`*.test.mjs` 走 `node --test`，`*.spec.mjs` 走 `vitest run`（`vitest.config.js` 的 `include` 写死了），而变异装置两个后缀都不匹配。
 
-（`scripts/mutation_secrets_gate.py` 是另一回事：它是敏感内容扫描关卡**自己的**变异测试，被关卡直接调用，不走这两条收集规则。）
+`scripts/` 下的变异装置分两类：门禁自己的变异测试（`scripts/mutation_secrets_gate.py`、`scripts/mutation_refs_gate.py`）由对应关卡直接调用；其余 8 个针对具体机制，由 CI 的后端变异矩阵逐个跑。
 
-它们是**人工按需运行**的装置，不是回归测试。含义有二：
+含义有二：
 
-1. 不要把「变异全杀」当成 CI 已有的护栏 —— 它没有自动化，每次都要人手动跑。
-2. 不要因为它们在 `tests/` 目录下就以为门禁在跑它们。**目录位置不决定收集行为，文件名模式才决定。**
+1. 变异装置在 CI 里是**独立 job**，不并进 `init.sh`（理由见 §7）。
+2. 本地 `init.sh` 绿不代表变异装置已经跑过；要看变异结论，去 CI 的矩阵里看，或本地手动跑脚本。
 
 ---
 
@@ -523,7 +525,7 @@ if ran == 0:
 - **不引入真实第三方依赖**（真 B 站 / 真模型 / 真 Stripe）。门禁必须任何机器都能跑。
 - **不为 C 档 I/O 追覆盖率。**
 - **不测 `__init__`、纯转发、框架胶水。**
-- **不把变异装置并入门禁**（当前是人工按需运行，这是有意的）。若要自动化，需要独立的 nightly job，不能塞进 PR 门禁 —— 变异运行慢，且会改写生产源码，与并行开发冲突。
+- **不把变异装置并进 `init.sh`**（它们在 CI 的变异矩阵里跑，这是有意的）。变异运行慢，且会临时改写源码，与并行开发冲突；矩阵 job 彼此隔离，一个装置失败不影响门禁 job 的结论。
 - **不把覆盖率数字写进文档**。写死一次就过期一次，而没有任何东西会报警；覆盖率是采集产物，不是文档内容。
 
 ---
