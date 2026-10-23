@@ -25,18 +25,33 @@ fi
 echo "=== bootstrap python: $($BOOT_PY --version 2>&1) ==="
 
 # ── 后端虚拟环境 ──────────────────────────────────────────
-if [ -x "backend/venv/Scripts/python.exe" ] || [ -x "backend/venv/bin/python" ]; then
-  echo "=== backend: 虚拟环境已存在，跳过创建 ==="
-else
-  echo "=== backend: 创建虚拟环境 ==="
-  "$BOOT_PY" -m venv backend/venv
-fi
-
-if [ -x "backend/venv/Scripts/python.exe" ]; then
+# 解释器必须**真的能跑**，不是「文件在」就算。
+# 把 Windows 的 venv 拷到 Linux（或反过来）时，文件在、执行位也在，
+# 但跑起来是 Exec format error——拿一个坏解释器往下走，
+# 报出来的错会指向 pip 或依赖，而不是「这个 venv 不是这台机器的」。
+VENV_PY=""
+if [ -x "backend/venv/bin/python" ] && backend/venv/bin/python --version >/dev/null 2>&1; then
+  VENV_PY="backend/venv/bin/python"
+elif [ -x "backend/venv/Scripts/python.exe" ] && backend/venv/Scripts/python.exe --version >/dev/null 2>&1; then
   VENV_PY="backend/venv/Scripts/python.exe"
 else
-  VENV_PY="backend/venv/bin/python"
+  if [ -d "backend/venv" ]; then
+    echo "=== backend: 现有虚拟环境跑不起来（多半是别的操作系统建的），重建 ==="
+    # venv 不在版本库里、可重建，删掉是安全的；删不掉就让用户自己处理。
+    rm -rf backend/venv || {
+      echo "ERROR: 删不掉 backend/venv，请手动删除后重跑。" >&2
+      exit 1
+    }
+  fi
+  echo "=== backend: 创建虚拟环境 ==="
+  "$BOOT_PY" -m venv backend/venv
+  if [ -x "backend/venv/bin/python" ]; then
+    VENV_PY="backend/venv/bin/python"
+  else
+    VENV_PY="backend/venv/Scripts/python.exe"
+  fi
 fi
+echo "=== backend: 用 $VENV_PY ==="
 
 echo "=== backend: 安装依赖 ==="
 "$VENV_PY" -m pip install --upgrade pip

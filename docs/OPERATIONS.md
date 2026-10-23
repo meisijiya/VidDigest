@@ -25,6 +25,7 @@
 - [11.5 生产静态托管（SPA rewrite）](#115-生产静态托管spa-rewrite)
 - [12. 升级与维护](#12-升级与维护)
 - [13. 容器化与运维证据链](#13-容器化与运维证据链)
+- [14. 持续集成](#14-持续集成)
 
 ---
 
@@ -1017,6 +1018,13 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 - 级别：`VIDDIGEST_LOG_LEVEL` 环境变量控制，默认 `INFO`
 - 轮转：单文件 10 MB，保留 5 份
 
+两个去处，级别不同：
+
+| 去处 | 收什么 | 为什么 |
+| --- | --- | --- |
+| 文件 `backend/logs/app.log` | 全部级别（INFO 起） | 事后查证的依据，第三方库的 INFO 噪音也在这里 |
+| 控制台（`docker compose logs`） | 警告及以上 + uvicorn 自己的横幅与访问日志 | stdout/stderr 是应用与宿主的协议面，正常请求期间必须干净；只留"要立刻看见的" |
+
 时间戳统一用 UTC：容器、CI、开发者本机时区不同，只有统一成 UTC，
 日志顺序才和真实顺序一致。
 
@@ -1029,6 +1037,48 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 - `backend/.env` 被 `backend/.dockerignore` 排除，**不进镜像**
 - `docker-compose.yml` 用 `env_file` 在运行时注入，文件里只有变量名
 - 镜像里没有 key，也没有默认密钥——`JWT_SECRET` 缺失时后端**拒绝启动**（ADR 0010）
+
+---
+
+## 14. 持续集成
+
+### 14.1 三个 job
+
+`.github/workflows/ci.yml` 只做一件事：在干净的 Linux 机器上把门禁跑一遍。
+
+| job | 跑什么 | 为什么这么切 |
+| --- | --- | --- |
+| `gate` | `bash scripts/bootstrap.sh` → `bash ./init.sh` | 门禁的真相在 `init.sh` 里，工作流不复述它。装环境也走 `bootstrap.sh`，本地与 CI 走同一条路，否则「本地绿、CI 红」只能靠猜 |
+| `mutation-backend` | 13 个后端变异脚本，每个一个 job | 变异脚本会故意改坏源码再还原，同一个工作区里串行跑会互相踩；分开跑互不污染 |
+| `mutation-frontend` | 3 个前端变异脚本，每个一个 job | 同上 |
+
+触发条件：推 `master`、向 `master` 提 PR、手动触发。`fail-fast: false`——一个变异脚本红了，
+其余的仍要跑完，否则不知道是这一条坏了还是一起坏了。
+
+### 14.2 本地预演
+
+推上去之前先在容器里走一遍同一条路：
+
+```bash
+bash scripts/bootstrap.sh && bash ./init.sh
+```
+
+Windows 上跑不了的部分（Linux 路径、`python3 -m venv`）用容器补：
+
+```bash
+docker run --rm -v "$PWD:/repo" -w /repo node:22-bookworm bash -c '
+  apt-get update -qq && apt-get install -y -qq python3-venv >/dev/null
+  bash scripts/bootstrap.sh && bash ./init.sh'
+```
+
+**排除 `__pycache__` 与 `*.pyc`**：Windows 生成的 `.pyc` 里嵌的是 Windows 路径，
+`linecache` 在 Linux 上读不到源文件，`inspect.getsource` 会报
+`OSError: could not get source code`——那是复制方式的问题，不是平台问题。
+
+### 14.3 第一次推上去之前
+
+工作流是**写出来的，不是跑出来的**。第一次推上去之后要把真实运行结果贴回工单，
+在那之前不要对外说「CI 全绿」。
 
 ---
 
