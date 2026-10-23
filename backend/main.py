@@ -21,6 +21,7 @@ from cors_config import cors_kwargs
 from downloader import VideoDownloader
 from douyin import AUDIO_FORMAT_ID, DouyinParser, is_douyin_url
 from database import init_db, seed_admin_emails_from_env
+from logging_setup import setup_logging
 
 # 全局单例
 downloader = VideoDownloader()
@@ -30,6 +31,10 @@ douyin_parser = DouyinParser(download_dir=downloader.DOWNLOAD_DIR)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化数据库，关闭时清理下载文件"""
+    # 日志接管放在最前面：init_db 与后面所有请求的日志都要落到文件里。
+    # 放在 lifespan 里而不是模块顶层，是因为 uvicorn 启动时会先装一遍
+    # 它自己的 handler——不覆盖的话同一条记录会被写两遍。
+    setup_logging()
     init_db()
     # 播种必须在 init_db 之后：users 表还不存在时插不进去。
     # 未配置 VIDDIGEST_ADMIN_EMAILS 是合法配置，这里静默返回 0。

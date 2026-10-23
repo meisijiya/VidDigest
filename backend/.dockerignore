@@ -1,0 +1,26 @@
+# 构建上下文是 ./backend，这里排除的是「不该进镜像的东西」。
+#
+# 凭据第一顺位：.env 与它的变体一律不进镜像，密钥只在本机的 backend/.env 里，
+# 由 compose 的 env_file 在运行时注入（见 docker-compose.yml）。
+.env
+.env.*
+!.env.example
+
+# 本机环境产物：虚拟环境、缓存、运行期数据
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+logs/
+backups/
+
+# 用例不进运行时镜像：镜像只负责跑起来，不负责证明自己是对的
+tests/
+
+# 版本库与本机杂项
+.git/
+.gitattributes
+.gitignore

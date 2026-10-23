@@ -57,9 +57,17 @@ PATH_ROOTS = ("backend", "frontend", "docs", "scripts")
 PATH_TOP_FILES = ("AGENTS.md", "GLOSSARY.md", "README.md", "init.sh")
 
 # 本机环境产物：不随仓库走，所以不查
+#
+# 前四项是工具链目录；后四项是**运行期产物**：data/ 是本地库与下载缓存，
+# logs/ 是运行期日志，backups/ 是备份档，downloads/ 是下载缓存。
+# 它们都不在版本库里——文档里写「数据在 backend/data/app.db」是在描述
+# 运行期状态，不是在指一个仓库内的文件。按文件存在性去查它，
+# 会让「本机碰巧有」变成「门禁绿」的理由：换一台机器、换一个干净克隆，
+# 同样的文档就该转红。那是误报。
 IGNORED_SEGMENTS = (
     "venv", ".venv", "env", "node_modules", "__pycache__",
     ".git", "dist", "build", ".pytest_cache", ".idea", ".vscode",
+    "data", "logs", "backups", "downloads",
 )
 
 # 代码文件：行号锚点也查边界
@@ -75,6 +83,12 @@ ANCHOR_RE = re.compile(
     r"|AGENTS\.md|GLOSSARY\.md|README\.md|init\.sh)"
     r"(?::(?P<start>\d+)(?:-(?P<end>\d+))?)?"
 )
+
+# 仓库里有中文名的文件。上面的正则只吃 ASCII 字符，于是会把一个中文文件名
+# 截成只剩 ASCII 前缀（路径就少了一截），再报一条「路径不存在」——那是误报。
+# 判据：把后面这串中文（连同它的扩展名）并进去之后，如果真存在，
+# 就以并进去的为准。
+CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]+(?:\.[A-Za-z0-9]+)?")
 
 
 def tracked_files():
@@ -204,6 +218,18 @@ def main():
                 if has_ignored_segment(norm):
                     continue
 
+                # 中文文件名：先把紧跟其后的一串中文并进来试一次。
+                # 并进去之后存在 → 以它为准（base 只是被 ASCII 边界截断）；
+                # 不存在 → 仍按 base 判，但报错时写并进去的版本，
+                # 这样报出来的是作者真正写的东西。
+                shown = path
+                cjk = CJK_RUN_RE.match(line, m.end())
+                if cjk:
+                    extended = norm + cjk.group(0)
+                    shown = extended
+                    if os.path.exists(os.path.join(REPO, extended)):
+                        norm = extended
+
                 shorthand = ADR_SHORTHAND_RE.match(norm)
                 if shorthand:
                     if shorthand.group(1) not in adr_ids:
@@ -215,7 +241,7 @@ def main():
 
                 target = os.path.join(REPO, norm)
                 if not os.path.exists(target):
-                    violations.append("%s:%d: 路径不存在：%s" % (rel, num, path))
+                    violations.append("%s:%d: 路径不存在：%s" % (rel, num, shown))
                     continue
                 start = m.group("start")
                 if not (is_code and start and os.path.isfile(target)):
@@ -226,7 +252,7 @@ def main():
                 total_lines = len(target_text.splitlines())
                 if total_lines and int(start) > total_lines:
                     violations.append(
-                        "%s:%d: 行号越界：%s 只有 %d 行" % (rel, num, path, total_lines)
+                        "%s:%d: 行号越界：%s 只有 %d 行" % (rel, num, norm, total_lines)
                     )
 
     if violations:

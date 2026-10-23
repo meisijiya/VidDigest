@@ -1,0 +1,15 @@
+# 构建上下文是 ./frontend，这里排除的是「不该进镜像的东西」。
+node_modules/
+dist/
+build/
+.vite/
+.vitest/
+
+# 本机环境变量不进镜像
+.env
+.env.*
+!.env.example
+
+.git/
+.gitattributes
+.gitignore

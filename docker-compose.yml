@@ -1,0 +1,55 @@
+# VidDigest 本地编排（工单 #63）
+#
+# 凭据不进这个文件：backend/.env 被 backend/.dockerignore 排除，
+# 密钥只落在本机的 backend/.env 里，运行时由 env_file 注入。
+# 镜像里与这个文件里都不写任何 key。
+#
+# 起停：
+#   docker compose up -d --build
+#   curl http://localhost:8080/api/health
+#   docker compose down
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      # required: false —— 新克隆的仓库还没有 .env 时也能起，
+      # 后端会因为缺 JWT_SECRET 拒绝启动（这是设计好的失败，不是崩溃）。
+      - path: ./backend/.env
+        required: false
+    environment:
+      VIDDIGEST_LOG_LEVEL: ${VIDDIGEST_LOG_LEVEL:-INFO}
+    volumes:
+      # 用 bind mount 而不是命名卷，是为了让宿主机上的运维脚本
+      # （scripts/ops/backup_db.py、inspect_runtime.py）能直接操作
+      # 容器正在用的那一份数据与日志——脚本和容器看的是同一个文件，
+      # 「备份的是不是正在跑的那份库」不需要靠推断。
+      # 两个宿主目录都在 .gitignore 里。
+      - ./backend/data:/app/data
+      - ./backend/logs:/app/logs
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      backend:
+        # 等后端真健康再起前端：省掉「前端先起、后端还没好」的一串 502
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:80"
+    restart: unless-stopped

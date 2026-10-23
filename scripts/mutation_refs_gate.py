@@ -16,8 +16,10 @@ import os
 import subprocess
 import sys
 
+from venv_python import venv_python
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PY = os.path.join(REPO, "backend", "venv", "Scripts", "python.exe")
+PY = venv_python()
 CHECKERS = {
     "refs": os.path.join(REPO, "scripts", "check_refs.py"),
     "gate": os.path.join(REPO, "scripts", "check_gate_consistency.py"),
@@ -39,6 +41,15 @@ CASES = [
     ("R4 反向对照：字符串字面量里的路径不查",
      "refs", MAIN, "append",
      "\n_NOT_A_DOC_REF = 'backend/definitely_missing.py'\n", False),
+    ("R5 中文文件名：指向不存在的文件必须转红",
+     "refs", MAIN, "append",
+     "\n# 参见 docs/AI功能核心技术说明X.md\n", True),
+    ("R6 反向对照：真实存在的中文文件名必须放行",
+     "refs", MAIN, "append",
+     "\n# 参见 docs/AI功能核心技术说明.md\n", False),
+    ("R7 反向对照：运行期数据目录不查",
+     "refs", MAIN, "append",
+     "\n# 运行期产物：backend/data/definitely_missing.py\n", False),
     ("G1 文档把关卡数写少",
      "gate", AGENTS, "append", "\n它依次跑六件真会失败的事。\n", True),
     ("G2 关卡块自报的序号错位",

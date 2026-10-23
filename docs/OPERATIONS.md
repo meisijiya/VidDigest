@@ -24,6 +24,7 @@
 - [11. 安全清单](#11-安全清单)
 - [11.5 生产静态托管（SPA rewrite）](#115-生产静态托管spa-rewrite)
 - [12. 升级与维护](#12-升级与维护)
+- [13. 容器化与运维证据链](#13-容器化与运维证据链)
 
 ---
 
@@ -916,6 +917,118 @@ hub restart --name backend-api
 - [ ] 确认 `/api/*` 反代没被 rewrite 盖住（`curl https://<域名>/api/health` 返回 JSON）
 - [ ] 生产滚动升级（先停前端再停后端，避免半截状态）
 - [ ] 验证 `/api/health` + 主页 + `/admin` 刷新 + 注册登录 + 一次完整下载 + 一次 AI 总结（SSE 不缓冲）
+
+---
+
+## 13. 容器化与运维证据链
+
+「可运维」不是一句形容词，是五件能执行的东西：镜像、编排、备份、巡检、日志。
+本节把它们摆在一起。**不含监控告警平台**（Prometheus / Grafana / ELK 一律不做），
+只有巡检脚本与阈值判定——不写「已搭建监控告警体系」这种话。
+
+### 13.1 文件清单
+
+| 文件 | 作用 |
+|------|------|
+| `backend/Dockerfile` | 后端镜像：非 root 运行、含 ffmpeg、带 healthcheck |
+| `backend/.dockerignore` | 凭据与本机产物不进镜像 |
+| `frontend/Dockerfile` | 两段式：Node 构建 → 最终镜像只有静态文件 + nginx |
+| `frontend/nginx.conf` | SPA rewrite + `/api` 同域反代到后端 |
+| `frontend/.dockerignore` | 同上，前端侧 |
+| `docker-compose.yml` | 本地编排：两个服务 + 两个卷 |
+| `backend/logging_setup.py` | JSON 行日志、分级、轮转 |
+| `scripts/ops/backup_db.py` | SQLite 在线备份 + 完整性校验 + 保留策略 |
+| `scripts/ops/inspect_runtime.py` | 运行期巡检，任一项不达标即非零退出 |
+
+### 13.2 起停与验证
+
+```bash
+# 构建并起
+docker compose up -d --build
+
+# 验证：真 curl 过才算数，「容器起来了」不算
+curl -i http://localhost:8080/api/health
+
+# 状态与日志
+docker compose ps
+docker compose logs -f backend
+
+# 关停（卷留着，数据还在）
+docker compose down
+```
+
+前端容器会等后端容器**真健康**再起（`depends_on: condition: service_healthy`），
+省掉「前端先起、后端还没好」的一串 502。
+
+### 13.3 数据持久化
+
+| 卷 | 容器内路径 | 内容 |
+|----|-----------|------|
+| `viddigest-data` | `/app/data` | SQLite 库（`app.db`） |
+| `viddigest-logs` | `/app/logs` | 运行期日志 |
+
+`docker compose down` **不删卷**（`down -v` 才删）。要验证数据确实还在，
+别靠配置推断，去库里查一行：
+
+```bash
+docker compose up -d
+docker compose exec backend python -c "import sqlite3;print(sqlite3.connect('/app/data/app.db').execute('select count(*) from users').fetchone())"
+```
+
+### 13.4 备份与恢复
+
+```bash
+# 备份（热备份：服务在跑也能出一致快照）
+python scripts/ops/backup_db.py
+python scripts/ops/backup_db.py --keep 14
+
+# 恢复
+docker compose down
+cp backend/backups/app-<时间戳>.db backend/data/app.db
+docker compose up -d
+```
+
+**为什么不直接拷 `app.db`**：本库是 WAL 模式，服务在跑时当前状态不全在主文件里，
+多出来的部分在 `app.db-wal`。直接 `cp` 拿到的是缺事务的快照，恢复后会安静地丢数据。
+备份脚本走 SQLite 自带的在线备份 API，拷完还要过 `PRAGMA integrity_check`——
+**校验不过就当失败**（退出码非零），因为一份打不开的备份比没有备份更危险。
+
+### 13.5 巡检
+
+```bash
+python scripts/ops/inspect_runtime.py
+python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/health
+```
+
+| 检查项 | 判据 |
+|--------|------|
+| 健康端点 | HTTP 200 且响应是 JSON |
+| 数据库 | 文件存在且 `PRAGMA integrity_check` 通过 |
+| 数据目录 | 占用不超过阈值（默认 1024 MB） |
+| 日志新鲜度 | 日志文件存在且最近有写入（默认 24 小时内） |
+
+任一项不达标 → 退出码非零。巡检报告如果永远显示「一切正常」，它就只是输出文字，
+不是判据。
+
+### 13.6 日志
+
+- 位置：`backend/logs/app.log`（容器内 `/app/logs`）
+- 格式：一行一条 JSON（`ts` / `level` / `logger` / `msg`，异常带 `exc`）
+- 级别：`VIDDIGEST_LOG_LEVEL` 环境变量控制，默认 `INFO`
+- 轮转：单文件 10 MB，保留 5 份
+
+时间戳统一用 UTC：容器、CI、开发者本机时区不同，只有统一成 UTC，
+日志顺序才和真实顺序一致。
+
+**日志里没有凭据**：请求体里的 `user_api_key` 由 `backend/main.py` 的
+`RequestValidationError` 处理器遮蔽；BYOK 密钥不落盘（ADR 0004）。
+脱敏发生在靠近数据的地方，不在日志层做正则糊。
+
+### 13.7 凭据边界
+
+- `backend/.env` 被 `backend/.dockerignore` 排除，**不进镜像**
+- `docker-compose.yml` 用 `env_file` 在运行时注入，文件里只有变量名
+- 镜像里没有 key，也没有默认密钥——`JWT_SECRET` 缺失时后端**拒绝启动**（ADR 0010）
 
 ---
 
