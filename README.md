@@ -22,6 +22,10 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
 </p>
 
+<p align="center">
+  <b>中文</b> · <a href="README.en.md">English</a>
+</p>
+
 ---
 
 <p align="center">
@@ -133,6 +137,30 @@ npm run release:build            # 发布用：先清空 dist/ 再构建（避�
 生产构建产物需要**静态托管 + SPA rewrite**（否则刷新 `/admin` 得到 404）。
 完整 Nginx / Caddy 配置与上线后自检见
 [docs/OPERATIONS.md §11.5](docs/OPERATIONS.md#115-生产静态托管spa-rewrite)。
+
+---
+
+## ✅ 验证
+
+本仓库只有一个门禁，它决定一次改动能不能算「做完了」：
+
+```bash
+bash ./init.sh          # 退出码 0 = 已验证
+```
+
+| # | 检查 | 它证明什么 |
+|---|------|-----------|
+| 1 | `backend: pytest` | 后端 1261 条用例通过 |
+| 2 | `backend: compileall` | 后端全部模块可编译 |
+| 3 | `secrets: content-level scan` | 跟踪文件**与可达 git 历史**里没有凭据形态的字符串（`.gitignore` 只挡文件名，挡不住被抄进文档的口令） |
+| 4 | `frontend: npm test` | 前端 496 条静态 / 契约断言通过（node:test） |
+| 5 | `frontend: npm run test:mount` | 前端 191 条挂载层用例通过（Vitest）——两套 runner 刻意分开，绿色的那一层遮不住红的那一层 |
+| 6 | `refs: ADR 与路径引用一致性` | 文档与注释里提到的每个 `ADR NNNN`、每条源码路径都还指得到 |
+| 7 | `gate: 关卡数口径一致性` | 本节写的关卡数就是门禁真跑的关卡数（从 `init.sh` 里数出来，不硬编码） |
+
+关卡本身也要被验证：16 个变异脚本每次故意破坏一条不变量（鉴权边界、链接归一、
+数据库夹具、支付回调、敏感内容扫描……），断言门禁会转红。详见
+[docs/TESTING-STRATEGY.md](docs/TESTING-STRATEGY.md)。
 
 ---
 
