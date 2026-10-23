@@ -1,0 +1,12 @@
+# 构建产物与依赖
+node_modules
+dist
+coverage
+
+# 锁文件由 npm 生成，格式化它没有意义，而且每次 install 都会被打回
+package-lock.json
+
+# 非工程化接入范围的文件：保持原样，不进格式化流水线
+index.html
+README.md
+public

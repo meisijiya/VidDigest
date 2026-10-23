@@ -19,7 +19,24 @@ import axios from 'axios'
  * 为「万一」留一条把它渲染出去的路。
  */
 
-const str = (v) => (v === null || v === undefined ? '' : String(v))
+const str = (v: unknown): string => (v === null || v === undefined ? '' : String(v))
+
+/**
+ * 清单里的一条厂商记录（camelCase 之后）。
+ *
+ * `isReal` 保持 **0 / 1 数字**而不是布尔：接口与库表都用 0/1
+ * （`is_real=0` / `enabled=1`），这里再翻一层布尔只会多一次转换，
+ * 而管理表格要按同一套口径去比大小。
+ */
+export interface ModelItem {
+  id: string
+  label: string
+  baseUrl: string
+  defaultModel: string
+  models: string[]
+  hint: string
+  isReal: 0 | 1
+}
 
 /**
  * snake_case 的一条清单记录 → camelCase。
@@ -27,13 +44,9 @@ const str = (v) => (v === null || v === undefined ? '' : String(v))
  * 保留的是 7 个公共字段：id / label / baseUrl / defaultModel / models /
  * hint / isReal。`platform` 与 `custom` 这类「不是真厂商」的行由
  * `isReal = 0` 标出来，UI 要能把它们与真实厂商分开呈现。
- *
- * `isReal` 保持 **0 / 1 数字**而不是布尔：接口与库表都用 0/1
- * （`is_real=0` / `enabled=1`），这里再翻一层布尔只会多一次转换，
- * 而管理表格要按同一套口径去比大小。
  */
-export function toModelItem(raw) {
-  const row = raw && typeof raw === 'object' ? raw : {}
+export function toModelItem(raw: unknown): ModelItem {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   return {
     id: str(row.id),
     label: str(row.label),
@@ -50,12 +63,19 @@ export function toModelItem(raw) {
  *
  * 「清单是空的」和「接口没按约定返回」是两件事：后者静默变成空数组的话，
  * 页面上只剩一个不能用的下拉，用户没有任何线索知道该刷新还是该报错。
+ *
+ * 带 map 的那个重载让调用方保留**具体**的行类型（管理端多两个字段，
+ * `AdminModelItem`）：只写一个签名的话，返回值会被抹成 `ModelItem`，
+ * 而多出来的两个字段就此从类型里消失——不是报错，是**静默少两个字段**。
  */
-export function toItems(data, map = toModelItem) {
-  if (!data || !Array.isArray(data.items)) {
+export function toItems<T extends ModelItem>(data: unknown, map: (raw: unknown) => T): T[]
+export function toItems(data: unknown, map?: (raw: unknown) => ModelItem): ModelItem[]
+export function toItems(data: unknown, map: (raw: unknown) => ModelItem = toModelItem): ModelItem[] {
+  const rows = (data as { items?: unknown } | null)?.items
+  if (!rows || !Array.isArray(rows)) {
     throw new Error('模型清单响应形状不对')
   }
-  return data.items.map(map)
+  return rows.map(map)
 }
 
 /**
@@ -65,10 +85,8 @@ export function toItems(data, map = toModelItem) {
  *
  * 失败时**不吞异常**：由调用方决定怎么告诉用户。空清单会让用户以为
  * 「平台不支持自带 Key」。
- *
- * @returns {Promise<{ items: object[] }>} items 已转成 camelCase
  */
-export async function fetchPublicModelCatalog() {
+export async function fetchPublicModelCatalog(): Promise<{ items: ModelItem[] }> {
   const res = await axios.get('/api/models')
   return { items: toItems(res.data) }
 }

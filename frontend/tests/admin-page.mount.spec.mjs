@@ -31,7 +31,7 @@ import { flushPromises } from '@vue/test-utils'
 
 // vi.mock 必须留在本文件顶部：vitest 把它提升到所有 import 之前，
 // 放进共用夹具再由这里导入，依赖的是导入顺序——那种失效是静默的。
-vi.mock('../src/api/admin.js', async (importOriginal) => ({
+vi.mock('../src/api/admin.ts', async (importOriginal) => ({
   ...(await importOriginal()),
   fetchAdminUsers: vi.fn(),
   fetchAdminCommunity: vi.fn(),
@@ -47,10 +47,21 @@ vi.mock('../src/api/admin.js', async (importOriginal) => ({
 }))
 
 import AdminPage from '../src/components/AdminPage.vue'
-import * as api from '../src/api/admin.js'
+import * as api from '../src/api/admin.ts'
 import {
-  mountAdmin, userRow, communityRow, modelRow, VOCABULARY, httpError,
-  buttonByText, tabButtons, selectedTab, gotoTab, dataRowCount, screenText, tagCheckbox,
+  mountAdmin,
+  userRow,
+  communityRow,
+  modelRow,
+  VOCABULARY,
+  httpError,
+  buttonByText,
+  tabButtons,
+  selectedTab,
+  gotoTab,
+  dataRowCount,
+  screenText,
+  tagCheckbox,
 } from './helpers/admin-fixtures.mjs'
 
 /** 每个用例一份干净种子：mock 的返回值与调用历史都不跨用例。 */
@@ -77,7 +88,9 @@ describe('沙箱自检 · mock 真的接上了', () => {
     // undefined 时的默认值也可能撞上）。必须证明数据真的流过去了。
     api.fetchAdminUsers.mockResolvedValue({
       items: [userRow({ id: 7, email: 'moved@example.com' })],
-      total: 1, page: 1, pageSize: 20,
+      total: 1,
+      page: 1,
+      pageSize: 20,
     })
     const w = await mountAdmin(AdminPage)
 
@@ -289,7 +302,8 @@ describe('行内编辑器 · 展开、绑定、收起', () => {
     await openEditor(w)
     api.setUserQuota.mockResolvedValue({
       user: userRow({ parseLimitOverride: 5, parseLimit: 5, parseLimitSource: 'override' }),
-      note: null, message: '',
+      note: null,
+      message: '',
     })
 
     await w.find('#quota-parse-1').setValue('3')
@@ -304,7 +318,9 @@ describe('行内编辑器 · 展开、绑定、收起', () => {
     const w = await mountAdmin(AdminPage)
     await openEditor(w)
     api.setUserQuota.mockResolvedValue({
-      user: userRow({ isVip: true }), note: 'vip_not_effective', message: '已保存，但该用户是有效 VIP',
+      user: userRow({ isVip: true }),
+      note: 'vip_not_effective',
+      message: '已保存，但该用户是有效 VIP',
     })
 
     await w.find('#quota-parse-1').setValue('3')
@@ -319,7 +335,9 @@ describe('行内编辑器 · 展开、绑定、收起', () => {
     // 一个在编辑前（本地知道）。少了编辑前那条，管理员要点一次才知道。
     api.fetchAdminUsers.mockResolvedValue({
       items: [userRow({ id: 1, isVip: true }), userRow({ id: 2, isVip: false })],
-      total: 2, page: 1, pageSize: 20,
+      total: 2,
+      page: 1,
+      pageSize: 20,
     })
     const w = await mountAdmin(AdminPage)
     await w.find('button[aria-controls="quota-editor-1"]').trigger('click')
@@ -405,11 +423,10 @@ describe('列表变动 · 展开状态跟着「谁」走，不跟着「第几行
   // 展开状态挂在了行号上，没挂在用户上。
   it('删掉上面一行时，下面那个用户的编辑区仍然开着', async () => {
     api.fetchAdminUsers.mockResolvedValue({
-      items: [
-        userRow({ id: 1, email: 'first@example.com' }),
-        userRow({ id: 2, email: 'second@example.com' }),
-      ],
-      total: 2, page: 1, pageSize: 20,
+      items: [userRow({ id: 1, email: 'first@example.com' }), userRow({ id: 2, email: 'second@example.com' })],
+      total: 2,
+      page: 1,
+      pageSize: 20,
     })
     api.deleteAdminUser.mockResolvedValue({ deleted: 1 })
     const w = await mountAdmin(AdminPage)
@@ -418,7 +435,10 @@ describe('列表变动 · 展开状态跟着「谁」走，不跟着「第几行
     await flushPromises()
     expect(w.find('#quota-editor-2').exists()).toBe(true)
 
-    await w.findAll('button').filter((b) => b.text().trim() === '删除')[0].trigger('click')
+    await w
+      .findAll('button')
+      .filter((b) => b.text().trim() === '删除')[0]
+      .trigger('click')
     await flushPromises()
     await buttonByText(w, '确认删除').trigger('click')
     await flushPromises()
@@ -430,11 +450,10 @@ describe('列表变动 · 展开状态跟着「谁」走，不跟着「第几行
 
   it('删掉的是**展开着**的那一行时，编辑区跟着收走，不留在别人身上', async () => {
     api.fetchAdminUsers.mockResolvedValue({
-      items: [
-        userRow({ id: 1, email: 'first@example.com' }),
-        userRow({ id: 2, email: 'second@example.com' }),
-      ],
-      total: 2, page: 1, pageSize: 20,
+      items: [userRow({ id: 1, email: 'first@example.com' }), userRow({ id: 2, email: 'second@example.com' })],
+      total: 2,
+      page: 1,
+      pageSize: 20,
     })
     api.deleteAdminUser.mockResolvedValue({ deleted: 1 })
     const w = await mountAdmin(AdminPage)
@@ -443,7 +462,10 @@ describe('列表变动 · 展开状态跟着「谁」走，不跟着「第几行
     await flushPromises()
     expect(w.find('#quota-editor-1').exists()).toBe(true)
 
-    await w.findAll('button').filter((b) => b.text().trim() === '删除')[0].trigger('click')
+    await w
+      .findAll('button')
+      .filter((b) => b.text().trim() === '删除')[0]
+      .trigger('click')
     await flushPromises()
     await buttonByText(w, '确认删除').trigger('click')
     await flushPromises()
@@ -457,7 +479,9 @@ describe('列表变动 · 展开状态跟着「谁」走，不跟着「第几行
   it('社区那一侧同样不串行', async () => {
     api.fetchAdminCommunity.mockResolvedValue({
       items: [communityRow({ id: 20, title: '甲', tags: [] }), communityRow({ id: 21, title: '乙', tags: [] })],
-      total: 2, page: 1, pageSize: 20,
+      total: 2,
+      page: 1,
+      pageSize: 20,
     })
     api.deleteCommunityVideo.mockResolvedValue({ deleted: 20 })
     const w = await mountAdmin(AdminPage)
@@ -467,9 +491,15 @@ describe('列表变动 · 展开状态跟着「谁」走，不跟着「第几行
     await flushPromises()
     expect(w.find('#community-tags-21').exists()).toBe(true)
 
-    await w.findAll('button').filter((b) => b.text().trim() === '删除')[0].trigger('click')
+    await w
+      .findAll('button')
+      .filter((b) => b.text().trim() === '删除')[0]
+      .trigger('click')
     await flushPromises()
-    await w.findAll('button').filter((b) => b.text().trim() === '确认删除')[0].trigger('click')
+    await w
+      .findAll('button')
+      .filter((b) => b.text().trim() === '确认删除')[0]
+      .trigger('click')
     await flushPromises()
 
     expect(screenText(w)).toContain('乙')
@@ -609,7 +639,9 @@ describe('翻页 · 不越界', () => {
     // 才是「点了没反应」而不是「点了报 400」。
     api.fetchAdminUsers.mockResolvedValue({
       items: Array.from({ length: 20 }, (_, i) => userRow({ id: i + 1, email: `u${i + 1}@example.com` })),
-      total: 21, page: 2, pageSize: 20,
+      total: 21,
+      page: 2,
+      pageSize: 20,
     })
     const w = await mountAdmin(AdminPage)
     const next = buttonByText(w, '下一页')
@@ -641,7 +673,10 @@ describe('翻页 · 不越界', () => {
   it('点「下一页」真的带上新的 page 重新请求', async () => {
     // 反向对照：前两条都断「不越界」，少一条正向就会让整套断言恒绿。
     api.fetchAdminUsers.mockResolvedValue({
-      items: [userRow()], total: 45, page: 1, pageSize: 20,
+      items: [userRow()],
+      total: 45,
+      page: 1,
+      pageSize: 20,
     })
     const w = await mountAdmin(AdminPage)
 
@@ -709,7 +744,9 @@ describe('建号 · 展开、草稿、提交', () => {
     await flushPromises()
 
     expect(api.createAdminUser).toHaveBeenCalledWith({
-      email: 'new@example.com', password: 'secret123', isAdmin: false,
+      email: 'new@example.com',
+      password: 'secret123',
+      isAdmin: false,
     })
     expect(screenText(w)).toContain('new@example.com')
     // total 加一用「界面上多了一行」来断，而不是找「共 2 条」——
@@ -798,7 +835,9 @@ describe('建号 · 展开、草稿、提交', () => {
     await flushPromises()
 
     expect(api.createAdminUser).toHaveBeenCalledWith({
-      email: 'new@example.com', password: 'secret123', isAdmin: true,
+      email: 'new@example.com',
+      password: 'secret123',
+      isAdmin: true,
     })
     expect(screenText(w)).toContain('管理员')
   })
@@ -820,7 +859,9 @@ describe('社区审核 · 标签与删除', () => {
         communityRow({ id: 10, title: '真内容', status: 'ready' }),
         communityRow({ id: 11, title: '', status: 'pending' }),
       ],
-      total: 2, page: 1, pageSize: 20,
+      total: 2,
+      page: 1,
+      pageSize: 20,
     })
     const w = await mountAdmin(AdminPage)
     await gotoCommunity(w)
@@ -848,7 +889,10 @@ describe('社区审核 · 标签与删除', () => {
     // 种子必须自带**零个**已有标签：带一个的话，起点就是 1，
     // 「勾上变成 2」与「没变」这两种情况都藏在同一个数字里。
     api.fetchAdminCommunity.mockResolvedValue({
-      items: [communityRow({ id: 10, tags: [] })], total: 1, page: 1, pageSize: 20,
+      items: [communityRow({ id: 10, tags: [] })],
+      total: 1,
+      page: 1,
+      pageSize: 20,
     })
     const w = await mountAdmin(AdminPage)
     await gotoCommunity(w)
@@ -876,7 +920,10 @@ describe('社区审核 · 标签与删除', () => {
     // 两条并排才够：只断 maxTags=2 的话，把 maxTags 恒设成 0
     // （于是所有 checkbox 一律禁用）也能绿。
     api.fetchAdminCommunity.mockResolvedValue({
-      items: [communityRow({ id: 10, tags: [] })], total: 1, page: 1, pageSize: 20,
+      items: [communityRow({ id: 10, tags: [] })],
+      total: 1,
+      page: 1,
+      pageSize: 20,
     })
 
     api.fetchTagVocabulary.mockResolvedValue({ maxTags: 2, groups: VOCABULARY.groups })
@@ -903,7 +950,10 @@ describe('社区审核 · 标签与删除', () => {
 
   it('取掉一个之后，剩下的又能选上了', async () => {
     api.fetchAdminCommunity.mockResolvedValue({
-      items: [communityRow({ id: 10, tags: [] })], total: 1, page: 1, pageSize: 20,
+      items: [communityRow({ id: 10, tags: [] })],
+      total: 1,
+      page: 1,
+      pageSize: 20,
     })
     api.fetchTagVocabulary.mockResolvedValue({ maxTags: 2, groups: VOCABULARY.groups })
     const w = await mountAdmin(AdminPage)
@@ -923,7 +973,10 @@ describe('社区审核 · 标签与删除', () => {
 
   it('保存真的把选中的标签发出去', async () => {
     api.fetchAdminCommunity.mockResolvedValue({
-      items: [communityRow({ id: 10, tags: [] })], total: 1, page: 1, pageSize: 20,
+      items: [communityRow({ id: 10, tags: [] })],
+      total: 1,
+      page: 1,
+      pageSize: 20,
     })
     api.updateCommunityTags.mockResolvedValue({
       item: communityRow({ tags: ['科普', '访谈'] }),
@@ -946,7 +999,10 @@ describe('社区审核 · 标签与删除', () => {
 
     expect(screenText(w)).toContain('不删用户的解析历史')
 
-    await w.findAll('button').find((b) => b.text().trim() === '删除').trigger('click')
+    await w
+      .findAll('button')
+      .find((b) => b.text().trim() === '删除')
+      .trigger('click')
     await flushPromises()
 
     expect(api.deleteCommunityVideo).not.toHaveBeenCalled()
@@ -957,10 +1013,16 @@ describe('社区审核 · 标签与删除', () => {
     api.deleteCommunityVideo.mockResolvedValue({ deleted: 10 })
     const w = await mountAdmin(AdminPage)
     await gotoCommunity(w)
-    await w.findAll('button').find((b) => b.text().trim() === '删除').trigger('click')
+    await w
+      .findAll('button')
+      .find((b) => b.text().trim() === '删除')
+      .trigger('click')
     await flushPromises()
 
-    await w.findAll('button').find((b) => b.text().trim() === '确认删除').trigger('click')
+    await w
+      .findAll('button')
+      .find((b) => b.text().trim() === '确认删除')
+      .trigger('click')
     await flushPromises()
 
     expect(api.deleteCommunityVideo).toHaveBeenCalledWith(10)
@@ -974,7 +1036,10 @@ describe('模型清单 · 改一行', () => {
   }
 
   async function openModel(w, id = 'openai') {
-    await w.findAll('button').find((b) => b.text().trim() === '编辑').trigger('click')
+    await w
+      .findAll('button')
+      .find((b) => b.text().trim() === '编辑')
+      .trigger('click')
     await flushPromises()
     if (!w.find(`#m-label-${id}`).exists()) {
       throw new Error(`编辑区没打开：#m-label-${id} 不在界面上`)
@@ -1090,11 +1155,16 @@ describe('模型清单 · 改一行', () => {
     // 渲染了又禁止保存的话，「编辑」按钮就是一条死路。
     api.fetchAdminModelCatalog.mockResolvedValue({
       items: [modelRow({ id: 'platform', isReal: 0, models: [] })],
-      total: 1, page: 1, pageSize: 20,
+      total: 1,
+      page: 1,
+      pageSize: 20,
     })
     const w = await mountAdmin(AdminPage)
     await gotoModels(w)
-    await w.findAll('button').find((b) => b.text().trim() === '编辑').trigger('click')
+    await w
+      .findAll('button')
+      .find((b) => b.text().trim() === '编辑')
+      .trigger('click')
     await flushPromises()
 
     expect(w.find('#m-models-platform').exists()).toBe(false)
@@ -1112,14 +1182,20 @@ describe('模型清单 · 改一行', () => {
     // 一开始就写错了，只是症状长得像组件有 bug。
     api.fetchAdminModelCatalog.mockResolvedValue({
       items: [modelRow({ id: 'platform', isReal: 0, models: [] })],
-      total: 1, page: 1, pageSize: 20,
+      total: 1,
+      page: 1,
+      pageSize: 20,
     })
     api.updateAdminModel.mockResolvedValue({
-      item: modelRow({ id: 'platform', isReal: 0, models: [] }), platformDefault: null,
+      item: modelRow({ id: 'platform', isReal: 0, models: [] }),
+      platformDefault: null,
     })
     const w = await mountAdmin(AdminPage)
     await gotoModels(w)
-    await w.findAll('button').find((b) => b.text().trim() === '编辑').trigger('click')
+    await w
+      .findAll('button')
+      .find((b) => b.text().trim() === '编辑')
+      .trigger('click')
     await flushPromises()
 
     // 前提自检：编辑区确实处于「没有可选模型」这条路上，否则下面的
@@ -1140,7 +1216,10 @@ describe('模型清单 · 改一行', () => {
     api.updateAdminModel.mockResolvedValue({ item: modelRow(), platformDefault: null })
     const w = await mountAdmin(AdminPage)
     await gotoModels(w)
-    await w.findAll('button').find((b) => b.text().trim() === '编辑').trigger('click')
+    await w
+      .findAll('button')
+      .find((b) => b.text().trim() === '编辑')
+      .trigger('click')
     await flushPromises()
 
     expect(w.find('#m-models-openai').exists()).toBe(true)

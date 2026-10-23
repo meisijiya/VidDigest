@@ -25,10 +25,16 @@ import { readFileSync } from 'node:fs'
 import axios from 'axios'
 import { ref } from 'vue'
 
+import { fetchCommunityTags, searchCommunity, fetchCommunityVideos } from '../src/api/community.ts'
 import {
-  fetchCommunityTags, searchCommunity, fetchCommunityVideos,
-} from '../src/api/community.js'
-import { toggleTag, tagsToQuery, needsExpand, shouldShowToggle, parseTagQuery, countHiddenChips } from '../src/lib/tag-filter.js'
+  toggleTag,
+  tagsToQuery,
+  needsExpand,
+  shouldShowToggle,
+  parseTagQuery,
+  countHiddenChips,
+} from '../src/lib/tag-filter.ts'
+import { transpileTs } from './helpers/ts-sandbox.mjs'
 
 // ─────────────────────────────────────────────────────────
 // 助手
@@ -92,36 +98,42 @@ function fnText(code, name) {
  * 适用」，得改测试而不是绕过它。
  */
 function withScope(code, names, scope) {
-  const decls = names.map((n) => fnText(code, n)).join('\n')
+  // 脚本已是 TypeScript，先转成 JS 再进沙箱：`new Function` 按 JS 解析参数，
+  // 而抠出来的源码里有类型标注与 `as`。转译只动语法，不动行为（见 helpers/ts-sandbox.mjs）。
+  const decls = transpileTs(names.map((n) => fnText(code, n)).join('\n'), 'community-page-script.ts')
   const factory = new Function('scope', `with (scope) {\n${decls}\nreturn { ${names.join(', ')} }\n}`)
   return factory(scope)
 }
 
 /** load() 需要的全套作用域。overrides 用来替换其中的依赖。 */
 function loadScope(overrides = {}) {
-  return Object.assign({
-    loading: ref(true),
-    loadError: ref(''),
-    tooShort: ref(null),
-    needLogin: ref(false),
-    keyword: ref(''),
-    activeQuery: ref(''),
-    activeTags: ref([]),
-    tagOptions: ref([]),
-    page: ref(1),
-    pageSize: 20,
-    items: ref([]),
-    total: ref(0),
-    totalPages: ref(0),
-    searchCommunity: async () => ({ items: [], total: 0 }),
-    fetchCommunityVideos: async () => ({ items: [], total: 0 }),
-    tagsToQuery,
-  }, overrides)
+  return Object.assign(
+    {
+      loading: ref(true),
+      loadError: ref(''),
+      tooShort: ref(null),
+      needLogin: ref(false),
+      keyword: ref(''),
+      activeQuery: ref(''),
+      activeTags: ref([]),
+      tagOptions: ref([]),
+      page: ref(1),
+      pageSize: 20,
+      items: ref([]),
+      total: ref(0),
+      totalPages: ref(0),
+      searchCommunity: async () => ({ items: [], total: 0 }),
+      fetchCommunityVideos: async () => ({ items: [], total: 0 }),
+      tagsToQuery,
+    },
+    overrides,
+  )
 }
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
-    status, headers: { 'content-type': 'application/json' },
+    status,
+    headers: { 'content-type': 'application/json' },
   })
 }
 
@@ -148,9 +160,15 @@ beforeEach(() => {
   axios.defaults.adapter = 'fetch'
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
 })
 
@@ -173,12 +191,13 @@ const SERVER_TAGS = [
 describe('标签选项 · 来自服务端完整清单，不是当前页汇总', () => {
   test('汇总当前页卡片的那段写法已经不在了', () => {
     const code = pageVue()
-    assert.doesNotMatch(code, /for \(const item of items\.value\)/,
-      '筛选行又变回从当前页卡片汇总了 —— 翻页或选中标签后其余标签会消失')
-    assert.doesNotMatch(code, /const tagOptions = computed\(/,
-      'tagOptions 不该是随结果集一起变的 computed')
-    assert.match(code, /const tagOptions = ref\(/,
-      '标签清单应当是取一次就常驻的 ref')
+    assert.doesNotMatch(
+      code,
+      /for \(const item of items\.value\)/,
+      '筛选行又变回从当前页卡片汇总了 —— 翻页或选中标签后其余标签会消失',
+    )
+    assert.doesNotMatch(code, /const tagOptions = computed\(/, 'tagOptions 不该是随结果集一起变的 computed')
+    assert.match(code, /const tagOptions = ref[<(]/, '标签清单应当是取一次就常驻的 ref')
   })
 
   test('标签清单真的打 /api/community/tags，原样返回带条数的 items', async () => {
@@ -186,8 +205,11 @@ describe('标签选项 · 来自服务端完整清单，不是当前页汇总', 
     const got = await fetchCommunityTags()
     assert.equal(new URL(calls[0].url).pathname, '/api/community/tags', '打错了端点')
     assert.deepEqual(got, SERVER_TAGS, '清单被前端二次加工过 —— 条数或顺序不该动')
-    assert.deepEqual(got.map((t) => t.tag), SERVER_TAGS.map((t) => t.tag),
-      '标签顺序被前端改过（服务端词表顺序就是展示顺序）')
+    assert.deepEqual(
+      got.map((t) => t.tag),
+      SERVER_TAGS.map((t) => t.tag),
+      '标签顺序被前端改过（服务端词表顺序就是展示顺序）',
+    )
   })
 
   test('未登录也能取清单（这个端点是公开的）', async () => {
@@ -207,9 +229,12 @@ describe('标签选项 · 来自服务端完整清单，不是当前页汇总', 
     for (let i = code.indexOf('tagOptions.value ='); i !== -1; i = code.indexOf('tagOptions.value =', i + 1)) {
       if (i < start || i >= end) outside.push(code.slice(i, code.indexOf('\n', i)).trim())
     }
-    assert.deepEqual(outside, [],
-      `这些地方在 loadTags 之外改了标签清单：${outside.join(' | ')}\n`
-      + '  —— 只要有一处跟着结果集重算标签，「选中后 chips 不减少」就不成立')
+    assert.deepEqual(
+      outside,
+      [],
+      `这些地方在 loadTags 之外改了标签清单：${outside.join(' | ')}\n` +
+        '  —— 只要有一处跟着结果集重算标签，「选中后 chips 不减少」就不成立',
+    )
   })
 
   test('挂载时取一次清单', () => {
@@ -224,18 +249,19 @@ describe('标签选项 · 来自服务端完整清单，不是当前页汇总', 
     const tagOptions = ref(SERVER_TAGS)
     const tagLoadError = ref('')
     const { loadTags } = withScope(code, ['loadTags'], {
-      tagOptions, tagLoadError,
-      fetchCommunityTags: async () => { throw new Error('500 Internal Server Error') },
+      tagOptions,
+      tagLoadError,
+      fetchCommunityTags: async () => {
+        throw new Error('500 Internal Server Error')
+      },
     })
     await loadTags()
-    assert.match(tagLoadError.value, /500/,
-      '失败原因没有被记下来 —— 筛选行空着，用户会以为是自己筛出来的')
+    assert.match(tagLoadError.value, /500/, '失败原因没有被记下来 —— 筛选行空着，用户会以为是自己筛出来的')
     assert.deepEqual(tagOptions.value, [], '失败后还留着上一次的清单，用户会以为那是全部')
     assert.match(code, /v-if="tagLoadError"/, '模板里没有失败提示分支')
     assert.match(code, /标签列表加载失败/, '失败提示没有说清是标签清单挂了')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 二 · 多选取并集
@@ -253,13 +279,14 @@ describe('多选 · 累计而不互相顶掉', () => {
     const activeTags = ref([])
     const loads = []
     const { onTagsChange } = withScope(code, ['onTagsChange'], {
-      activeTags, page: ref(1), load: () => loads.push(1),
+      activeTags,
+      page: ref(1),
+      load: () => loads.push(1),
     })
     // 两次事件，形状与 TagFilterRow 发出的完全一致
     onTagsChange(toggleTag([], '编程', true))
     onTagsChange(toggleTag(['编程'], '人工智能', true))
-    assert.deepEqual(activeTags.value, ['编程', '人工智能'],
-      '第二个标签把第一个顶掉了 —— 这不是多选')
+    assert.deepEqual(activeTags.value, ['编程', '人工智能'], '第二个标签把第一个顶掉了 —— 这不是多选')
     assert.deepEqual(loads, [1, 1], '每次选择都应重新取一次列表')
   })
 
@@ -267,7 +294,9 @@ describe('多选 · 累计而不互相顶掉', () => {
     const code = pageVue()
     const activeTags = ref([])
     const { onTagsChange } = withScope(code, ['onTagsChange'], {
-      activeTags, page: ref(1), load: () => {},
+      activeTags,
+      page: ref(1),
+      load: () => {},
     })
     onTagsChange(toggleTag([], '编程', true))
     onTagsChange(toggleTag(['编程'], '人工智能', true))
@@ -275,16 +304,14 @@ describe('多选 · 累计而不互相顶掉', () => {
     const calls = spyFetch(() => jsonResponse({ items: [], total: 0 }))
     await searchCommunity({ tag: tagsToQuery(activeTags.value) })
     const url = new URL(calls[0].url)
-    assert.equal(url.searchParams.get('tag'), '编程,人工智能',
-      '并集查询串没发出去（只取第一个的话这里会是「编程」）')
+    assert.equal(url.searchParams.get('tag'), '编程,人工智能', '并集查询串没发出去（只取第一个的话这里会是「编程」）')
     assert.deepEqual(parseTagQuery(url.searchParams.get('tag')), ['编程', '人工智能'])
   })
 
   test('未选中任何标签时不传 tag（退回公开浏览）', async () => {
     const calls = spyFetch(() => jsonResponse({ items: [], total: 0 }))
     await searchCommunity({ q: '', tag: tagsToQuery([]) })
-    assert.equal(new URL(calls[0].url).searchParams.has('tag'), false,
-      '没选任何标签却发了一个空 tag 过去')
+    assert.equal(new URL(calls[0].url).searchParams.has('tag'), false, '没选任何标签却发了一个空 tag 过去')
     await searchCommunity({ q: '', tag: tagsToQuery(['编程']) })
     assert.equal(new URL(calls[1].url).searchParams.get('tag'), '编程')
   })
@@ -297,18 +324,20 @@ describe('多选 · 累计而不互相顶掉', () => {
     const scope = loadScope({ activeTags: ref(['编程', '人工智能']) })
     scope.searchCommunity = searchCommunity
     scope.fetchCommunityVideos = fetchCommunityVideos
-    const { load, applyList } = withScope(code, ['load', 'applyList'], scope)
+    const { load } = withScope(code, ['load', 'applyList'], scope)
     await load()
     assert.equal(scope.loadError.value, '', `load 失败了：${scope.loadError.value}`)
     assert.equal(new URL(calls[0].url).pathname, '/api/community/search')
-    assert.equal(new URL(calls[0].url).searchParams.get('tag'), '编程,人工智能',
-      'load 没有把两个标签都发出去 —— 只取第一个的话这里会是「编程」')
+    assert.equal(
+      new URL(calls[0].url).searchParams.get('tag'),
+      '编程,人工智能',
+      'load 没有把两个标签都发出去 —— 只取第一个的话这里会是「编程」',
+    )
 
     // 反过来：什么都没选时不得带 tag
     scope.activeTags.value = []
     await load()
-    assert.equal(new URL(calls[1].url).searchParams.has('tag'), false,
-      '没选任何标签，load 却发了一个 tag 过去')
+    assert.equal(new URL(calls[1].url).searchParams.has('tag'), false, '没选任何标签，load 却发了一个 tag 过去')
   })
 
   test('界面上写明多选取并集，别让用户猜', () => {
@@ -317,7 +346,6 @@ describe('多选 · 累计而不互相顶掉', () => {
     assert.match(code, /并集/, '多选是并集还是交集，界面上没说 —— 用户只能靠试')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 三 · 选中标签不减少 chips 数量
@@ -331,13 +359,18 @@ describe('选择之后 chips 数量不变（用户点名的要求）', () => {
     const activeTags = ref([])
 
     const { loadTags } = withScope(code, ['loadTags'], {
-      tagOptions, tagLoadError: ref(''), fetchCommunityTags: async () => SERVER_TAGS,
+      tagOptions,
+      tagLoadError: ref(''),
+      fetchCommunityTags: async () => SERVER_TAGS,
     })
     await loadTags()
     assert.equal(tagOptions.value.length, SERVER_TAGS.length, '清单没取回来')
 
     const { onTagsChange } = withScope(code, ['onTagsChange'], {
-      activeTags, tagOptions, page: ref(1), load: () => {},
+      activeTags,
+      tagOptions,
+      page: ref(1),
+      load: () => {},
     })
     onTagsChange(toggleTag([], '编程', true))
     onTagsChange(toggleTag(['编程'], '人工智能', true))
@@ -347,15 +380,16 @@ describe('选择之后 chips 数量不变（用户点名的要求）', () => {
     // 列表真的按并集重取，且结果确实变了（否则上面两条是恒真的）
     const items = ref([])
     const scope = loadScope({
-      tagOptions, activeTags, items,
+      tagOptions,
+      activeTags,
+      items,
       searchCommunity: async () => ({ items: [{ id: 1, tags: ['编程'] }], total: 1 }),
     })
-    const { load, applyList } = withScope(code, ['load', 'applyList'], scope)
+    const { load } = withScope(code, ['load', 'applyList'], scope)
     await load()
     assert.equal(items.value.length, 1, '列表没按新条件重取')
     assert.equal(scope.loadError.value, '', `重取失败：${scope.loadError.value}`)
-    assert.deepEqual(tagOptions.value, SERVER_TAGS,
-      '重取结果之后 chips 变了 —— 标签清单被结果集带跑了')
+    assert.deepEqual(tagOptions.value, SERVER_TAGS, '重取结果之后 chips 变了 —— 标签清单被结果集带跑了')
   })
 
   test('翻页也不动清单', () => {
@@ -363,14 +397,16 @@ describe('选择之后 chips 数量不变（用户点名的要求）', () => {
     const tagOptions = ref(SERVER_TAGS)
     const loads = []
     const { goPage } = withScope(code, ['goPage'], {
-      page: ref(1), totalPages: ref(5), tagOptions, load: () => loads.push(1),
+      page: ref(1),
+      totalPages: ref(5),
+      tagOptions,
+      load: () => loads.push(1),
     })
     goPage(2)
     assert.deepEqual(tagOptions.value, SERVER_TAGS, '翻页之后 chips 变了')
     assert.deepEqual(loads, [1], '翻页没有触发重取')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 四 · 单行 + 展开键
@@ -385,8 +421,11 @@ describe('标签行 · 只占一行，溢出交给展开键', () => {
     assert.match(tpl, /:tags="tagOptions"/, '传给组件的不是服务端那份清单')
     assert.match(tpl, /:selected="activeTags"/, '选中集合没传进去')
     assert.doesNotMatch(tpl, /v-for="t in tagOptions"/, '页面还在自己画标签按钮')
-    assert.doesNotMatch(tpl, /flex-wrap items-center gap-2 mb-5/,
-      '退回自己那套会换行的标签行了 —— 标签一多就要占好几行')
+    assert.doesNotMatch(
+      tpl,
+      /flex-wrap items-center gap-2 mb-5/,
+      '退回自己那套会换行的标签行了 —— 标签一多就要占好几行',
+    )
   })
 
   test('共享组件：收起态单行裁剪 + 展开键带 aria-expanded', () => {
@@ -407,10 +446,16 @@ describe('标签行 · 只占一行，溢出交给展开键', () => {
     // 其实两头都会错：组件改成调被测的纯函数就假红，组件里留一份自己的
     // 副本又照样绿 —— 测的根本不是上线那份代码。
     const row = tagRowVue()
-    assert.match(row, /import\s*\{[^}]*\bneedsExpand\b[^}]*\}\s*from\s*'\.\.\/lib\/tag-filter\.js'/,
-      '组件没从 lib/tag-filter.js 引入 needsExpand')
-    assert.match(row, /needsExpand\(\s*el\.scrollWidth\s*,\s*el\.clientWidth\s*\)/,
-      '溢出判断没有拿真实的 scrollWidth/clientWidth 去调 needsExpand')
+    assert.match(
+      row,
+      /import\s*\{[^}]*\bneedsExpand\b[^}]*\}\s*from\s*'\.\.\/lib\/tag-filter\.ts'/,
+      '组件没从 lib/tag-filter.ts 引入 needsExpand',
+    )
+    assert.match(
+      row,
+      /needsExpand\(\s*el\.scrollWidth\s*,\s*el\.clientWidth\s*\)/,
+      '溢出判断没有拿真实的 scrollWidth/clientWidth 去调 needsExpand',
+    )
   })
 
   test('展开态必须留着「收起」入口：真浏览器里点一次就复现过的 bug', () => {
@@ -426,8 +471,11 @@ describe('标签行 · 只占一行，溢出交给展开键', () => {
     const row = tagRowVue()
     assert.match(row, /shouldShowToggle\(/, '组件没有用 shouldShowToggle 决定显隐')
     // 旧写法：只靠 overflowing 决定，于是展开态下按钮会消失
-    assert.doesNotMatch(row, /const showToggle = computed\(\(\) => props\.tags\.length > 1 && overflowing\.value\)/,
-      'showToggle 又退回「只看 overflowing」了 —— 展开后按钮会消失')
+    assert.doesNotMatch(
+      row,
+      /const showToggle = computed\(\(\) => props\.tags\.length > 1 && overflowing\.value\)/,
+      'showToggle 又退回「只看 overflowing」了 —— 展开后按钮会消失',
+    )
   })
 
   test('展开键上的 N 是真被裁掉的个数，不是标签总数', () => {
@@ -444,14 +492,15 @@ describe('标签行 · 只占一行，溢出交给展开键', () => {
 
     // 组件必须真的调它，而不是自己 filter 出一份 —— 断的是接线。
     const row = tagRowVue()
-    assert.match(row, /import\s*\{[^}]*\bcountHiddenChips\b[^}]*\}\s*from\s*'\.\.\/lib\/tag-filter\.js'/,
-      '组件没从 lib/tag-filter.js 引入 countHiddenChips')
+    assert.match(
+      row,
+      /import\s*\{[^}]*\bcountHiddenChips\b[^}]*\}\s*from\s*'\.\.\/lib\/tag-filter\.ts'/,
+      '组件没从 lib/tag-filter.ts 引入 countHiddenChips',
+    )
     assert.match(row, /countHiddenChips\(/, '组件没有调用 countHiddenChips')
-    assert.doesNotMatch(row, /tags\.length\s*-\s*1/,
-      '展开键上的 N 又退回「标签总数减一」了 —— 那是编的，不是量的')
+    assert.doesNotMatch(row, /tags\.length\s*-\s*1/, '展开键上的 N 又退回「标签总数减一」了 —— 那是编的，不是量的')
   })
 })
-
 
 /**
  * measure() 真跑一遍。
@@ -465,7 +514,7 @@ describe('TagFilterRow · measure 真跑', () => {
     return {
       getBoundingClientRect: () => ({ right }),
       hasAttribute: (name) => name === 'data-tag-chip',
-    };
+    }
   }
 
   /**
@@ -480,16 +529,16 @@ describe('TagFilterRow · measure 真跑', () => {
    * 「展开其余 N 个标签」。
    */
   function fakeRow({ scrollWidth, clientWidth, rights, right = 250, allLabelRight = null }) {
-    const children = rights.map(chip);
+    const children = rights.map(chip)
     if (allLabelRight !== null) {
-      children.unshift({ ...chip(allLabelRight), hasAttribute: () => false });
+      children.unshift({ ...chip(allLabelRight), hasAttribute: () => false })
     }
     return {
       scrollWidth,
       clientWidth,
       getBoundingClientRect: () => ({ right }),
       children,
-    };
+    }
   }
 
   function runMeasure(row, { expanded = false, hidden = 0, overflowing = false } = {}) {
@@ -506,18 +555,19 @@ describe('TagFilterRow · measure 真跑', () => {
   }
 
   test('溢出：给出展开键，N 是真被裁掉的个数（5 个标签只藏 2 个）', () => {
-    const out = runMeasure(fakeRow({
-      scrollWidth: 320, clientWidth: 200, rights: [100, 150, 200, 260, 300],
-    }))
+    const out = runMeasure(
+      fakeRow({
+        scrollWidth: 320,
+        clientWidth: 200,
+        rights: [100, 150, 200, 260, 300],
+      }),
+    )
     assert.equal(out.overflowing, true, '明明溢出了却不给展开键')
     assert.equal(out.hidden, 2, 'N 不是真被裁掉的个数')
   })
 
   test('放得下：没有展开键，且把上一次的 N 归零', () => {
-    const out = runMeasure(
-      fakeRow({ scrollWidth: 200, clientWidth: 200, rights: [100, 150] }),
-      { hidden: 3 },
-    )
+    const out = runMeasure(fakeRow({ scrollWidth: 200, clientWidth: 200, rights: [100, 150] }), { hidden: 3 })
     assert.equal(out.overflowing, false, '放得下却冒出展开键')
     assert.equal(out.hidden, 0, '不溢出却留着旧的 N')
   })
@@ -532,19 +582,23 @@ describe('TagFilterRow · measure 真跑', () => {
     // 才会让 overflowing 真的变 false。早先误用了「不换行但溢出」的宽度，
     // 于是 needsExpand 照样返回 true，两种实现结果一模一样 —— 变异存活，
     // 判据量不到它想量的东西。
-    const out = runMeasure(
-      fakeRow({ scrollWidth: 190, clientWidth: 190, rights: [65, 130, 218, 72] }),
-      { expanded: true, hidden: 2, overflowing: true },
-    )
-    assert.equal(out.overflowing, true,
-      '展开态把 overflowing 抹成了 false —— 收起键会跟着消失')
+    const out = runMeasure(fakeRow({ scrollWidth: 190, clientWidth: 190, rights: [65, 130, 218, 72] }), {
+      expanded: true,
+      hidden: 2,
+      overflowing: true,
+    })
+    assert.equal(out.overflowing, true, '展开态把 overflowing 抹成了 false —— 收起键会跟着消失')
     assert.equal(out.hidden, 2, '展开态把 N 清掉了 —— 收起的一瞬间展开键会闪一下 0')
   })
 
   test('宽度真的超过可视宽度才给展开键（差 1px 的亚像素不算）', () => {
-    const near = runMeasure(fakeRow({
-      scrollWidth: 201, clientWidth: 200, rights: [100, 150, 201],
-    }))
+    const near = runMeasure(
+      fakeRow({
+        scrollWidth: 201,
+        clientWidth: 200,
+        rights: [100, 150, 201],
+      }),
+    )
     assert.equal(near.overflowing, false, '亚像素差被当成了溢出')
   })
 
@@ -558,15 +612,19 @@ describe('TagFilterRow · measure 真跑', () => {
   test('N 只数标签，不数最前面那个「全部」按钮', () => {
     // 按钮上写的是「展开其余 N 个标签」。若把「全部」也算进去，N 与文案就对不上
     // —— 今天不产生偏差（最左的 chip 永远不是被裁的那个），但那是碰巧。
-    const out = runMeasure(fakeRow({
-      scrollWidth: 400, clientWidth: 200, right: 250,
-      rights: [100, 150, 300], allLabelRight: 260,
-    }))
+    const out = runMeasure(
+      fakeRow({
+        scrollWidth: 400,
+        clientWidth: 200,
+        right: 250,
+        rights: [100, 150, 300],
+        allLabelRight: 260,
+      }),
+    )
     assert.equal(out.overflowing, true)
     assert.equal(out.hidden, 1, '把「全部」按钮也算进「展开其余 N 个标签」了')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 五 · 清除
@@ -593,11 +651,9 @@ describe('清除 · 关键词与标签一起清', () => {
   })
 
   test('清除按钮的可见条件跟着标签数组走', () => {
-    assert.match(pageVue(), /v-if="activeQuery \|\| activeTags\.length"/,
-      '清除按钮的显示条件还挂在旧的单值标签上')
+    assert.match(pageVue(), /v-if="activeQuery \|\| activeTags\.length"/, '清除按钮的显示条件还挂在旧的单值标签上')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 六 · 三套既有行为不许被顺手删掉
@@ -616,7 +672,7 @@ describe('既有行为 · needLogin / loadError / tooShort 都还在', () => {
       },
     })
     scope.activeQuery.value = '机器学习'
-    const { load, applyList } = withScope(code, ['load', 'applyList'], scope)
+    const { load } = withScope(code, ['load', 'applyList'], scope)
     await load()
     assert.equal(scope.needLogin.value, true, '未登录没有走 needLogin 分支')
     assert.equal(scope.activeQuery.value, '', '未登录没有退回公开浏览')
@@ -628,11 +684,13 @@ describe('既有行为 · needLogin / loadError / tooShort 都还在', () => {
   test('loadError：故障被记下来，items 清空（与「真的没有」分开）', async () => {
     const code = pageVue()
     const scope = loadScope({
-      searchCommunity: async () => { throw new Error('boom 500') },
+      searchCommunity: async () => {
+        throw new Error('boom 500')
+      },
     })
     scope.items.value = [{ id: 1, tags: ['编程'] }]
     scope.total.value = 7
-    const { load, applyList } = withScope(code, ['load', 'applyList'], scope)
+    const { load } = withScope(code, ['load', 'applyList'], scope)
     await load()
     assert.equal(scope.loadError.value, 'boom 500', '故障原因没被记下来')
     assert.deepEqual(scope.items.value, [], '故障后 items 没清空')
@@ -646,14 +704,12 @@ describe('既有行为 · needLogin / loadError / tooShort 都还在', () => {
       searchCommunity: async () => ({ items: [], total: 0, q_too_short: true, min_chars: 3 }),
     })
     scope.activeQuery.value = '机器'
-    const { load, applyList } = withScope(code, ['load', 'applyList'], scope)
+    const { load } = withScope(code, ['load', 'applyList'], scope)
     await load()
-    assert.deepEqual(scope.tooShort.value, { q: '机器', min: 3 },
-      '短查询提示没按后端给的 min_chars 显示')
-    const hardcoded = stripComments(read('../src/components/CommunityPage.vue'))
-      .match(/length\s*<\s*3|min_chars\s*[:=]\s*3/g) || []
-    assert.deepEqual(hardcoded, [],
-      `前端把分词器下限写死成了 3：${JSON.stringify(hardcoded)}`)
+    assert.deepEqual(scope.tooShort.value, { q: '机器', min: 3 }, '短查询提示没按后端给的 min_chars 显示')
+    const hardcoded =
+      stripComments(read('../src/components/CommunityPage.vue')).match(/length\s*<\s*3|min_chars\s*[:=]\s*3/g) || []
+    assert.deepEqual(hardcoded, [], `前端把分词器下限写死成了 3：${JSON.stringify(hardcoded)}`)
   })
 
   test('三套提示的模板分支都还在', () => {
@@ -668,7 +724,6 @@ describe('既有行为 · needLogin / loadError / tooShort 都还在', () => {
   })
 
   test('没有用 window.confirm 去拦清筛选', () => {
-    assert.doesNotMatch(pageVue(), /\bconfirm\s*\(/,
-      '别用 confirm 拦一次点击')
+    assert.doesNotMatch(pageVue(), /\bconfirm\s*\(/, '别用 confirm 拦一次点击')
   })
 })

@@ -76,13 +76,10 @@ function sliceBetween(haystack, startNeedle, endNeedle) {
  * 整份文件报「12 passed / 0 failed」、退出码 0，而那个 suite 的 5 条测试根本没跑。
  * 对照：模块顶层抛异常、测试体抛异常都给 1，只有 describe 体这一处是隐形的。
  */
-const videoBlock = () =>
-  sliceBetween(template, '<template v-if="videoFormats.length">', '</template>')
-const audioBlock = () =>
-  sliceBetween(template, '<template v-if="audioFormats.length">', '</template>')
+const videoBlock = () => sliceBetween(template, '<template v-if="videoFormats.length">', '</template>')
+const audioBlock = () => sliceBetween(template, '<template v-if="audioFormats.length">', '</template>')
 
 describe('模板把两块分开渲染', () => {
-
   test('画质块里是画质选项，音频块里是音频选项', () => {
     assert.ok(videoBlock().includes('v-for="fmt in videoFormats"'))
     assert.ok(audioBlock().includes('v-for="fmt in audioFormats"'))

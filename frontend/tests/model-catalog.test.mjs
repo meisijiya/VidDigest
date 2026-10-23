@@ -5,7 +5,7 @@
  * 默认模型写死 `qwen-plus`，后端只认 2 个、默认 `qwen-turbo`。
  * 本文件守的是改完之后的三件事：
  *
- *   1. **字段转换只发生一次**（api/models.js），且是白名单投影。
+ *   1. **字段转换只发生一次**（api/models.ts），且是白名单投影。
  *      逐字段断，因为「看起来有」不成立：少转一个、或者原样透传，
  *      页面上都是「下拉能用但某个值是 undefined」。
  *   2. **两个端点各取各的**：公开的不要鉴权头，管理的要 Bearer。
@@ -24,9 +24,9 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import axios from 'axios'
 
-import { toItems, toModelItem, fetchPublicModelCatalog } from '../src/api/models.js'
-import { toAdminModelItem, fetchAdminModelCatalog } from '../src/api/admin.js'
-import { chooseProvider, getRequestCredential, save, clear, validateBaseUrl } from '../src/lib/byok.js'
+import { toItems, toModelItem, fetchPublicModelCatalog } from '../src/api/models.ts'
+import { toAdminModelItem, fetchAdminModelCatalog } from '../src/api/admin.ts'
+import { chooseProvider, getRequestCredential, save, clear, validateBaseUrl } from '../src/lib/byok.ts'
 
 /** 归一化行尾符：本仓库是 CRLF。 */
 function read(...parts) {
@@ -35,19 +35,21 @@ function read(...parts) {
 
 /** 断言要看代码，不是解释代码的散文 */
 function stripComments(src) {
-  return src
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
-        // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
-        // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
-    .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
-    .join('\n')
+  return (
+    src
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
+      // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
+      // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
+      .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+      .join('\n')
+  )
 }
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url))
-/** 扫源码目录用：厂商清单要真被删干净，光查 byok.js 不够（换个文件写一样是漂移）。 */
+/** 扫源码目录用：厂商清单要真被删干净，光查 byok.ts 不够（换个文件写一样是漂移）。 */
 function srcFiles(dir = SRC) {
   const out = []
   for (const name of readdirSync(dir)) {
@@ -58,9 +60,9 @@ function srcFiles(dir = SRC) {
   return out
 }
 
-const byokLib = stripComments(read('../src/lib/byok.js'))
+const byokLib = stripComments(read('../src/lib/byok.ts'))
 const dialogVue = stripComments(read('../src/components/ByokDialog.vue'))
-const dialogScript = stripComments(read('../src/components/ByokDialog.vue').split('<script setup>')[1] ?? '')
+const dialogScript = stripComments(read('../src/components/ByokDialog.vue').split('<script setup')[1] ?? '')
 
 /**
  * 曾经的硬编码表里出现过的地址。**一个都不该再出现在前端源码里。**
@@ -115,11 +117,17 @@ beforeEach(() => {
   axios.defaults.adapter = 'fetch'
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
-  // byok.js 的 state 是模块级的，跨用例残留会让「没填 key」的断言假红
+  // byok.ts 的 state 是模块级的，跨用例残留会让「没填 key」的断言假红
   clear()
 })
 
@@ -132,9 +140,7 @@ function spyFetch(body) {
       url: asRequest ? input.url : String(input),
       // 请求头的键名在 Request 上是**小写**的。用 `'Authorization' in headers`
       // 去问，永远问不到 —— 那条断言恒真，等于没断言（工单 #7 的教训）。
-      auth: asRequest
-        ? input.headers.get('authorization')
-        : (init.headers?.Authorization ?? null),
+      auth: asRequest ? input.headers.get('authorization') : (init.headers?.Authorization ?? null),
     })
     return new Response(JSON.stringify(body), {
       status: 200,
@@ -185,10 +191,7 @@ describe('snake_case → camelCase：只在这一处发生一次', () => {
 
   test('缺字段 / 不是对象时给空值，不抛', () => {
     const item = toModelItem({ id: 'x' })
-    assert.deepEqual(
-      [item.label, item.baseUrl, item.defaultModel, item.hint, item.models.length],
-      ['', '', '', '', 0],
-    )
+    assert.deepEqual([item.label, item.baseUrl, item.defaultModel, item.hint, item.models.length], ['', '', '', '', 0])
     assert.doesNotThrow(() => toModelItem(null))
     assert.doesNotThrow(() => toModelItem('不是对象'))
   })
@@ -235,17 +238,15 @@ describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer
 
   test('用户列表出口已经转成 camelCase（组件不再自己 .map）', async () => {
     const calls = spyFetch({ items: [USER_WIRE], total: 1, limit: 20, offset: 0 })
-    const { fetchAdminUsers } = await import('../src/api/admin.js')
+    const { fetchAdminUsers } = await import('../src/api/admin.ts')
     const data = await fetchAdminUsers({ page: 1, pageSize: 20 })
-    assert.ok(calls[0].url.startsWith('http://catalog.test/api/admin/users?'),
-      `用户列表端点不对：${calls[0].url}`)
+    assert.ok(calls[0].url.startsWith('http://catalog.test/api/admin/users?'), `用户列表端点不对：${calls[0].url}`)
     const u = data.items[0]
     assert.equal(u.isAdmin, true, 'is_admin 必须是布尔 —— 模板判真假用')
     assert.equal(u.isVip, false, '0 要翻成 false，不是 0')
     assert.equal(u.parseUsed, 2, "字符串 '2' 要翻成数字")
     assert.equal(u.parseLimit, -1, '-1 = 无限，必须保住符号')
-    assert.equal(u.chatLimitOverride, 0,
-      'override = 0（一条都不能用）不能被当成 falsy 丢掉 —— 它与 null 是两种状态')
+    assert.equal(u.chatLimitOverride, 0, 'override = 0（一条都不能用）不能被当成 falsy 丢掉 —— 它与 null 是两种状态')
     assert.equal(u.parseLimitOverride, null, 'null = 回落全局，与 0 语义不同，不能混')
     assert.equal(u.chatLimitSource, 'override')
     assert.ok(!('is_admin' in u), '出口里还留着 snake_case 键 —— 组件读 camelCase 会全读不到')
@@ -253,15 +254,17 @@ describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer
 
   test('社区列表出口已经转成 camelCase，status 原样透传', async () => {
     const calls = spyFetch({ items: [COMM_WIRE], total: 1, limit: 20, offset: 0 })
-    const { fetchAdminCommunity } = await import('../src/api/admin.js')
+    const { fetchAdminCommunity } = await import('../src/api/admin.ts')
     const data = await fetchAdminCommunity({ page: 1, pageSize: 20 })
-    assert.ok(calls[0].url.startsWith('http://catalog.test/api/admin/community?'),
-      `社区列表端点不对：${calls[0].url}`)
+    assert.ok(calls[0].url.startsWith('http://catalog.test/api/admin/community?'), `社区列表端点不对：${calls[0].url}`)
     const c = data.items[0]
     assert.equal(c.videoUrl, COMM_WIRE.video_url)
     assert.equal(c.authorEmail, COMM_WIRE.author_email)
-    assert.equal(c.status, 'pending',
-      'status 必须原样透传 —— 组件靠它分「占位中」与「已就绪」，翻成布尔会把两个状态压成一个')
+    assert.equal(
+      c.status,
+      'pending',
+      'status 必须原样透传 —— 组件靠它分「占位中」与「已就绪」，翻成布尔会把两个状态压成一个',
+    )
     assert.deepEqual(c.tags, ['编程', '架构设计'])
   })
 
@@ -271,7 +274,10 @@ describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer
     assert.equal(calls.length, 1)
     assert.equal(calls[0].url, 'http://catalog.test/api/models')
     assert.equal(calls[0].auth, null, '公开端点不该带凭据（token 也就不必发去用不上的地方）')
-    assert.deepEqual(data.items.map((x) => x.id), ['bailian', 'platform'])
+    assert.deepEqual(
+      data.items.map((x) => x.id),
+      ['bailian', 'platform'],
+    )
     assert.equal(data.items[0].baseUrl, WIRE[0].base_url)
   })
 
@@ -280,19 +286,27 @@ describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer
     const data = await fetchAdminModelCatalog()
     assert.equal(calls[0].url, 'http://catalog.test/api/admin/models')
     assert.equal(calls[0].auth, 'Bearer test-token')
-    assert.deepEqual(
-      Object.keys(data.items[0]).sort(),
-      ['baseUrl', 'defaultModel', 'enabled', 'hint', 'id', 'isReal', 'label', 'models', 'sortOrder'],
-    )
+    assert.deepEqual(Object.keys(data.items[0]).sort(), [
+      'baseUrl',
+      'defaultModel',
+      'enabled',
+      'hint',
+      'id',
+      'isReal',
+      'label',
+      'models',
+      'sortOrder',
+    ])
     assert.equal(data.items[0].enabled, 0)
     assert.equal(data.items[0].sortOrder, 3)
   })
 
   test('两条路的公共字段是同一个转换，不是两份各写一遍的映射', () => {
-    assert.deepEqual(
-      toAdminModelItem({ ...WIRE[0], enabled: 1, sort_order: 0 }),
-      { ...toModelItem(WIRE[0]), enabled: 1, sortOrder: 0 },
-    )
+    assert.deepEqual(toAdminModelItem({ ...WIRE[0], enabled: 1, sort_order: 0 }), {
+      ...toModelItem(WIRE[0]),
+      enabled: 1,
+      sortOrder: 0,
+    })
   })
 
   test('同端点只留一个出口：原文那份已删（工单 #15 收口）', async () => {
@@ -300,9 +314,12 @@ describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer
     // `fetchAdminModelCatalog()`（camelCase）打同一个端点，转换却散在
     // AdminPage.vue 里。同端点两个出口 = 两种形状同时存在 = 用错哪个都不报错，
     // 只表现为表格某几列是空的。
-    const mod = await import('../src/api/admin.js')
-    assert.equal(mod.fetchAdminModels, undefined,
-      '原文出口又回来了 —— 同端点两个出口会让人在不知情的情况下拿到 snake_case')
+    const mod = await import('../src/api/admin.ts')
+    assert.equal(
+      mod.fetchAdminModels,
+      undefined,
+      '原文出口又回来了 —— 同端点两个出口会让人在不知情的情况下拿到 snake_case',
+    )
     // 活着的那一个必须仍然打对端点、带上 Bearer。
     const calls = spyFetch({ items: [{ ...WIRE[1], enabled: 1, sort_order: 2 }] })
     const data = await fetchAdminModelCatalog()
@@ -320,11 +337,13 @@ describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer
       item: { ...WIRE[1], enabled: 1, sort_order: 2 },
       platform_default: WIRE[1].default_model,
     })
-    const { updateAdminModel } = await import('../src/api/admin.js')
+    const { updateAdminModel } = await import('../src/api/admin.ts')
     const out = await updateAdminModel('bailian', { label: '改名' })
-    assert.equal(out.item.sortOrder, 2,
-      'PATCH 回读没有翻成 camelCase —— 组件 replaceModel 会拿到 snake_case，'
-      + '而模板读 camelCase，于是几列静默变空')
+    assert.equal(
+      out.item.sortOrder,
+      2,
+      'PATCH 回读没有翻成 camelCase —— 组件 replaceModel 会拿到 snake_case，' + '而模板读 camelCase，于是几列静默变空',
+    )
     assert.equal(out.item.baseUrl, WIRE[1].base_url)
     assert.equal(out.item.isReal, WIRE[1].is_real)
     assert.ok(!('sort_order' in out.item), '回读里还留着 snake_case 键')
@@ -334,8 +353,7 @@ describe('两个端点各取各的：公开的不用鉴权，管理的要 Bearer
     globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
     const calls = spyFetch({ items: [] })
     await fetchAdminModelCatalog()
-    assert.equal(calls[0].auth, null,
-      '发了一个空的 Bearer，服务端会收到一个看着像有凭据的请求')
+    assert.equal(calls[0].auth, null, '发了一个空的 Bearer，服务端会收到一个看着像有凭据的请求')
   })
 })
 
@@ -363,22 +381,22 @@ describe('清单项真的能变成一份可用的配置', () => {
 })
 
 describe('厂商清单再搬回前端硬编码，就转红', () => {
-  test('byok.js 里没有任何厂商服务地址', () => {
+  test('byok.ts 里没有任何厂商服务地址', () => {
     for (const host of VENDOR_HOSTS) {
-      assert.ok(!hostPattern(host).test(byokLib), `byok.js 里又写死了 ${host}`)
+      assert.ok(!hostPattern(host).test(byokLib), `byok.ts 里又写死了 ${host}`)
     }
   })
 
-  test('byok.js 里没有任何一条厂商记录的字段', () => {
-    // 厂商记录必带 label / hint（给人看的部分）。byok.js 该留的只有
+  test('byok.ts 里没有任何一条厂商记录的字段', () => {
+    // 厂商记录必带 label / hint（给人看的部分）。byok.ts 该留的只有
     // provider / baseUrl / model 三个配置字段，都不在这个名单里。
     // 这条不认变量名：数组改名成 VENDORS 照样红。
     const catalogKeys = ['label', 'hint', 'models', 'base_url', 'default_model', 'is_real']
     const found = catalogKeys.filter((k) => new RegExp(`\\b${k}\\s*:`).test(byokLib))
-    assert.deepEqual(found, [], `byok.js 里又出现了厂商记录的字段：${found.join(' ')}`)
+    assert.deepEqual(found, [], `byok.ts 里又出现了厂商记录的字段：${found.join(' ')}`)
   })
 
-  test('byok.js 不再导出 PROVIDERS', () => {
+  test('byok.ts 不再导出 PROVIDERS', () => {
     assert.ok(!/\bPROVIDERS\b/.test(byokLib), '硬编码表的名字又回来了')
   })
 
@@ -396,16 +414,13 @@ describe('厂商清单再搬回前端硬编码，就转红', () => {
   test('下拉渲染的是拉回来的清单，不是模块常量', () => {
     assert.ok(!/\bPROVIDERS\b/.test(dialogVue), '弹窗里还在按模块常量渲染下拉')
     assert.ok(dialogVue.includes('v-for="p in catalog"'), '下拉不是按拉回来的清单渲染')
-    assert.ok(
-      dialogScript.includes("from '../api/models.js'"),
-      '弹窗没有从接口拿清单',
-    )
+    assert.ok(dialogScript.includes("from '../api/models.ts'"), '弹窗没有从接口拿清单')
   })
 
-  test('选厂商时把那条记录一起交给 byok.js（那边已经查不到表了）', () => {
+  test('选厂商时把那条记录一起交给 byok.ts（那边已经查不到表了）', () => {
     assert.ok(
       /chooseProvider\(\s*id,\s*catalog\.value\.find\(/.test(dialogScript),
-      '调用方没把记录传进去：byok.js 既查不到表，也就没有默认端点可填',
+      '调用方没把记录传进去：byok.ts 既查不到表，也就没有默认端点可填',
     )
   })
 })

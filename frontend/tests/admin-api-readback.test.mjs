@@ -1,12 +1,12 @@
 /**
- * api/admin.js 的**回读出口**必须自己翻好（工单 #22）。
+ * api/admin.ts 的**回读出口**必须自己翻好（工单 #22）。
  *
  * ## 这个文件存在的原因：收口做完之后，四个出口没有任何东西守着
  *
  * 变异实测：把 `setUserAdmin` / `createAdminUser` / `setUserQuota` /
  * `updateCommunityTags` 任意一个改回「返回服务端原文」，**两条测试关卡全绿**
  * ——文本侧（`admin-ui.test.mjs`）读的是组件源码，挂载侧
- * （`admin-page.mount.spec.mjs:34`）`vi.mock` 掉了整个 `api/admin.js`。
+ * （`admin-page.mount.spec.mjs:34`）`vi.mock` 掉了整个 `api/admin.ts`。
  *
  * 也就是说：那两个关卡都在测**组件**，从来没人测过 api 层这四个函数自己。
  * 列表出口有 `model-catalog.test.mjs` 用真 axios 跑，回读出口一个都没有。
@@ -17,7 +17,7 @@
  *
  * ## 用真 axios + 假 fetch，不 mock api 模块
  *
- * `vi.mock('../src/api/admin.js')` 一上，转换函数就被替身顶掉了，测的就不再是
+ * `vi.mock('../src/api/admin.ts')` 一上，转换函数就被替身顶掉了，测的就不再是
  * 接线而是替身。沿用 `model-catalog.test.mjs` 的做法：真 axios、adapter 换
  * fetch、只把 `globalThis.fetch` 换成假实现。这样断言的对象是**真实出口的返回值**。
  *
@@ -33,9 +33,12 @@ import assert from 'node:assert/strict'
 import axios from 'axios'
 
 import {
-  setUserQuota, createAdminUser, setUserAdmin, updateCommunityTags,
+  setUserQuota,
+  createAdminUser,
+  setUserAdmin,
+  updateCommunityTags,
   fetchTagVocabulary,
-} from '../src/api/admin.js'
+} from '../src/api/admin.ts'
 
 // ── 服务端原文（snake_case），四个出口的回读体 ──────────────
 //
@@ -60,9 +63,19 @@ const RAW_USER = {
 
 /** `toAdminUser` 返回值的**全部**键。多一个键 = 多泄漏一列，少一个 = 功能坏了。 */
 const USER_KEYS = [
-  'chatLimit', 'chatLimitOverride', 'chatLimitSource', 'chatUsed',
-  'createdAt', 'email', 'id', 'isAdmin', 'isVip',
-  'parseLimit', 'parseLimitOverride', 'parseLimitSource', 'parseUsed',
+  'chatLimit',
+  'chatLimitOverride',
+  'chatLimitSource',
+  'chatUsed',
+  'createdAt',
+  'email',
+  'id',
+  'isAdmin',
+  'isVip',
+  'parseLimit',
+  'parseLimitOverride',
+  'parseLimitSource',
+  'parseUsed',
   'vipExpireAt',
 ]
 
@@ -82,12 +95,19 @@ let lastBody
 
 /** 断言一个对象是纯 camelCase：既不缺键多键，也没有任何 snake_case 残留。 */
 function assertShape(got, expectedKeys, what) {
-  assert.deepEqual(Object.keys(got).sort(), [...expectedKeys].sort(),
-    `${what} 的键集合不是「恰好等于转换函数的输出」——要么少翻了几个字段，要么多翻了一个。`
-    + ` 实得：${JSON.stringify(Object.keys(got).sort())}`)
+  assert.deepEqual(
+    Object.keys(got).sort(),
+    [...expectedKeys].sort(),
+    `${what} 的键集合不是「恰好等于转换函数的输出」——要么少翻了几个字段，要么多翻了一个。` +
+      ` 实得：${JSON.stringify(Object.keys(got).sort())}`,
+  )
   const snake = Object.keys(got).filter((k) => k.includes('_'))
-  assert.deepEqual(snake, [], `${what} 的返回值里还有 snake_case 键：${snake.join(', ')}`
-    + ' —— 出口没翻，组件读到的每个字段都会是 undefined 而界面不报错')
+  assert.deepEqual(
+    snake,
+    [],
+    `${what} 的返回值里还有 snake_case 键：${snake.join(', ')}` +
+      ' —— 出口没翻，组件读到的每个字段都会是 undefined 而界面不报错',
+  )
 }
 
 beforeEach(() => {
@@ -98,19 +118,26 @@ beforeEach(() => {
   axios.defaults.adapter = 'fetch'
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
-  globalThis.fetch = async () => new Response(JSON.stringify(lastBody), {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  })
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify(lastBody), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
 })
 
 // ── 四个回读出口 ───────────────────────────────────────────
 
-describe('api/admin.js · 回读出口自己翻好', () => {
+describe('api/admin.ts · 回读出口自己翻好', () => {
   test('setUserQuota：回读的 user 是 camelCase', async () => {
     lastBody = { user: RAW_USER, note: null, message: '' }
     const res = await setUserQuota(7, { parseLimit: 5, chatLimit: 6 })
@@ -142,8 +169,7 @@ describe('api/admin.js · 回读出口自己翻好', () => {
     assertShape(res.user, USER_KEYS, 'setUserAdmin')
     // 这一条是工单 #22 的正主：AdminPage.vue 的提权提示读的就是 `res.user.isAdmin`。
     // 出口不翻时它读到 undefined → 提权成功却提示「已撤销管理员权限」，不报错。
-    assert.equal(res.user.isAdmin, true,
-      '提权提示读的就是这个字段。它若不是布尔，提权成功会被显示成「已撤销」')
+    assert.equal(res.user.isAdmin, true, '提权提示读的就是这个字段。它若不是布尔，提权成功会被显示成「已撤销」')
   })
 
   test('updateCommunityTags：回读的 item 是 camelCase', async () => {
@@ -162,9 +188,11 @@ describe('api/admin.js · 回读出口自己翻好', () => {
 
   test('回读体缺 user / item 时抛错，不返回一个空壳', async () => {
     lastBody = { note: null }
-    await assert.rejects(() => setUserQuota(7, {}), /响应形状不对/,
-      'user 缺失时必须抛。返回 { user: undefined } 会让组件在 replaceUser 里静默早退，'
-      + '界面停在旧值上且不报错')
+    await assert.rejects(
+      () => setUserQuota(7, {}),
+      /响应形状不对/,
+      'user 缺失时必须抛。返回 { user: undefined } 会让组件在 replaceUser 里静默早退，' + '界面停在旧值上且不报错',
+    )
 
     lastBody = { note: null }
     await assert.rejects(() => setUserAdmin(7, true), /响应形状不对/)
@@ -177,7 +205,7 @@ describe('api/admin.js · 回读出口自己翻好', () => {
 
 // ── 词表出口：maxTags 必须真的是服务端那个数（工单 #41）──────────
 //
-// 2026-10-07 实测的 bug：`admin.js` 读的是 `d.max_tags`，而 `admin_api.py:470`
+// 2026-10-07 实测的 bug：`admin.ts` 读的是 `d.max_tags`，而 `admin_api.py:470`
 // 返回的键是 `maxTags`（驼峰）。`Number(undefined) > 0` 恒 false，于是那个
 // 写死的 `3` **每次都在用**，服务端给的 `MAX_TAGS` 一次都没被读到。
 // 而 `tags.MAX_TAGS` 恰好就是 3 —— 两边碰巧相等，症状为零。
@@ -186,7 +214,7 @@ describe('api/admin.js · 回读出口自己翻好', () => {
 // 整个 `vi.fn()` 掉，并直接喂 `{ maxTags: 2 }` / `{ maxTags: 3 }` —— 正确的
 // 形状被夹具补上了，转换层从没被执行过。**夹具会遮住护栏**：这条用例存在的
 // 意义是让转换层自己被跑到，且桩值刻意取 5，兜底的 3 一眼就露馅。
-describe('api/admin.js · 词表出口的 maxTags 是服务端那个数', () => {
+describe('api/admin.ts · 词表出口的 maxTags 是服务端那个数', () => {
   const VOCAB_PAYLOAD = {
     maxTags: 5,
     groups: [
@@ -199,19 +227,28 @@ describe('api/admin.js · 词表出口的 maxTags 是服务端那个数', () => 
     lastBody = VOCAB_PAYLOAD
     const res = await fetchTagVocabulary()
 
-    assert.equal(res.maxTags, 5,
-      'maxTags 必须原样取服务端的值。取不到时静默用 3 的症状是：'
-      + 'MAX_TAGS 一旦从 3 改成别的数，界面按旧数字放行而后端按新数字 400')
+    assert.equal(
+      res.maxTags,
+      5,
+      'maxTags 必须原样取服务端的值。取不到时静默用 3 的症状是：' +
+        'MAX_TAGS 一旦从 3 改成别的数，界面按旧数字放行而后端按新数字 400',
+    )
     // 兄弟出口仍在 —— 说明这不是「整体原样透传」蒙对了。
-    assert.deepEqual(res.groups.map((g) => g.name), ['学科', '场景'],
-      'groups 必须照常翻出来，不能因为 maxTags 的守卫把整条出口改道')
+    assert.deepEqual(
+      res.groups.map((g) => g.name),
+      ['学科', '场景'],
+      'groups 必须照常翻出来，不能因为 maxTags 的守卫把整条出口改道',
+    )
   })
 
   test('只有蛇形 max_tags 时必须抛，不许静默退回到 3', async () => {
     // 这正是线上那份响应的错误读法：键名不对，值拿不到。
     lastBody = { max_tags: 5, groups: VOCAB_PAYLOAD.groups }
-    await assert.rejects(() => fetchTagVocabulary(), /maxTags/,
-      '读不到上限必须抛。静默给 3 会让管理员按错的上限勾选，界面完全不报错')
+    await assert.rejects(
+      () => fetchTagVocabulary(),
+      /maxTags/,
+      '读不到上限必须抛。静默给 3 会让管理员按错的上限勾选，界面完全不报错',
+    )
   })
 
   test('反向对照：groups 形状不对时抛，maxTags 的守卫没有把它放过', async () => {

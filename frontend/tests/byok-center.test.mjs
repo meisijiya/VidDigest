@@ -7,8 +7,8 @@
  * 本文件守的就是「两条路径读同一份状态」这条。
  *
  * 分三层：
- *   1. lib/byok.js —— 纯逻辑，真调用，测存储与出口纪律
- *   2. api/summarize.js —— 真调用，测凭据真的进了请求体
+ *   1. lib/byok.ts —— 纯逻辑，真调用，测存储与出口纪律
+ *   2. api/summarize.ts —— 真调用，测凭据真的进了请求体
  *   3. .vue —— 沿用本仓约定走源码断言（渲染验证需要挂载环境）
  */
 import { test, describe, beforeEach } from 'node:test'
@@ -16,22 +16,32 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import {
-  getPublicState, getRequestCredential, save, updateConfig, clear,
-  usePlatform, chooseProvider, validateBaseUrl, normalizeBaseUrl, normalizeModel, subscribe,
-} from '../src/lib/byok.js'
-import { summarizeVideo, chatWithVideo } from '../src/api/summarize.js'
-import { MODE_PLATFORM } from '../src/lib/byok.js'
+  getPublicState,
+  getRequestCredential,
+  save,
+  updateConfig,
+  clear,
+  usePlatform,
+  chooseProvider,
+  validateBaseUrl,
+  normalizeBaseUrl,
+  normalizeModel,
+  subscribe,
+} from '../src/lib/byok.ts'
+import { summarizeVideo, chatWithVideo } from '../src/api/summarize.ts'
+import { MODE_PLATFORM } from '../src/lib/byok.ts'
 import { extractFn } from './helpers/source-slice.mjs'
+import { transpileTs } from './helpers/ts-sandbox.mjs'
 
 const SENTINEL = 'sk-byok-central-ZZUNIQUEZZ'
 
 /**
  * 两条**清单记录**的样本。
  *
- * 工单 #13 之后厂商清单归服务端（`api/models.js` 拉），byok.js 不再查表，
+ * 工单 #13 之后厂商清单归服务端（`api/models.ts` 拉），byok.ts 不再查表，
  * 所以这里必须把记录本身喂给 `chooseProvider(id, provider)`。
  * 清单本身的字段与端点归 `model-catalog.test.mjs` 守，这里只管
- * 「拿到一条记录之后 byok.js 怎么处理」。
+ * 「拿到一条记录之后 byok.ts 怎么处理」。
  */
 const OLLAMA = {
   id: 'ollama',
@@ -57,15 +67,17 @@ function read(...parts) {
 }
 
 function stripComments(src) {
-  return src
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
-        // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
-        // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
-    .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
-    .join('\n')
+  return (
+    src
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
+      // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
+      // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
+      .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+      .join('\n')
+  )
 }
 
 const appVue = stripComments(read('../src/App.vue'))
@@ -139,9 +151,15 @@ function captureBody() {
 beforeEach(() => {
   const store = {}
   globalThis.localStorage = {
-    getItem(k) { return store[k] ?? null },
-    setItem(k, v) { store[k] = String(v) },
-    removeItem(k) { delete store[k] },
+    getItem(k) {
+      return store[k] ?? null
+    },
+    setItem(k, v) {
+      store[k] = String(v)
+    },
+    removeItem(k) {
+      delete store[k]
+    },
     _dump: () => ({ ...store }),
   }
   clear()
@@ -172,7 +190,9 @@ describe('lib/byok 的出口纪律', () => {
   test('订阅者拿到的也不含 key', () => {
     save({ apiKey: SENTINEL, provider: 'ollama', baseUrl: 'http://localhost:11434/v1', model: 'q' })
     let seen = null
-    const off = subscribe((s) => { seen = s })
+    const off = subscribe((s) => {
+      seen = s
+    })
     updateConfig({ provider: 'moonshot', baseUrl: '', model: 'kimi' })
     off()
     assert.equal(seen.provider, 'moonshot')
@@ -181,7 +201,9 @@ describe('lib/byok 的出口纪律', () => {
 
   test('取消订阅后不再被叫到', () => {
     let n = 0
-    const off = subscribe(() => { n += 1 })
+    const off = subscribe(() => {
+      n += 1
+    })
     updateConfig({ provider: 'openai', baseUrl: '', model: '' })
     const after = n
     off()
@@ -242,7 +264,6 @@ describe('一条状态，两个使用方式', () => {
     assert.equal(getRequestCredential().apiKey, SENTINEL)
   })
 
-
   test('切回平台保留端点设置', () => {
     chooseProvider('ollama', OLLAMA)
     save({ apiKey: SENTINEL, provider: 'ollama', baseUrl: 'http://localhost:11434/v1', model: 'q' })
@@ -255,8 +276,11 @@ describe('一条状态，两个使用方式', () => {
   test('改模型名不会顺手把 key 清掉', () => {
     save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'm1' })
     updateConfig({ provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'm2' })
-    assert.equal(getRequestCredential().apiKey, SENTINEL,
-      '只改模型名就把 key 静默清空了——弹窗里「留空则沿用」是这么承诺的')
+    assert.equal(
+      getRequestCredential().apiKey,
+      SENTINEL,
+      '只改模型名就把 key 静默清空了——弹窗里「留空则沿用」是这么承诺的',
+    )
     assert.equal(getRequestCredential().model, 'm2')
   })
 
@@ -274,16 +298,18 @@ describe('一条状态，两个使用方式', () => {
     // 「保留」要验在**存储层**，不能验 getRequestCredential 的返回值 ——
     // 那条现在按 mode 返回 null，而那正是本单要修的东西；验它等于验修复没生效。
     // 「保留」这句话对应的就是「切回来还能用」，所以验 key 还在不在盘上。
-    assert.equal(globalThis.localStorage._dump().viddigest_user_api_key, SENTINEL,
-      'usePlatform 把 key 从存储里清了 —— 切回来还得重填，是纯粹的折磨')
+    assert.equal(
+      globalThis.localStorage._dump().viddigest_user_api_key,
+      SENTINEL,
+      'usePlatform 把 key 从存储里清了 —— 切回来还得重填，是纯粹的折磨',
+    )
   })
 
   test('切回自带模式**不需要重填** key', () => {
     save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
     usePlatform()
     chooseProvider('deepseek', DEEPSEEK)
-    assert.equal(getRequestCredential().apiKey, SENTINEL,
-      '切回自带模式后拿不到已存的 key —— 用户被迫重填一遍')
+    assert.equal(getRequestCredential().apiKey, SENTINEL, '切回自带模式后拿不到已存的 key —— 用户被迫重填一遍')
     // 这条同时是「功能整体坏掉」的反例守护：
     // getRequestCredential() 恒返回 null 时它必须转红，否则上面那条 AC 是空的。
   })
@@ -293,10 +319,12 @@ describe('一条状态，两个使用方式', () => {
     usePlatform()
     assert.equal(getRequestCredential(), null, '平台模式下凭据出口还放行')
     const sent = []
-    globalThis.fetch = async (u, o) => { sent.push(JSON.parse(o.body)); return fakeStream(DONE_STREAM) }
+    globalThis.fetch = async (u, o) => {
+      sent.push(JSON.parse(o.body))
+      return fakeStream(DONE_STREAM)
+    }
     return summarizeVideo('u', 'zh', noop, { credential: getRequestCredential() }).done.then(() => {
-      assert.equal('user_api_key' in sent[0], false,
-        `请求体里仍然带着用户自己的 key：${sent[0].user_api_key}`)
+      assert.equal('user_api_key' in sent[0], false, `请求体里仍然带着用户自己的 key：${sent[0].user_api_key}`)
       assert.equal('base_url' in sent[0], false, '端点也一起退场')
     })
   })
@@ -307,7 +335,10 @@ describe('一条状态，两个使用方式', () => {
     save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
     usePlatform()
     const sent = []
-    globalThis.fetch = async (u, o) => { sent.push(JSON.parse(o.body)); return fakeStream(DONE_STREAM) }
+    globalThis.fetch = async (u, o) => {
+      sent.push(JSON.parse(o.body))
+      return fakeStream(DONE_STREAM)
+    }
     return chatWithVideo('u', 'q', noop, { credential: getRequestCredential() }).done.then(() => {
       assert.equal('user_api_key' in sent[0], false, '追问请求里仍然带着用户自己的 key')
     })
@@ -316,7 +347,10 @@ describe('一条状态，两个使用方式', () => {
   test('自带模式下请求带 key，端点与模型跟着走（mode 守卫不能把自带一起堵掉）', () => {
     save({ apiKey: SENTINEL, provider: 'deepseek', baseUrl: 'https://x.test', model: 'm' })
     const sent = []
-    globalThis.fetch = async (u, o) => { sent.push(JSON.parse(o.body)); return fakeStream(DONE_STREAM) }
+    globalThis.fetch = async (u, o) => {
+      sent.push(JSON.parse(o.body))
+      return fakeStream(DONE_STREAM)
+    }
     return summarizeVideo('u', 'zh', noop, { credential: getRequestCredential() }).done.then(() => {
       assert.equal(sent[0].user_api_key, SENTINEL)
       assert.equal(sent[0].base_url, 'https://x.test')
@@ -342,21 +376,29 @@ describe('存储与降级', () => {
     const dump = globalThis.localStorage._dump()
     assert.equal(dump.viddigest_user_api_key, SENTINEL)
     assert.deepEqual(JSON.parse(dump.viddigest_byok_config), {
-      provider: 'moonshot', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi',
+      provider: 'moonshot',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      model: 'kimi',
     })
   })
 
   test('沿用旧键名，老用户存过的 key 不会凭空消失', () => {
     // viddigest_user_api_key 是工单 #9 就在用的键。换名等于让所有
     // 已保存凭据的用户静默回到「没填」。
-    assert.ok(stripComments(read('../src/lib/byok.js')).includes('viddigest_user_api_key'))
+    assert.ok(stripComments(read('../src/lib/byok.ts')).includes('viddigest_user_api_key'))
   })
 
   test('存不进去时退化成「只本次有效」而不是崩掉', () => {
     globalThis.localStorage = {
-      getItem() { return null },
-      setItem() { throw new Error('QuotaExceededError') },
-      removeItem() { throw new Error('QuotaExceededError') },
+      getItem() {
+        return null
+      },
+      setItem() {
+        throw new Error('QuotaExceededError')
+      },
+      removeItem() {
+        throw new Error('QuotaExceededError')
+      },
     }
     assert.doesNotThrow(() => save({ apiKey: SENTINEL, provider: 'openai', baseUrl: '', model: 'm' }))
     assert.equal(getRequestCredential().apiKey, SENTINEL, '存不进去也不该让这次会话失效')
@@ -364,22 +406,27 @@ describe('存储与降级', () => {
 
   test('配置是坏 JSON 时当作没配过（真跑一次 read，不靠模块加载时机）', () => {
     // 原来的写法是「换掉 globalThis.localStorage，再断 getPublicState().mode 是字符串」，
-    // 那是**恒真**的：byok.js:86 的 `let state = read()` 只在模块加载时执行一次，
+    // 那是**恒真**的：byok.ts:86 的 `let state = read()` 只在模块加载时执行一次，
     // 而本文件顶部是静态 import —— 模块早在 beforeEach 之前就加载完了。
-    // 于是这里摆的坏 JSON 从来没被解析过，断言由 byok.js:129 的三元式恒保证。
+    // 于是这里摆的坏 JSON 从来没被解析过，断言由 byok.ts:129 的三元式恒保证。
     // 把整个坏 JSON 夹具删掉，这一条照样绿。
     //
     // 改成把 read() 抠出来真跑 —— 这是「解析不出时回落默认值」唯一能红的形状。
-    const byokSrc = stripComments(read('../src/lib/byok.js'))
-    const readFn = extractFn(byokSrc, 'read')
+    const byokSrc = stripComments(read('../src/lib/byok.ts'))
+    const readFn = transpileTs(extractFn(byokSrc, 'read'), 'byok.ts')
     // 键名从源码里抠，不在测试里重写一份：重写就等于允许它漂移。
     const [, keyStore] = /const KEY_STORE = '([^']+)'/.exec(byokSrc) ?? []
     const [, configStore] = /const CONFIG_STORE = '([^']+)'/.exec(byokSrc) ?? []
-    assert.ok(keyStore && configStore, 'byok.js 里抠不出两个存储键常量')
+    assert.ok(keyStore && configStore, 'byok.ts 里抠不出两个存储键常量')
 
     const runRead = new Function(
-      'localStorage', 'KEY_STORE', 'CONFIG_STORE', 'normalizeBaseUrl', 'normalizeModel',
-      `${readFn}; return read()`)
+      'localStorage',
+      'KEY_STORE',
+      'CONFIG_STORE',
+      'normalizeBaseUrl',
+      'normalizeModel',
+      `${readFn}; return read()`,
+    )
     const store = { [keyStore]: SENTINEL, [configStore]: '{坏掉的' }
     const ls = { getItem: (k) => store[k] ?? null }
 
@@ -387,10 +434,12 @@ describe('存储与降级', () => {
     assert.doesNotThrow(() => {
       out = runRead(ls, keyStore, configStore, normalizeBaseUrl, normalizeModel)
     }, '坏 JSON 竟然抛了 —— 用户存一次坏数据，整个面板就白屏')
-    assert.equal(out.apiKey, SENTINEL,
-      '坏的是 config，key 是单独一个键，不该被连坐清掉')
-    assert.deepEqual(out.config, { provider: 'platform', baseUrl: '', model: '' },
-      '坏 JSON 没有回落到默认值 —— mode 会变成 undefined，UI 跟着崩')
+    assert.equal(out.apiKey, SENTINEL, '坏的是 config，key 是单独一个键，不该被连坐清掉')
+    assert.deepEqual(
+      out.config,
+      { provider: 'platform', baseUrl: '', model: '' },
+      '坏 JSON 没有回落到默认值 —— mode 会变成 undefined，UI 跟着崩',
+    )
   })
 })
 
@@ -422,10 +471,7 @@ describe('端点归一与预检', () => {
     // 这里记下来，是为了别让下一个人以为前端预检是完整的。
     assert.equal(validateBaseUrl('https:///v1'), null)
     // 真正的判据在服务端：它拿的是 urlsplit，netloc 为空即拒绝。
-    assert.ok(
-      read('../src/lib/byok.js').includes('端点地址只支持 http 或 https'),
-      '前端与后端的口径已经漂移',
-    )
+    assert.ok(read('../src/lib/byok.ts').includes('端点地址只支持 http 或 https'), '前端与后端的口径已经漂移')
   })
 
   test('空端点不报错（留空 = 用服务端默认）', () => {
@@ -468,7 +514,7 @@ describe('两条请求路径都带上同一份凭据', () => {
   })
 
   test('请求体不展开整个 options（防止将来顺手把别的字段带上车）', () => {
-    const apiJs = stripComments(read('../src/api/summarize.js'))
+    const apiJs = stripComments(read('../src/api/summarize.ts'))
     assert.ok(!/streamSse\('\/api\/summarize',\s*\{\s*\.\.\.options/.test(apiJs))
     assert.ok(!/streamSse\('\/api\/chat',\s*\{\s*\.\.\.options/.test(apiJs))
   })
@@ -476,7 +522,7 @@ describe('两条请求路径都带上同一份凭据', () => {
 
 describe('页面接线', () => {
   test('额度面板里有 API Key 入口', () => {
-    assert.ok(headerVue.includes("@click=\"$emit('open-byok')\""), '额度面板没有 key 入口')
+    assert.ok(headerVue.includes('@click="$emit(\'open-byok\')"'), '额度面板没有 key 入口')
     assert.ok(headerVue.includes('byokLabel'), '入口按钮没有说明当前用的是谁的额度')
   })
 
@@ -486,15 +532,16 @@ describe('页面接线', () => {
   })
 
   test('「未填 Key」与「已就绪」是两枚不同的徽标', () => {
-    assert.ok(headerVue.includes("byok.hasKey ? '不扣额度' : '未填 Key'"),
-      '选了自带但没填 key 时，徽标与实际行为对不上')
+    assert.ok(
+      headerVue.includes("byok.hasKey ? '不扣额度' : '未填 Key'"),
+      '选了自带但没填 key 时，徽标与实际行为对不上',
+    )
   })
 
   test('弹窗里的输入框保存后立刻清空', () => {
     const body = bodyOf(dialogVue, 'function saveAndClose()')
     assert.ok(body, '找不到 saveAndClose')
-    assert.ok(/apiKeyInput\.value = ''/.test(body),
-      '明文留在输入框里：会进浏览器自动填充，也留在「检查元素」里')
+    assert.ok(/apiKeyInput\.value = ''/.test(body), '明文留在输入框里：会进浏览器自动填充，也留在「检查元素」里')
   })
 
   test('留空走 updateConfig 而不是 save（否则「沿用」变成「清除」）', () => {
@@ -509,18 +556,21 @@ describe('页面接线', () => {
   })
 
   test('VideoSummary 不再自己存一份凭据', () => {
-    assert.ok(!/localStorage\.getItem\(USER_API_KEY_STORE\)/.test(summaryVue),
-      'VideoSummary 仍在自己读 localStorage，等于第二个真相源')
-    assert.ok(!summaryVue.includes('viddigest_user_api_key'),
-      'VideoSummary 仍硬编码了存储键名')
+    assert.ok(
+      !/localStorage\.getItem\(USER_API_KEY_STORE\)/.test(summaryVue),
+      'VideoSummary 仍在自己读 localStorage，等于第二个真相源',
+    )
+    assert.ok(!summaryVue.includes('viddigest_user_api_key'), 'VideoSummary 仍硬编码了存储键名')
   })
 
   test('解析与追问都从同一个出口取凭据', () => {
     assert.ok(summaryVue.includes('getRequestCredential'), '没有引入共享状态')
     const start = summaryVue.slice(summaryVue.indexOf('function startSummarize('))
     const args = callArgsOf(start, 'summarizeVideo')
-    assert.ok(/credential:\s*getRequestCredential\(\)/.test(args || ''),
-      '解析路径没有带上凭据：用户在顶栏配好了，解析却仍扣额度')
+    assert.ok(
+      /credential:\s*getRequestCredential\(\)/.test(args || ''),
+      '解析路径没有带上凭据：用户在顶栏配好了，解析却仍扣额度',
+    )
     const chat = summaryVue.slice(summaryVue.indexOf('async function handleChat('))
     assert.ok(chat.includes('getRequestCredential()'), '追问路径没有带上凭据')
   })
@@ -543,14 +593,8 @@ describe('页面接线', () => {
     // 「清理时退订」，实际是「卸载时才订阅」——顶栏于是永远停在
     // 「使用平台 Key」，而弹窗里明明已经选好了厂商。
     // 光断言「import 了 subscribe」抓不到，形状才是关键。
-    assert.ok(
-      /const stopByokSubscription = subscribeByok\(/.test(appVue),
-      '订阅没有在 setup 期建立',
-    )
-    assert.ok(
-      /onUnmounted\(stopByokSubscription\)/.test(appVue),
-      '订阅没有在卸载时退订',
-    )
+    assert.ok(/const stopByokSubscription = subscribeByok\(/.test(appVue), '订阅没有在 setup 期建立')
+    assert.ok(/onUnmounted\(stopByokSubscription\)/.test(appVue), '订阅没有在卸载时退订')
     assert.ok(
       !/onUnmounted\(\s*\(\)\s*=>\s*subscribe/.test(appVue),
       '订阅被写进了 onUnmounted 的回调里——那是在卸载时才订阅',

@@ -47,7 +47,14 @@ import VideoResult from '../src/components/VideoResult.vue'
 const VIDEO = { format_id: 'v-1080', kind: 'video', resolution: '1920x1080', label: '1080p MP4' }
 const VIDEO_MERGED = { format_id: 'bestvideo+bestaudio/best', kind: 'video', resolution: '1920x1080', label: '最佳' }
 const AUDIO = { format_id: 'a-320', kind: 'audio', abr: 320, ext: 'm4a', resolution: '', label: '320kbps M4A' }
-const AUDIO_DOUYIN = { format_id: 'douyin_audio', kind: 'audio', abr: null, ext: 'mp3', resolution: '', label: '纯音频 MP3' }
+const AUDIO_DOUYIN = {
+  format_id: 'douyin_audio',
+  kind: 'audio',
+  abr: null,
+  ext: 'mp3',
+  resolution: '',
+  label: '纯音频 MP3',
+}
 /** kind 缺失的旧格式：反向缺省是刻意的，最坏是归错块而不是凭空消失。 */
 const LEGACY = { format_id: 'old', resolution: '640x360', label: '360p' }
 
@@ -136,7 +143,10 @@ describe('VideoResult 把音频和视频分成两块', () => {
 
     expect(all).toHaveLength(formats.length)
     for (const f of formats) {
-      expect(all.some((t) => t.includes(f.label)), `选项「${f.label}」凭空消失了`).toBe(true)
+      expect(
+        all.some((t) => t.includes(f.label)),
+        `选项「${f.label}」凭空消失了`,
+      ).toBe(true)
     }
   })
 

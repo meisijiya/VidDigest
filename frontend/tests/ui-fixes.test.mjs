@@ -15,7 +15,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { classifyError } from '../src/lib/errors.js'
+import { classifyError } from '../src/lib/errors.ts'
 import { sliceBetween } from './helpers/source-slice.mjs'
 
 /** 归一化行尾符 */
@@ -25,17 +25,20 @@ function read(...parts) {
 
 /** 去掉注释：断言要看代码，不是解释代码的散文 */
 function stripComments(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
-        // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
-        // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
-    .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
-    .join('\n')
+  return (
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
+      // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
+      // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
+      .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+      .join('\n')
+  )
 }
 
 const appVue = stripComments(read('../src/App.vue'))
+const homeView = stripComments(read('../src/views/HomeView.vue'))
 
 /**
  * App.vue 的 handleOpenRecord 函数体，模块顶层只切一次。
@@ -45,11 +48,13 @@ const appVue = stripComments(read('../src/App.vue'))
  * 于是「handleOpenRecord 没查社区」和「失败时没退回手动」这两条断言
  * 实际在扫整个 App.vue，而 handleOpenRecord 前后总有能匹配上的东西。
  */
-const openRecordBody = () => sliceBetween(
-  appVue,
-  'async function handleOpenRecord(detail) {',
-  'async function handleDownload',
-  'App.vue 的 handleOpenRecord')
+const openRecordBody = () =>
+  sliceBetween(
+    appVue,
+    'async function handleOpenRecord(',
+    'async function handleDownload',
+    'App.vue 的 handleOpenRecord',
+  )
 const headerVue = stripComments(read('../src/components/AppHeader.vue'))
 const footerVue = stripComments(read('../src/components/AppFooter.vue'))
 const communityVue = stripComments(read('../src/components/CommunityPage.vue'))
@@ -65,7 +70,6 @@ function propsBlock(src) {
   return src.slice(start, start + 500)
 }
 
-
 // ─────────────────────────────────────────────────────────
 // 问题 1：历史记录打开后应该直接显示
 // ─────────────────────────────────────────────────────────
@@ -75,14 +79,15 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
     assert.match(p, /hasCommunityResult/, '没有 hasCommunityResult 开关')
     // 默认必须是 false：默认 true 意味着一进来就自动扣额度。
     assert.match(
-      p, /hasCommunityResult:\s*\{[^}]*default:\s*false/,
+      p,
+      /hasCommunityResult:\s*\{[^}]*default:\s*false/,
       'hasCommunityResult 默认必须是 false —— 默认 true 会在结果不存在时白扣额度',
     )
   })
 
   test('为真时自动发起，为假时不自动', () => {
     const w = summaryVue.slice(
-      summaryVue.indexOf('watch(() => props.videoUrl'),
+      summaryVue.search(/watch\(\s*\(\)\s*=>\s*props\.videoUrl/),
       summaryVue.indexOf('function startSummarize'),
     )
     assert.notEqual(w.length, 0, '没找到 videoUrl 的 watch')
@@ -101,29 +106,26 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
     // 那是一个**析取**：kebab 分支在 App.vue 里压根不存在（模板编译后绑定的
     // 仍是 :hasCommunityResult），真正兜住它的是弱得多的裸标识符 ——
     // 于是「属性名拼错了」这类回归照样绿。一条断言看着守两处，实际只守了一处。
+    // 开关现在由 HomeView 传给 VideoSummary（首页模板搬进了 HomeView）。
     assert.match(
-      appVue, /:hasCommunityResult=/,
-      'App.vue 没把开关传给 VideoSummary（属性名是 :hasCommunityResult=）',
+      homeView,
+      /:hasCommunityResult=/,
+      'HomeView 没把开关传给 VideoSummary（属性名是 :hasCommunityResult=）',
     )
     // 关键：这个开关的值必须来自 by-url（查**社区视频表**）。
     // 用「点过了解析」这种本地状态去推断，会在结果其实不存在时扣额度；
     // 反过来用**个人解析历史**去推断，陌生人打开社区视频时会被判成
     // 「社区里没有」——他于是看不到复用提示，「重新解析」按钮永不出现。
     // 这条断言以前写的是 fetchHistoryByUrl，与测试名自相矛盾，全绿了很久。
-    assert.match(
-      appVue, /fromCache\.value = !!found\?\.exists/,
-      'fromCache 没有来自社区视频表的 by-url 查询',
-    )
-    assert.doesNotMatch(
-      appVue, /fetchHistoryByUrl/,
-      '仍在用个人解析历史判断社区里有没有这一份',
-    )
+    assert.match(appVue, /fromCache\.value = !!found\?\.exists/, 'fromCache 没有来自社区视频表的 by-url 查询')
+    assert.doesNotMatch(appVue, /fetchHistoryByUrl/, '仍在用个人解析历史判断社区里有没有这一份')
   })
 
   test('从历史页打开时会去查社区（原来压根没查， 自动展示永远不触发）', () => {
     const fn = openRecordBody()
     assert.match(
-      fn, /fetchCommunityByUrl/,
+      fn,
+      /fetchCommunityByUrl/,
       'handleOpenRecord 没有查社区 —— fromCache 恒为 false，自动展示在历史页这条路上永远不触发',
     )
   })
@@ -132,7 +134,8 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
     const fn = openRecordBody()
     // 宁可多点一次，也不能在结果不存在时自动发起并扣额度。
     assert.match(
-      fn, /catch\s*\{\s*fromCache\.value = false/,
+      fn,
+      /catch\s*\{\s*fromCache\.value = false/,
       '查询失败时没有退回手动触发 —— 会在结果不存在时自动扣额度',
     )
   })
@@ -145,13 +148,9 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
     const consumeAt = api.indexOf('consume_quota(user["id"], "parse")')
     assert.ok(reuseAt > 0, '没找到 reuse 分支')
     assert.ok(consumeAt > 0, '没找到 consume_quota')
-    assert.ok(
-      reuseAt < consumeAt,
-      'consume_quota 出现在 reuse 分支之前 —— 自动展示会扣掉用户额度',
-    )
+    assert.ok(reuseAt < consumeAt, 'consume_quota 出现在 reuse 分支之前 —— 自动展示会扣掉用户额度')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 问题 2 / 批注3：回到起始页
@@ -162,19 +161,14 @@ describe('问题2 · 回到首页要真的回到起始页', () => {
     assert.match(appVue, /@go-home="goHome"/, 'App.vue 没接 goHome')
     // 原来就是 `currentPage = 'home'`：页面切了，但 videoData 还在，
     // 解析结果区仍然挂在下面，看起来像「点了没反应」。
-    assert.doesNotMatch(appVue, /@go-home="currentPage = 'home'"/,
-      '仍在只改 currentPage —— 解析结果区不会消失')
+    assert.doesNotMatch(appVue, /@go-home="currentPage = 'home'"/, '仍在只改 currentPage —— 解析结果区不会消失')
   })
 
   test('goHome 清掉解析态并回到顶部', () => {
-    const fn = appVue.slice(
-      appVue.indexOf('function goHome'),
-      appVue.indexOf('function openHistory'),
-    )
+    const fn = appVue.slice(appVue.indexOf('function goHome'), appVue.indexOf('function openHistory'))
     assert.notEqual(fn.length, 0, '没找到 goHome')
     for (const field of ['videoData', 'currentUrl', 'historyDetail', 'fromCache']) {
-      assert.match(fn, new RegExp(`${field}\\.value = `),
-        `goHome 没清掉 ${field} —— 回到首页后仍显示上一个视频`)
+      assert.match(fn, new RegExp(`${field}\\.value = `), `goHome 没清掉 ${field} —— 回到首页后仍显示上一个视频`)
     }
     assert.match(fn, /window\.scrollTo/, 'goHome 没回到页面顶部')
   })
@@ -191,15 +185,13 @@ describe('问题2 · 回到首页要真的回到起始页', () => {
   })
 })
 
-
 // ─────────────────────────────────────────────────────────
 // 问题 3：统一风格的错误弹窗
 // ─────────────────────────────────────────────────────────
 describe('问题3 · 失败要有统一弹窗，且说清下一步', () => {
   test('App.vue 里不再有裸 alert()', () => {
     const alerts = appVue.match(/\balert\s*\(/g) || []
-    assert.equal(alerts.length, 0,
-      `App.vue 还剩 ${alerts.length} 处 alert()：原生弹窗无视本仓视觉语言，也说不清下一步`)
+    assert.equal(alerts.length, 0, `App.vue 还剩 ${alerts.length} 处 alert()：原生弹窗无视本仓视觉语言，也说不清下一步`)
   })
 
   test('HistoryPage 不再用 alert 报错', () => {
@@ -216,16 +208,19 @@ describe('问题3 · 失败要有统一弹窗，且说清下一步', () => {
     // hint 是核心：只说「解析失败」用户什么也做不了。
     assert.match(errorModalVue, /\{\{ title \}\}/)
     assert.match(errorModalVue, /\{\{ message \}\}/)
-    assert.match(errorModalVue, /v-if="hint"[\s\S]*\{\{ hint \}\}/,
-      '弹窗没有「下一步该做什么」这一段')
+    assert.match(errorModalVue, /v-if="hint"[\s\S]*\{\{ hint \}\}/, '弹窗没有「下一步该做什么」这一段')
     assert.match(errorModalVue, /\{\{ actionText \}\}/)
     assert.match(errorModalVue, /role="alertdialog"/, '缺 dialog 语义，屏幕阅读器读不出来')
   })
 
   test('请求前先本地校验链接，不把明显错误丢给后端', () => {
     assert.match(appVue, /function validateUrlInput/, '没有本地 URL 校验')
-    const fn = sliceBetween(appVue, 'function validateUrlInput', 'async function handleParse',
-      'App.vue 的 validateUrlInput')
+    const fn = sliceBetween(
+      appVue,
+      'function validateUrlInput',
+      'async function handleParse',
+      'App.vue 的 validateUrlInput',
+    )
     // 这两条曾合成一条 `/还没有填链接|https?/` —— 同样是析取：
     // 只写了空输入检查、没写格式检查，也会因为命中「还没有填链接」而通过。
     assert.match(fn, /还没填链接/, '校验没覆盖空输入 —— 用户什么都没填就点了解析')
@@ -241,26 +236,20 @@ describe('问题3 · 失败要有统一弹窗，且说清下一步', () => {
     assert.ok(start > 0, '没找到 handleParse')
     assert.ok(end > start, '切片边界失效')
     const fn = appVue.slice(start, end)
-    assert.match(
-      fn, /if \(!check\.ok\)[\s\S]*?return[\s\S]*?parseVideo/,
-      '校验失败后仍然继续发请求了',
-    )
+    assert.match(fn, /if \(!check\.ok\)[\s\S]*?return[\s\S]*?parseVideo/, '校验失败后仍然继续发请求了')
     // 并且 parseVideo 必须**在**校验之后，不能在其之前。
     const guardAt = fn.indexOf('if (!check.ok)')
     const callAt = fn.indexOf('parseVideo(')
-    assert.ok(guardAt > -1 && callAt > guardAt,
-      'parseVideo 出现在校验之前 —— 校验形同虚设')
+    assert.ok(guardAt > -1 && callAt > guardAt, 'parseVideo 出现在校验之前 —— 校验形同虚设')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 问题 4 / 5：社区卡片铺满 + 点击可靠
 // ─────────────────────────────────────────────────────────
 describe('问题4+5 · 卡片铺满一行且点击可靠', () => {
   test('不再是两列布局', () => {
-    assert.doesNotMatch(communityVue, /grid gap-4 sm:grid-cols-2/,
-      '仍是两列 —— 大屏上右侧留大片空白，像没加载完')
+    assert.doesNotMatch(communityVue, /grid gap-4 sm:grid-cols-2/, '仍是两列 —— 大屏上右侧留大片空白，像没加载完')
   })
 
   test('卡片是 button：整块可点、键盘可达', () => {
@@ -270,8 +259,11 @@ describe('问题4+5 · 卡片铺满一行且点击可靠', () => {
       communityVue.indexOf('<!-- 翻页 -->'),
     )
     assert.notEqual(ul.length, 0, '没找到卡片列表')
-    assert.match(ul, /<button type="button" @click="openDetail\(item\)"/,
-      '卡片不是 button —— 只有内容区可点，空白处点了没反应')
+    assert.match(
+      ul,
+      /<button\b[^>]*type="button"[^>]*@click="openDetail\(item\)"/,
+      '卡片不是 button —— 只有内容区可点，空白处点了没反应',
+    )
     assert.match(ul, /w-full h-full/, '卡片没有铺满列表项')
   })
 
@@ -281,8 +273,7 @@ describe('问题4+5 · 卡片铺满一行且点击可靠', () => {
     const code = stripComments(read('../src/components/CommunityPage.vue'))
     const fn = code.slice(code.indexOf('function openDetail'))
     assert.notEqual(fn.length, 0, '没找到 openDetail')
-    assert.match(fn.slice(0, 200), /emit\('open-video', item\)/,
-      'openDetail 没有把视频交出去')
+    assert.match(fn.slice(0, 200), /emit\('open-video', item\)/, 'openDetail 没有把视频交出去')
   })
 
   test('点卡片后必须离开社区页（这才是「点击没反应」的真因）', () => {
@@ -301,12 +292,12 @@ describe('问题4+5 · 卡片铺满一行且点击可靠', () => {
     // 必须在**切回首页之后、解析之前**：这两个动作有先后，
     // 顺序反了的话解析结果会被社区页挡住。
     assert.match(
-      fn, /currentPage\.value = 'home'[\s\S]*handleParse\(item\.video_url\)/,
+      fn,
+      /router\.push\('\/'\)[\s\S]*handleParse\(item\.video_url\)/,
       'openCommunityVideo 没切回首页 —— 点卡片后社区页仍然盖着，用户看到的就是「没反应」',
     )
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 问题 6：历史列表显示封面
@@ -324,16 +315,18 @@ describe('问题6 · 历史列表显示封面', () => {
 
   test('后端列表接口真的返回 cover_url', () => {
     const db = read('../../backend/database.py')
-    const fn = sliceBetween(db, 'def get_parse_histories', 'def get_parse_history_detail',
-      'database.py 的 get_parse_histories')
+    const fn = sliceBetween(
+      db,
+      'def get_parse_histories',
+      'def get_parse_history_detail',
+      'database.py 的 get_parse_histories',
+    )
     assert.match(fn, /cover_url/, 'get_parse_histories 没返回 cover_url')
     // 必须有 json_valid 守卫：实测一行非法 JSON 会让整条查询抛
     // malformed JSON，也就是**一条坏记录足以让整个历史列表 500**。
-    assert.match(fn, /json_valid\(video_data\)/,
-      '缺 json_valid 守卫 —— 一条坏记录会让整个历史列表 500')
+    assert.match(fn, /json_valid\(video_data\)/, '缺 json_valid 守卫 —— 一条坏记录会让整个历史列表 500')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 问题 7 / 批注4：悬停邮箱看额度
@@ -345,17 +338,17 @@ describe('问题7 · 悬停邮箱显示额度面板', () => {
   })
 
   test('两个额度都列出来（工单 #4 拆过计数器，只显示一个等于没拆）', () => {
-    assert.match(headerVue, /\[\['parse', '解析'\], \['chat', '追问'\]\]/,
-      '面板没有同时列出解析与追问两个额度')
+    assert.match(
+      headerVue,
+      /\[\s*\[\s*'parse'\s*,\s*'解析'\s*\]\s*,\s*\[\s*'chat'\s*,\s*'追问'\s*\],?\s*\]/,
+      '面板没有同时列出解析与追问两个额度',
+    )
   })
 
   test('数据由 App.vue 提供，且悬停时才拉', () => {
     assert.match(appVue, /:quota="quotaInfo"/, 'App.vue 没把额度传给 Header')
     assert.match(appVue, /@request-quota="refreshQuota"/, '悬停没有触发拉取')
-    const fn = appVue.slice(
-      appVue.indexOf('async function refreshQuota'),
-      appVue.indexOf('function showError'),
-    )
+    const fn = appVue.slice(appVue.indexOf('async function refreshQuota'), appVue.indexOf('function showError'))
     assert.match(fn, /await fetchQuota\(\)/, 'refreshQuota 没有真的取额度')
   })
 
@@ -363,7 +356,6 @@ describe('问题7 · 悬停邮箱显示额度面板', () => {
     assert.match(headerVue, /exhausted/, '没有用完状态的样式区分')
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 像素母题归位：闪动从「历史页空状态」搬到「左上角 Logo」
@@ -387,16 +379,17 @@ describe('像素母题 · 闪动在左上角 Logo 上', () => {
     .filter((c) => c.includes('animate-pixel-blink'))
 
   test('Logo 的六个色块全部在闪', () => {
-    assert.equal(litRects.length, 6,
-      `闪动的色块数是 ${litRects.length}，不是 6 —— 少闪的色块在页头上是肉眼可见的缺口`)
+    assert.equal(litRects.length, 6, `闪动的色块数是 ${litRects.length}，不是 6 —— 少闪的色块在页头上是肉眼可见的缺口`)
   })
 
   test('只有色块闪，底板和边框不闪（否则整块 logo 一起呼吸，母题就没了）', () => {
     const allRects = pixelLogo.match(/<rect[^>]*>/g) || []
-    assert.equal(allRects.length, 8,
-      `rect 总数是 ${allRects.length}，不是 8（1 底板 + 1 边框 + 6 色块），说明 Logo 结构变了`)
-    assert.equal(allRects.filter((r) => r.includes('animate-pixel-blink')).length, 6,
-      '闪动 class 挂到了底板或边框上')
+    assert.equal(
+      allRects.length,
+      8,
+      `rect 总数是 ${allRects.length}，不是 8（1 底板 + 1 边框 + 6 色块），说明 Logo 结构变了`,
+    )
+    assert.equal(allRects.filter((r) => r.includes('animate-pixel-blink')).length, 6, '闪动 class 挂到了底板或边框上')
   })
 
   test('六个色块错峰 0..5，顺序不乱（同时亮 = 没有母题，只有一起呼吸）', () => {
@@ -404,38 +397,54 @@ describe('像素母题 · 闪动在左上角 Logo 上', () => {
       const m = c.match(/delay-(\d)/)
       return m ? m[1] : '0'
     })
-    assert.deepEqual(delays, ['0', '1', '2', '3', '4', '5'],
-      `错峰序列是 ${delays.join(',')}，不是 0,1,2,3,4,5`)
+    assert.deepEqual(delays, ['0', '1', '2', '3', '4', '5'], `错峰序列是 ${delays.join(',')}，不是 0,1,2,3,4,5`)
   })
 
   test('闪动 class 真的在页头那个图标上（不是只在别处定义着）', () => {
-    assert.match(headerVue, /<PixelLogo\s+:size="32"/,
-      '页头左上角已经不是 PixelLogo 了，「左上角闪动」这个需求就落空了')
+    assert.match(
+      headerVue,
+      /<PixelLogo\s+:size="32"/,
+      '页头左上角已经不是 PixelLogo 了，「左上角闪动」这个需求就落空了',
+    )
   })
 
   test('style.css 里关键帧与 delay 阶梯都还在（class 挂着但 CSS 被删 = 静默失效）', () => {
-    assert.match(styleCss, /@keyframes\s+pixelBlink/,
-      '@keyframes pixelBlink 没了 —— class 挂着也不会动，且没有任何报错')
-    assert.match(styleCss, /\.animate-pixel-blink\s*\{[^}]*animation:\s*pixelBlink/,
-      '.animate-pixel-blink 没有绑定到 pixelBlink 动画')
+    assert.match(
+      styleCss,
+      /@keyframes\s+pixelBlink/,
+      '@keyframes pixelBlink 没了 —— class 挂着也不会动，且没有任何报错',
+    )
+    assert.match(
+      styleCss,
+      /\.animate-pixel-blink\s*\{[^}]*animation:\s*pixelBlink/,
+      '.animate-pixel-blink 没有绑定到 pixelBlink 动画',
+    )
     for (let i = 1; i <= 5; i++) {
-      assert.match(styleCss, new RegExp(`\\.delay-${i}\\s*\\{[^}]*animation-delay`),
-        `.delay-${i} 定义丢了，第 ${i} 个色块会和前一个同时亮`)
+      assert.match(
+        styleCss,
+        new RegExp(`\\.delay-${i}\\s*\\{[^}]*animation-delay`),
+        `.delay-${i} 定义丢了，第 ${i} 个色块会和前一个同时亮`,
+      )
     }
   })
 
   test('历史页空状态不再摆那份网格（是「移走」，不是「复制一份」）', () => {
-    assert.doesNotMatch(historyVue, /grid-cols-3[^"]*"[^>]*>\s*(?:<span[^>]*>\s*){3}/,
-      '历史页空状态还留着原来的 3×3 闪动网格')
-    assert.doesNotMatch(historyVue, /animate-pixel-blink/,
-      '历史页里还有 animate-pixel-blink —— 母题被复制了一份，页脚/页头/空状态会三处一起闪')
+    assert.doesNotMatch(
+      historyVue,
+      /grid-cols-3[^"]*"[^>]*>\s*(?:<span[^>]*>\s*){3}/,
+      '历史页空状态还留着原来的 3×3 闪动网格',
+    )
+    assert.doesNotMatch(
+      historyVue,
+      /animate-pixel-blink/,
+      '历史页里还有 animate-pixel-blink —— 母题被复制了一份，页脚/页头/空状态会三处一起闪',
+    )
   })
 
   test('空状态文案还在（不能连提示一起删掉）', () => {
     assert.match(historyVue, /暂无解析历史/)
   })
 })
-
 
 // ─────────────────────────────────────────────────────────
 // 错误分类器：真调用，不是源码断言
@@ -476,14 +485,11 @@ describe('错误分类器 · 每种失败都给出可执行的下一步', () => 
     ]
     for (const c of cases) {
       const r = classifyError(c)
-      assert.ok(r.hint && r.hint.length > 0,
-        `case=${JSON.stringify(c)} 的 hint 是空的`)
-      assert.ok(r.message && r.message !== '未知错误',
-        `case=${JSON.stringify(c)} 退化成了「未知错误」，用户看了更困惑`)
+      assert.ok(r.hint && r.hint.length > 0, `case=${JSON.stringify(c)} 的 hint 是空的`)
+      assert.ok(r.message && r.message !== '未知错误', `case=${JSON.stringify(c)} 退化成了「未知错误」，用户看了更困惑`)
     }
   })
 })
-
 
 // ── VideoSummary ↔ App.vue 的事件契约（双向）────────────────
 
@@ -519,14 +525,33 @@ describe('VideoSummary ↔ App.vue 的事件契约', () => {
   const listened = (() => {
     // 只取 <VideoSummary ... /> 这一块：App.vue 里还有 AppHeader / VideoResult /
     // ByokDialog 各自的一堆 @监听，全局正则会把它们一起收进来。
-    const tag = sliceBetween(appVue, '<VideoSummary', '/>', 'App.vue 的 <VideoSummary> 标签')
+    const tag = sliceBetween(homeView, '<VideoSummary', '/>', 'HomeView 的 <VideoSummary> 标签')
     return [...tag.matchAll(/@([a-z][a-z0-9-]*)=/g)].map((x) => x[1]).sort()
   })()
 
   test('声明的事件与监听的事件完全相等（多一个少一个都要红）', () => {
-    assert.deepEqual(listened, declared,
-      `组件声明了 ${JSON.stringify(declared)}，父组件监听的是 ${JSON.stringify(listened)} —— `
-      + 'Vue 对多出来/少掉的事件只 warn，界面看起来一切正常而父组件的状态永远不变')
+    assert.deepEqual(
+      listened,
+      declared,
+      `组件声明了 ${JSON.stringify(declared)}，父组件监听的是 ${JSON.stringify(listened)} —— ` +
+        'Vue 对多出来/少掉的事件只 warn，界面看起来一切正常而父组件的状态永远不变',
+    )
+  })
+
+  test('HomeView 声明的事件在 App.vue 里都有落点（中间那层没吞掉）', () => {
+    const declared = [...homeView.matchAll(/\(e: '([^']+)'/g)].map((x) => x[1])
+    assert.ok(declared.length >= 8, `HomeView 的 defineEmits 没解析出事件名：${JSON.stringify(declared)}`)
+    const listeners = sliceBetween(
+      appVue,
+      'function listenersFor(page: PageKey)',
+      'const viewListeners',
+      'App.vue 的 listenersFor',
+    )
+    for (const name of declared) {
+      // 事件名在对象里可能带引号（'open-byok'）也可能不带（parse）。
+      const wired = new RegExp(`['"]?${name}['"]?\\s*[,:}]`).test(listeners)
+      assert.ok(wired, `App.vue 的 listenersFor 里没有 '${name}' —— HomeView 抛出来没人接`)
+    }
   })
 
   test('这条判据自己在两个方向上都会红（不是恒真）', () => {
@@ -538,4 +563,3 @@ describe('VideoSummary ↔ App.vue 的事件契约', () => {
     assert.deepEqual([...base].sort(), ['a', 'b'].sort(), '相同集合被误判成不同')
   })
 })
-

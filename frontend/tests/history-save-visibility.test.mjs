@@ -17,14 +17,14 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import axios from 'axios'
 
-import { saveHistory } from '../src/api/history.js'
+import { saveHistory } from '../src/api/history.ts'
 
 /** 归一化行尾符：本仓库是 CRLF，直接按 \n 切块会切空。 */
 function read(...parts) {
   return readFileSync(new URL(...parts, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 }
 
-const apiCode = read('../src/api/history.js')
+const apiCode = read('../src/api/history.ts')
 
 /** 记下 warn 痕迹，并且不动用户之外的任何全局状态。 */
 let warnings = []
@@ -32,7 +32,9 @@ const realWarn = console.warn
 
 beforeEach(() => {
   warnings = []
-  console.warn = (...args) => { warnings.push(args) }
+  console.warn = (...args) => {
+    warnings.push(args)
+  }
   // axios 在 Node 里默认走 http adapter，会真的去解析域名（ENOTFOUND）。
   // baseURL：相对路径 '/api/...' 在 Node 里是 ERR_INVALID_URL。
   // adapter：换成 fetch，下面的 globalThis.fetch 假实现才拦得住。
@@ -40,9 +42,15 @@ beforeEach(() => {
   axios.defaults.adapter = 'fetch'
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
 })
 
@@ -57,9 +65,8 @@ function stubResponse(status) {
     const asRequest = input instanceof Request
     const url = asRequest ? input.url : String(input)
     calls.push({ url, method: (asRequest ? input.method : init.method) || 'GET' })
-    const body = status < 400
-      ? new Response(JSON.stringify({ success: true }), { status })
-      : new Response('boom', { status })
+    const body =
+      status < 400 ? new Response(JSON.stringify({ success: true }), { status }) : new Response('boom', { status })
     return body
   }
   return calls
@@ -82,8 +89,10 @@ describe('saveHistory · 失败静默', () => {
   test('写失败时不打断主流程（不抛给调用方）', async () => {
     stubResponse(500)
 
-    await assert.doesNotReject(() => saveHistory(PAYLOAD),
-      '失败被抛出去了：用户已经拿到总结，却因为一条历史记录看到未捕获异常')
+    await assert.doesNotReject(
+      () => saveHistory(PAYLOAD),
+      '失败被抛出去了：用户已经拿到总结，却因为一条历史记录看到未捕获异常',
+    )
   })
 
   test('写成功时不留痕迹', async () => {
@@ -91,8 +100,7 @@ describe('saveHistory · 失败静默', () => {
 
     await saveHistory(PAYLOAD)
 
-    assert.equal(warnings.length, 0,
-      `成功也报了警告：${JSON.stringify(warnings)}——那会训练所有人忽略它`)
+    assert.equal(warnings.length, 0, `成功也报了警告：${JSON.stringify(warnings)}——那会训练所有人忽略它`)
   })
 
   test('请求真的发到了 /api/history/save', async () => {
@@ -108,8 +116,7 @@ describe('saveHistory · 失败静默', () => {
   test('catch 体不是空的（源码形状对照）', () => {
     // 行为断言盯的是「有没有 warn」；这一条钉住字面形状，防止有人改成
     // `.catch(() => null)` ——非空但同样无声，行为断言抓不到。
-    assert.doesNotMatch(apiCode, /catch\s*\{\s*(\/\/[^\n]*)?\s*\}/,
-      'saveHistory 又变回空 catch 了')
+    assert.doesNotMatch(apiCode, /catch\s*\{\s*(\/\/[^\n]*)?\s*\}/, 'saveHistory 又变回空 catch 了')
   })
 })
 
@@ -121,8 +128,7 @@ describe('两个调用点都走这一条路', () => {
       // 组件层不该出现「自己包一层空 catch」——那条路会让 saveHistory 的
       // 痕迹被挡在组件里，而组件往往又把 catch 整个丢掉。
       const around = src.slice(src.indexOf('function persist'), src.indexOf('function persist') + 700)
-      assert.doesNotMatch(around, /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/,
-        `${f} 在组件层又把失败吞了`)
+      assert.doesNotMatch(around, /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/, `${f} 在组件层又把失败吞了`)
     }
   })
 })

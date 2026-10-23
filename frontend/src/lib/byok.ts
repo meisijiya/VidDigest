@@ -45,12 +45,76 @@ const CONFIG_STORE = 'viddigest_byok_config'
 export const MODE_PLATFORM = 'platform'
 export const MODE_BYOK = 'byok'
 
-/** 端点只做与后端一致的最粗筛，真正的判定在服务端。 */
-export function normalizeBaseUrl(raw) {
-  return String(raw || '').trim().replace(/\/+$/, '')
+/** 用户的选择状态（已存进 localStorage 的那份配置）。 */
+export interface ByokConfig {
+  provider: string
+  baseUrl: string
+  model: string
 }
 
-export function normalizeModel(raw) {
+/**
+ * 给 UI 读的状态。**结构上不含 key**。
+ *
+ * `mode` 只反映**用户的显式选择**（选了哪个厂商），不反映「有没有填 key」。
+ */
+export interface ByokPublicState {
+  mode: typeof MODE_PLATFORM | typeof MODE_BYOK
+  provider: string
+  baseUrl: string
+  model: string
+  hasKey: boolean
+}
+
+/**
+ * 给请求层用的真值。**只该被 api/summarize.ts 调用**。
+ *
+ * 注意它与 `ByokPublicState` 是**两个不同的形状**：这份带 key，那份不带。
+ * 合成一个就等于让 key 有机会进 DOM。
+ */
+export interface ByokCredential {
+  apiKey: string
+  baseUrl: string
+  model: string
+}
+
+/** `save` 的入参。key 留空 = 清除。 */
+export interface ByokSaveInput {
+  apiKey?: string
+  provider?: string
+  baseUrl?: string
+  model?: string
+}
+
+/** `updateConfig` 的入参：只改配置，保留已存的 key。 */
+export interface ByokConfigInput {
+  provider?: string
+  baseUrl?: string
+  model?: string
+}
+
+/**
+ * 调用方已经拿在手里的那条厂商记录（`api/models.ts` 转好的 camelCase）。
+ *
+ * 本模块**不查表**：要查表就得自己持有一份清单，而那份清单会和
+ * `GET /api/models` 漂移（工单 #13 要消除的正是这件事）。
+ *
+ * 这里只列本模块真正读的两个字段。刻意不加 `[key: string]: unknown`：
+ * 带了索引签名就得靠类型断言才能塞进来，**断言会把形状不符的记录也放过去**，
+ * 而那正是「填进去的端点其实是别人的」这类问题的入口。
+ */
+export interface ProviderRecord {
+  baseUrl?: string
+  defaultModel?: string
+}
+
+/** 端点只做与后端一致的最粗筛，真正的判定在服务端。 */
+export function normalizeBaseUrl(raw: unknown): string {
+  return String(raw || '')
+    .trim()
+    .replace(/\/+$/, '')
+}
+
+export function normalizeModel(raw: unknown): string {
   return String(raw || '').trim()
 }
 
@@ -59,7 +123,7 @@ export function normalizeModel(raw) {
  * 不是安全边界——用户可以绕过它（直接调接口），所以服务端那道校验
  * 才是真正承重的那一道。
  */
-export function validateBaseUrl(raw) {
+export function validateBaseUrl(raw: unknown): string | null {
   const text = normalizeBaseUrl(raw)
   if (!text) return null
   let parts
@@ -83,20 +147,27 @@ export function validateBaseUrl(raw) {
 // 刻意不做「可从外部任意读写的模块级变量」：那等于给每个调用方
 // 一条能顺手 log 出来的路。改成只有下面几个函数能碰到。
 
-let state = read()
+let state: { apiKey: string; config: ByokConfig } = read()
 
-const listeners = new Set()
+const listeners = new Set<(state: ByokPublicState) => void>()
 
-function read() {
-  let apiKey = ''
-  let config = { provider: 'platform', baseUrl: '', model: '' }
+interface ByokStored {
+  apiKey: string
+  config: ByokConfig
+}
+
+function read(): ByokStored {
+  let apiKey: string
+  let config: ByokConfig = { provider: 'platform', baseUrl: '', model: '' }
   try {
     apiKey = localStorage.getItem(KEY_STORE) || ''
-  } catch { apiKey = '' }
+  } catch {
+    apiKey = ''
+  }
   try {
     const raw = localStorage.getItem(CONFIG_STORE)
     if (raw) {
-      const parsed = JSON.parse(raw)
+      const parsed = JSON.parse(raw) as { provider?: unknown; baseUrl?: unknown; model?: unknown }
       if (parsed && typeof parsed === 'object') {
         config = {
           provider: typeof parsed.provider === 'string' ? parsed.provider : 'platform',
@@ -105,13 +176,19 @@ function read() {
         }
       }
     }
-  } catch { /* 坏数据当作没配过，不报错 */ }
+  } catch {
+    /* 坏数据当作没配过，不报错 */
+  }
   return { apiKey, config }
 }
 
 function notify() {
   for (const fn of listeners) {
-    try { fn(getPublicState()) } catch { /* 一个订阅者坏了不该连累其它 */ }
+    try {
+      fn(getPublicState())
+    } catch {
+      /* 一个订阅者坏了不该连累其它 */
+    }
   }
 }
 
@@ -127,7 +204,7 @@ function notify() {
  * mode 同时是**请求侧的开关**（见 getRequestCredential）：渲染成「用平台额度」
  * 时请求里就不会带用户自己的 key。两边必须一致 —— 它们本来就是同一个决定。
  */
-export function getPublicState() {
+export function getPublicState(): ByokPublicState {
   return {
     mode: state.config.provider === MODE_PLATFORM ? MODE_PLATFORM : MODE_BYOK,
     provider: state.config.provider,
@@ -152,7 +229,7 @@ export function getPublicState() {
  *
  * 没有 key 时返回 null，让调用方走平台路径（而不是发一个空 key 过去）。
  */
-export function getRequestCredential() {
+export function getRequestCredential(): ByokCredential | null {
   if (!state.apiKey) return null
   if (state.config.provider === MODE_PLATFORM) return null
   return {
@@ -162,13 +239,13 @@ export function getRequestCredential() {
   }
 }
 
-export function subscribe(fn) {
+export function subscribe(fn: (state: ByokPublicState) => void): () => void {
   listeners.add(fn)
   return () => listeners.delete(fn)
 }
 
 /** 保存一整套配置。key 为空等于清除。 */
-export function save({ apiKey, provider, baseUrl, model }) {
+export function save({ apiKey, provider, baseUrl, model }: ByokSaveInput): void {
   const trimmedKey = String(apiKey || '').trim()
   state = {
     apiKey: trimmedKey,
@@ -197,7 +274,7 @@ export function save({ apiKey, provider, baseUrl, model }) {
  * 而那个参数迟早会被传反一次——传反的后果是用户填了一次 key，
  * 换个模型再保存，key 被静默清空。
  */
-export function updateConfig({ provider, baseUrl, model }) {
+export function updateConfig({ provider, baseUrl, model }: ByokConfigInput): void {
   save({
     apiKey: state.apiKey,
     provider,
@@ -248,7 +325,10 @@ export function usePlatform() {
  * state 的话，``state.provider`` 会是 undefined —— 而 provider 正是
  * 「用平台还是用自带」的那个开关，它一丢，保存时就会静默退回平台模式。
  */
-export function chooseProvider(id, provider) {
+export function chooseProvider(
+  id: string | number | null | undefined,
+  provider?: ProviderRecord | null,
+): ByokPublicState {
   save({
     apiKey: state.apiKey,
     provider: String(id || 'platform'),

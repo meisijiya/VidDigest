@@ -51,22 +51,28 @@ const MUTANTS = [
   {
     name: 'N3 openCommunity 不切页',
     file: APP,
-    pairs: [["  currentPage.value = 'community'\n  window.scrollTo({ top: 0 })\n}",
-      "  window.scrollTo({ top: 0 })\n}"]],
+    pairs: [
+      ["  currentPage.value = 'community'\n  window.scrollTo({ top: 0 })\n}", '  window.scrollTo({ top: 0 })\n}'],
+    ],
     expect: /没有把 currentPage 切到 community/,
   },
   {
     name: 'N4 社区按钮不随当前页高亮',
     file: HEADER,
-    pairs: [["page === 'community' ? 'text-blue-400 bg-blue-50 font-medium'",
-      "page === 'never-matches' ? 'text-blue-400 bg-blue-50 font-medium'"]],
+    pairs: [
+      [
+        "page === 'community' ? 'text-blue-400 bg-blue-50 font-medium'",
+        "page === 'never-matches' ? 'text-blue-400 bg-blue-50 font-medium'",
+      ],
+    ],
     expect: /社区页上「社区」不高亮/,
   },
   {
     name: 'N5 首页那个孤立的「浏览社区 →」按钮被加回来（两个入口）',
     file: APP,
-    pairs: [['<FeatureSection />',
-      '<button @click="currentPage = \'community\'">浏览社区 →</button><FeatureSection />']],
+    pairs: [
+      ['<FeatureSection />', '<button @click="currentPage = \'community\'">浏览社区 →</button><FeatureSection />'],
+    ],
     expect: /首页营销区还留着/,
   },
   {
@@ -80,8 +86,7 @@ const MUTANTS = [
   {
     name: 'W1 wall-bob 的上下位移改成左右（凸起斜着晃，不成浪）',
     file: HERO,
-    pairs: [['50%      { transform: translateY(-5px); }',
-      '50%      { transform: translateX(-5px); }']],
+    pairs: [['50%      { transform: translateY(-5px); }', '50%      { transform: translateX(-5px); }']],
     expect: /混进了 translateX/,
   },
   {
@@ -111,9 +116,16 @@ const MUTANTS = [
   {
     name: 'W6 凸起高度全改成一样（城墙是平的，没有起伏）',
     file: HERO,
-    pairs: [['y: 54', 'y: 40'], ['y: 56', 'y: 40'], ['y: 52', 'y: 40'],
-      ['y: 34', 'y: 40'], ['y: 32', 'y: 40'], ['y: 26', 'y: 40'],
-      ['y: 30', 'y: 40'], ['y: 28', 'y: 40']],
+    pairs: [
+      ['y: 54', 'y: 40'],
+      ['y: 56', 'y: 40'],
+      ['y: 52', 'y: 40'],
+      ['y: 34', 'y: 40'],
+      ['y: 32', 'y: 40'],
+      ['y: 26', 'y: 40'],
+      ['y: 30', 'y: 40'],
+      ['y: 28', 'y: 40'],
+    ],
     expect: /城墙是平的|并不比最深的凹/,
   },
   {
@@ -125,23 +137,28 @@ const MUTANTS = [
   {
     name: 'W8 顶线被移出块的 <g>（一浮动顶线就脱节）',
     file: HERO,
-    pairs: [[L(
-      '            <template v-if="s.line">',
-      '              <rect :x="s.x" :y="s.y" width="120" height="3"',
-      '                    :fill="`url(#wall-line-${s.id})`"',
-      '                    class="wall-line"',
-      "                    :style=\"{ animationDelay: s.delay + 's' }\"/>",
-      '            </template>',
-      '          </g>',
-    ), L(
-      '          </g>',
-      '          <template v-if="s.line">',
-      '            <rect :x="s.x" :y="s.y" width="120" height="3"',
-      '                  :fill="`url(#wall-line-${s.id})`"',
-      '                  class="wall-line"',
-      "                  :style=\"{ animationDelay: s.delay + 's' }\"/>",
-      '          </template>',
-    )]],
+    pairs: [
+      [
+        L(
+          '            <template v-if="s.line">',
+          '              <rect :x="s.x" :y="s.y" width="120" height="3"',
+          '                    :fill="`url(#wall-line-${s.id})`"',
+          '                    class="wall-line"',
+          '                    :style="{ animationDelay: s.delay + \'s\' }"/>',
+          '            </template>',
+          '          </g>',
+        ),
+        L(
+          '          </g>',
+          '          <template v-if="s.line">',
+          '            <rect :x="s.x" :y="s.y" width="120" height="3"',
+          '                  :fill="`url(#wall-line-${s.id})`"',
+          '                  class="wall-line"',
+          '                  :style="{ animationDelay: s.delay + \'s\' }"/>',
+          '          </template>',
+        ),
+      ],
+    ],
     expect: /只有 1 个 rect|没有挂在「只有凸起才画」/,
   },
   {
@@ -153,7 +170,7 @@ const MUTANTS = [
   {
     name: 'W8c 某个凸起没有颜色（垛口变秃，而且和前一段连成两个凹）',
     file: HERO,
-    pairs: [["{ x: 240,  y: 32, line: '#a78bfa' },", "{ x: 240,  y: 32 },"]],
+    pairs: [["{ x: 240,  y: 32, line: '#a78bfa' },", '{ x: 240,  y: 32 },']],
     expect: /是两个凹挨着|凸起有 \d+ 段|凹有 \d+ 段|没有合法颜色/,
   },
   {
@@ -191,15 +208,23 @@ const MUTANTS = [
   {
     name: 'W13 漂移和浮动改成并列两个 <g>（transform 不相乘，不会边上下边向右）',
     file: HERO,
-    pairs: [[L('        <g class="wall-drift">', '          <g v-for="s in wallSteps" :key="s.id"'),
-      L('        <g class="wall-drift"></g>', '          <g v-for="s in wallSteps" :key="s.id"')]],
+    pairs: [
+      [
+        L('        <g class="wall-drift">', '          <g v-for="s in wallSteps" :key="s.id"'),
+        L('        <g class="wall-drift"></g>', '          <g v-for="s in wallSteps" :key="s.id"'),
+      ],
+    ],
     expect: /并列的两个 <g>/,
   },
   {
     name: 'W14 .wall-drift 的 animation 简写里混进第二条动画（后一条把前一条顶掉）',
     file: HERO,
-    pairs: [['animation: wall-drift 12s linear infinite;',
-      'animation: wall-drift 12s linear infinite, wall-bob 2.4s linear infinite;']],
+    pairs: [
+      [
+        'animation: wall-drift 12s linear infinite;',
+        'animation: wall-drift 12s linear infinite, wall-bob 2.4s linear infinite;',
+      ],
+    ],
     expect: /顶掉/,
   },
   {
@@ -211,18 +236,24 @@ const MUTANTS = [
   {
     name: 'W16 只拼一份副本（带子滑出去就再也补不回来）',
     file: HERO,
-    pairs: [[L(
-      '  ...wallBase.map((s, i) => ({',
-      '    ...s, id: `b${i}`, delay: i * WALL_STEP_DELAY, x: s.x - WALL_WIDTH,',
-      '  })),',
-    ), '']],
+    pairs: [
+      [
+        L(
+          '  ...wallBase.map((s, i) => ({',
+          '    ...s, id: `b${i}`, delay: i * WALL_STEP_DELAY, x: s.x - WALL_WIDTH,',
+          '  })),',
+        ),
+        '',
+      ],
+    ],
     expect: /应为两份副本各一份|右侧会滑空/,
   },
   {
     name: 'W17 两份副本用不同 delay（接缝那一段会突然换动作）',
     file: HERO,
-    pairs: [['delay: i * WALL_STEP_DELAY, x: s.x - WALL_WIDTH,',
-      'delay: (i + 6) * WALL_STEP_DELAY, x: s.x - WALL_WIDTH,']],
+    pairs: [
+      ['delay: i * WALL_STEP_DELAY, x: s.x - WALL_WIDTH,', 'delay: (i + 6) * WALL_STEP_DELAY, x: s.x - WALL_WIDTH,'],
+    ],
     expect: /两份副本的 delay 不一样|delay 表达式是/,
   },
   {
@@ -250,29 +281,32 @@ const MUTANTS = [
   {
     name: 'W21 顶线里出现位移（退回「线全程亮着 + 一个光点在上面跑」）',
     file: HERO,
-    pairs: [[L(
-      '@keyframes wall-line {',
-      '  0%, 100% { opacity: 0.25; }',
-      '  50%      { opacity: 1; }',
-      '}',
-    ), L(
-      '@keyframes wall-line {',
-      '  0%, 100% { opacity: 0.25; transform: translateX(0); }',
-      '  50%      { opacity: 1; transform: translateX(120px); }',
-      '}',
-    )]],
+    pairs: [
+      [
+        L('@keyframes wall-line {', '  0%, 100% { opacity: 0.25; }', '  50%      { opacity: 1; }', '}'),
+        L(
+          '@keyframes wall-line {',
+          '  0%, 100% { opacity: 0.25; transform: translateX(0); }',
+          '  50%      { opacity: 1; transform: translateX(120px); }',
+          '}',
+        ),
+      ],
+    ],
     expect: /出现了位移/,
   },
   {
     name: 'W22 渐变两端不羽化（顶线变成硬边实色，不是渐变显现）',
     file: HERO,
-    pairs: [[
-      '<stop offset="0%" :stop-color="s.line" stop-opacity="0"/>',
-      '<stop offset="0%" :stop-color="s.line" stop-opacity="1"/>',
-    ], [
-      '<stop offset="100%" :stop-color="s.line" stop-opacity="0"/>',
-      '<stop offset="100%" :stop-color="s.line" stop-opacity="1"/>',
-    ]],
+    pairs: [
+      [
+        '<stop offset="0%" :stop-color="s.line" stop-opacity="0"/>',
+        '<stop offset="0%" :stop-color="s.line" stop-opacity="1"/>',
+      ],
+      [
+        '<stop offset="100%" :stop-color="s.line" stop-opacity="0"/>',
+        '<stop offset="100%" :stop-color="s.line" stop-opacity="1"/>',
+      ],
+    ],
     expect: /不透明|硬边/,
   },
   {
@@ -285,39 +319,33 @@ const MUTANTS = [
     name: 'W22c 又加回一条常驻实色底线（线全程可见，正是要去掉的形态）',
     file: HERO,
     // 一对多行替换：from / to 各自是一整段，不是两个 pair。
-    pairs: [[L(
-      '            <template v-if="s.line">',
-      '              <rect :x="s.x" :y="s.y" width="120" height="3"',
-    ), L(
-      '            <template v-if="s.line">',
-      '              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>',
-      '              <rect :x="s.x" :y="s.y" width="120" height="3"',
-    )]],
+    pairs: [
+      [
+        L('            <template v-if="s.line">', '              <rect :x="s.x" :y="s.y" width="120" height="3"'),
+        L(
+          '            <template v-if="s.line">',
+          '              <rect :x="s.x" :y="s.y" width="120" height="3" :fill="s.line" opacity="0.55"/>',
+          '              <rect :x="s.x" :y="s.y" width="120" height="3"',
+        ),
+      ],
+    ],
     expect: /只有 3 个 rect|又加回了一条 :fill="s.line"/,
   },
   {
     name: 'W22d 顶线不呼吸（opacity 动画没了，线一直是全亮）',
     file: HERO,
-    pairs: [[L(
-      '@keyframes wall-line {',
-      '  0%, 100% { opacity: 0.25; }',
-      '  50%      { opacity: 1; }',
-      '}',
-    ), L(
-      '@keyframes wall-line {',
-      '  from { opacity: 1; }',
-      '  to   { opacity: 1; }',
-      '}',
-    )]],
+    pairs: [
+      [
+        L('@keyframes wall-line {', '  0%, 100% { opacity: 0.25; }', '  50%      { opacity: 1; }', '}'),
+        L('@keyframes wall-line {', '  from { opacity: 1; }', '  to   { opacity: 1; }', '}'),
+      ],
+    ],
     expect: /没有 opacity|不呼吸|没有「渐变显现」/,
   },
   {
     name: 'W22e 顶线不绑 s.delay（亮起来的时刻和浮起来的时刻对不上）',
     file: HERO,
-    pairs: [[
-      "                    :style=\"{ animationDelay: s.delay + 's' }\"/>",
-      '                    style=""/>',
-    ]],
+    pairs: [['                    :style="{ animationDelay: s.delay + \'s\' }"/>', '                    style=""/>']],
     expect: /没有 animationDelay 绑定/,
   },
   {
@@ -329,7 +357,10 @@ const MUTANTS = [
   {
     name: 'W24 渐变被移出 <defs>（直接当可见图形画出来）',
     file: HERO,
-    pairs: [['        <defs>\n', ''], ['        </defs>\n', '']],
+    pairs: [
+      ['        <defs>\n', ''],
+      ['        </defs>\n', ''],
+    ],
     expect: /没有 <defs>|不在 <defs> 内/,
   },
   {
@@ -365,8 +396,7 @@ const MUTANTS = [
   {
     name: 'W26e 顶线又有了独立延迟（亮与浮分成两套，对不上拍）',
     file: HERO,
-    pairs: [['delay: i * WALL_STEP_DELAY })),',
-      'delay: i * WALL_STEP_DELAY, lineDelay: i * WALL_STEP_DELAY })),']],
+    pairs: [['delay: i * WALL_STEP_DELAY })),', 'delay: i * WALL_STEP_DELAY, lineDelay: i * WALL_STEP_DELAY })),']],
     expect: /又有独立的延迟字段/,
   },
   {
@@ -444,13 +474,17 @@ const broken = []
 const offTarget = []
 
 for (const m of MUTANTS) {
-  if (!existsSync(m.file)) { broken.push(`${m.name} —— 文件不存在: ${m.file}`); continue }
+  if (!existsSync(m.file)) {
+    broken.push(`${m.name} —— 文件不存在: ${m.file}`)
+    continue
+  }
   const backup = m.file + '.mutbak'
   let src
   try {
     src = readFileSync(m.file, 'utf8')
   } catch (e) {
-    broken.push(`${m.name} —— 读取失败: ${e.message}`); continue
+    broken.push(`${m.name} —— 读取失败: ${e.message}`)
+    continue
   }
 
   const mutated = applyPairs(src, m.pairs)
@@ -510,8 +544,10 @@ for (const m of MUTANTS) {
 }
 
 console.log('='.repeat(72))
-console.log(`变异结果：${killed}/${MUTANTS.length} 杀，${survivors.length} 存活，`
-  + `${broken.length} 装置故障，${offTarget.length} 杀错用例`)
+console.log(
+  `变异结果：${killed}/${MUTANTS.length} 杀，${survivors.length} 存活，` +
+    `${broken.length} 装置故障，${offTarget.length} 杀错用例`,
+)
 if (offTarget.length) {
   console.log('--- 杀了但挂错用例（指定来守它的那条断言没参与）---')
   for (const o of offTarget) console.log('  ' + o)

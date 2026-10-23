@@ -29,18 +29,17 @@
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
-import { nextTick } from 'vue'
 
 // vi.mock 必须在顶部：它靠「被提升到组件 import 之前」生效。下沉到共用夹具就依赖
 // 导入顺序，失效是静默的——组件真去发 axios 请求，jsdom 没有 XHR，形态是「挂载即炸」。
-vi.mock('../src/api/community.js', () => ({
+vi.mock('../src/api/community.ts', () => ({
   fetchCommunityVideos: vi.fn(),
   searchCommunity: vi.fn(),
   fetchCommunityTags: vi.fn(),
 }))
 
 import CommunityPage from '../src/components/CommunityPage.vue'
-import { fetchCommunityVideos, searchCommunity, fetchCommunityTags } from '../src/api/community.js'
+import { fetchCommunityVideos, searchCommunity, fetchCommunityTags } from '../src/api/community.ts'
 
 // ── 造数据 ─────────────────────────────────────────────────
 
@@ -157,11 +156,13 @@ describe('卡片把标签显示出来', () => {
   test('tags 为空数组时不留下一个空的标签容器', async () => {
     // 空容器在界面上就是一段没有内容的框，而那正是「标签 disappeared 了」
     // 与「这个视频没有标签」分不开的形状——判据要落在「有没有渲染 span」上。
-    const w = await mountPage(page({
-      items: [card({ tags: [] })],
-      total: 1,
-      total_pages: 1,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card({ tags: [] })],
+        total: 1,
+        total_pages: 1,
+      }),
+    )
     const html = w.html()
     expect(w.text()).toContain('机器学习入门')
     // 标签 span 带的就是标签文字本身；一个都没有时不该出现成对的空标签容器
@@ -169,11 +170,13 @@ describe('卡片把标签显示出来', () => {
   })
 
   test('多个标签各占一个片段，不挤成一段', async () => {
-    const w = await mountPage(page({
-      items: [card({ tags: ['人工智能', '科普', '入门'] })],
-      total: 1,
-      total_pages: 1,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card({ tags: ['人工智能', '科普', '入门'] })],
+        total: 1,
+        total_pages: 1,
+      }),
+    )
     const spans = w.findAll('li span').map((s) => s.text())
     for (const t of ['人工智能', '科普', '入门']) {
       expect(spans, `标签「${t}」没有独立渲染`).toContain(t)
@@ -189,29 +192,31 @@ describe('缩略图走本站代理', () => {
     const img = w.find('li img')
     expect(img.exists()).toBe(true)
     // 防盗链直连会返回一片灰，所以站外地址必须经代理
-    expect(img.attributes('src')).toBe(
-      `/api/proxy/thumbnail?url=${encodeURIComponent('https://img.example/c.jpg')}`,
-    )
+    expect(img.attributes('src')).toBe(`/api/proxy/thumbnail?url=${encodeURIComponent('https://img.example/c.jpg')}`)
   })
 
   test('站内相对路径原样直取，不被塞进代理查询串', async () => {
     // 反向那一半。少了它，`startsWith('/')` 这个判断删掉也没人会红，
     // 而后果是站内路径被套成 `/api/proxy/thumbnail?url=%2Fuploads%2Fx.png`
     // ——一个必然 404 的地址。
-    const w = await mountPage(page({
-      items: [card({ cover_url: '/uploads/c.jpg' })],
-      total: 1,
-      total_pages: 1,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card({ cover_url: '/uploads/c.jpg' })],
+        total: 1,
+        total_pages: 1,
+      }),
+    )
     expect(w.find('li img').attributes('src')).toBe('/uploads/c.jpg')
   })
 
   test('没有封面时走占位块而不是一个坏图', async () => {
-    const w = await mountPage(page({
-      items: [card({ cover_url: '' })],
-      total: 1,
-      total_pages: 1,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card({ cover_url: '' })],
+        total: 1,
+        total_pages: 1,
+      }),
+    )
     expect(w.find('li img').exists()).toBe(false)
   })
 })
@@ -223,12 +228,14 @@ describe('翻页按钮的可观察状态', () => {
     // 模板 `:149` 是 `v-if="totalPages > 1"` —— 只有一页时压根没有翻页区，
     // 所以「下一页是禁用的」这个假设**是错的**（本文件第一版就是这么写错的，
     // 实测报 undefined）。可观察的事实是「翻页区不存在」。
-    const w = await mountPage(page({
-      items: [card()],
-      total: 1,
-      page: 1,
-      total_pages: 1,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card()],
+        total: 1,
+        page: 1,
+        total_pages: 1,
+      }),
+    )
     const labels = w.findAll('button').map((b) => b.text().trim())
     expect(labels, '只有一页时不该出现翻页区').not.toContain('下一页')
     expect(labels).not.toContain('上一页')
@@ -237,12 +244,14 @@ describe('翻页按钮的可观察状态', () => {
   test('在最后一页时「下一页」禁用、「上一页」可用', async () => {
     // 上一条把「不可达」写对了：按钮禁用时根本触发不了 `goPage(page + 1)`，
     // 所以函数里的上界守卫是防御性冗余。这一条是它**真正**拦下的那种形态。
-    const w = await mountPage(page({
-      items: [card()],
-      total: 30,
-      page: 2,
-      total_pages: 2,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card()],
+        total: 30,
+        page: 2,
+        total_pages: 2,
+      }),
+    )
     const btn = (label) => w.findAll('button').find((b) => b.text().trim() === label)
     expect(btn('下一页').attributes('disabled')).toBeDefined()
     expect(btn('上一页').attributes('disabled')).toBeUndefined()
@@ -250,21 +259,25 @@ describe('翻页按钮的可观察状态', () => {
   })
 
   test('多页时「下一页」可点，点完页码前进', async () => {
-    const w = await mountPage(page({
-      items: [card()],
-      total: 30,
-      page: 1,
-      total_pages: 2,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card()],
+        total: 30,
+        page: 1,
+        total_pages: 2,
+      }),
+    )
     const next = w.findAll('button').find((b) => b.text().trim() === '下一页')
     expect(next.attributes('disabled')).toBeUndefined()
 
-    searchCommunity.mockResolvedValue(page({
-      items: [card({ id: 8, video_title: '第二页的视频' })],
-      total: 30,
-      page: 2,
-      total_pages: 2,
-    }))
+    searchCommunity.mockResolvedValue(
+      page({
+        items: [card({ id: 8, video_title: '第二页的视频' })],
+        total: 30,
+        page: 2,
+        total_pages: 2,
+      }),
+    )
     await next.trigger('click')
     await flushPromises()
 
@@ -306,11 +319,13 @@ describe('标签多选取并集', () => {
   test('点第二个标签不会顶掉第一个，两次都发出去', async () => {
     // 组件 `:198-201` 的注释写明用数组就是为了让「再加一个标签」真的成立：
     // 单值形态下点第二个就会顶掉第一个，用户只能先清空重来。
-    const w = await mountPage(page({
-      items: [card()],
-      total: 1,
-      total_pages: 1,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card()],
+        total: 1,
+        total_pages: 1,
+      }),
+    )
 
     await clickChip(w, '科普')
     await clickChip(w, '编程')
@@ -325,11 +340,13 @@ describe('标签多选取并集', () => {
     // 组件 `:204-208` 的注释写明清单刻意不从当前页汇总——否则选中一个之后
     // 其余标签会从筛选行里消失，而那正是这一行存在的理由。
     // 基准直接用 TAGS 的长度，不必先挂一次拿「挂载前」的数字。
-    const w = await mountPage(page({
-      items: [card()],
-      total: 1,
-      total_pages: 1,
-    }))
+    const w = await mountPage(
+      page({
+        items: [card()],
+        total: 1,
+        total_pages: 1,
+      }),
+    )
     expect(chips(w).length).toBe(TAGS.length)
 
     await clickChip(w, '科普')
@@ -366,8 +383,7 @@ describe('标签清单加载失败', () => {
     const w = mount(CommunityPage)
     await flushPromises()
 
-    expect(w.text(), '标签清单挂了却什么都不说 —— 它与「社区里还没有标签」长得一模一样')
-      .toContain('标签列表加载失败')
+    expect(w.text(), '标签清单挂了却什么都不说 —— 它与「社区里还没有标签」长得一模一样').toContain('标签列表加载失败')
     expect(w.text()).toContain('boom')
     // 标签只是筛选器。它挂了不该把内容一起吃掉 —— 那是另一种故障。
     expect(w.text(), '标签挂了把整个列表也吃掉了，用户看不到任何视频').toContain('机器学习入门')
@@ -381,8 +397,7 @@ describe('标签清单加载失败', () => {
     await flushPromises()
 
     // 这条是上一条的对照。只有两条都在，才证明界面分得清「挂了」与「没有」。
-    expect(w.text(), '真的没有标签却说「加载失败」—— 用户会反复去点那个不存在的重试')
-      .not.toContain('标签列表加载失败')
+    expect(w.text(), '真的没有标签却说「加载失败」—— 用户会反复去点那个不存在的重试').not.toContain('标签列表加载失败')
     expect(w.text(), '没有标签时列表也不该消失').toContain('机器学习入门')
   })
 
@@ -467,33 +482,41 @@ describe('清除筛选', () => {
     await clearBtn(w).trigger('click')
     await flushPromises()
 
-    expect(w.find('input[type="search"]').element.value, '输入框里还留着上次的关键词')
-      .toBe('')
+    expect(w.find('input[type="search"]').element.value, '输入框里还留着上次的关键词').toBe('')
   })
 })
 
 describe('未登录时搜索被挡、列表保留', () => {
   test('searchCommunity 回 needLogin：显示登录提示，且仍能看到公开列表', async () => {
     searchCommunity.mockResolvedValue({ needLogin: true })
-    fetchCommunityVideos.mockResolvedValue(page({
-      items: [card()], total: 1, page: 1, total_pages: 1,
-    }))
+    fetchCommunityVideos.mockResolvedValue(
+      page({
+        items: [card()],
+        total: 1,
+        page: 1,
+        total_pages: 1,
+      }),
+    )
     const w = mount(CommunityPage)
     await flushPromises()
 
     expect(w.text(), '访客搜索失败后界面上什么都没说').toContain('搜索与视频详情需要登录后使用')
     // 关键：搜索被挡不等于整个页面不能用 —— 公开列表必须还在。
-    expect(w.text(), '未登录把整个社区页也弄空了 —— 访客什么都看不到')
-      .toContain('机器学习入门')
+    expect(w.text(), '未登录把整个社区页也弄空了 —— 访客什么都看不到').toContain('机器学习入门')
     expect(w.text()).not.toContain('社区列表加载失败')
     expect(w.text(), '被挡之后不该还渲染空状态').not.toContain('社区还是空的')
   })
 
   test('未登录时点提示里的按钮会 emit need-login', async () => {
     searchCommunity.mockResolvedValue({ needLogin: true })
-    fetchCommunityVideos.mockResolvedValue(page({
-      items: [card()], total: 1, page: 1, total_pages: 1,
-    }))
+    fetchCommunityVideos.mockResolvedValue(
+      page({
+        items: [card()],
+        total: 1,
+        page: 1,
+        total_pages: 1,
+      }),
+    )
     const w = mount(CommunityPage)
     await flushPromises()
 
@@ -505,9 +528,14 @@ describe('未登录时搜索被挡、列表保留', () => {
 
   test('被挡时自动退回公开列表，并清掉已经填进去的关键词', async () => {
     searchCommunity.mockResolvedValue({ needLogin: true })
-    fetchCommunityVideos.mockResolvedValue(page({
-      items: [card()], total: 1, page: 1, total_pages: 1,
-    }))
+    fetchCommunityVideos.mockResolvedValue(
+      page({
+        items: [card()],
+        total: 1,
+        page: 1,
+        total_pages: 1,
+      }),
+    )
     const w = mount(CommunityPage)
     await flushPromises()
     expect(fetchCommunityVideos, '被挡之后没有退回公开列表').toHaveBeenCalled()
@@ -518,8 +546,7 @@ describe('未登录时搜索被挡、列表保留', () => {
     // 断言恒真（实测 SURVIVED）。判据必须跑在**能区分两种实现的状态**上。
     const input = w.find('input[type="search"]')
     await input.setValue('机器学习')
-    expect(input.element.value, '前提不成立：关键词没填进输入框，后面那条就成了恒真')
-      .toBe('机器学习')
+    expect(input.element.value, '前提不成立：关键词没填进输入框，后面那条就成了恒真').toBe('机器学习')
 
     // ⚠️ 必须对 `<form>` 触发 submit，不能点那个 `type="submit"` 的按钮。
     // jsdom 里 click 不会走 submit 的默认行为，于是 `doSearch()` 压根没被调用
@@ -530,8 +557,9 @@ describe('未登录时搜索被挡、列表保留', () => {
     await flushPromises()
     expect(searchCommunity.mock.calls.length, '触发了 submit 却没发出第二次搜索').toBe(2)
 
-    expect(w.find('input[type="search"]').element.value,
-      '关键词还挂在输入框里 —— 用户会反复点搜索、再被挡一次').toBe('')
+    expect(w.find('input[type="search"]').element.value, '关键词还挂在输入框里 —— 用户会反复点搜索、再被挡一次').toBe(
+      '',
+    )
   })
 })
 
@@ -561,12 +589,15 @@ describe('列表渲染的条数、顺序与归属', () => {
   /** 三条各带互不相同的标题 / 链接 / 封面，才能分辨「哪条渲染成了哪条」。 */
   const three = page({
     items: [
-      card({ id: 1, video_title: '甲', video_url: 'https://v.example/a',
-        cover_url: '/u/a.jpg', tags: ['科普'] }),
-      card({ id: 2, video_title: '乙', video_url: 'https://v.example/b',
-        cover_url: '/u/b.jpg', tags: [] }),
-      card({ id: 3, video_title: '丙', video_url: 'https://v.example/c',
-        cover_url: '/u/c.jpg', tags: ['教程', '编程'] }),
+      card({ id: 1, video_title: '甲', video_url: 'https://v.example/a', cover_url: '/u/a.jpg', tags: ['科普'] }),
+      card({ id: 2, video_title: '乙', video_url: 'https://v.example/b', cover_url: '/u/b.jpg', tags: [] }),
+      card({
+        id: 3,
+        video_title: '丙',
+        video_url: 'https://v.example/c',
+        cover_url: '/u/c.jpg',
+        tags: ['教程', '编程'],
+      }),
     ],
     total: 3,
     page: 1,
@@ -579,9 +610,7 @@ describe('列表渲染的条数、顺序与归属', () => {
 
   test('服务端给几条就渲染几张卡片', async () => {
     const w = await mountPage(three)
-    expect(cardBtns(w).length,
-      '列表少渲染了 —— 用户看到的是社区不完整，而界面上没有任何东西会变红')
-      .toBe(3)
+    expect(cardBtns(w).length, '列表少渲染了 —— 用户看到的是社区不完整，而界面上没有任何东西会变红').toBe(3)
   })
 
   test('顺序与服务端给的顺序一致', async () => {
@@ -604,4 +633,3 @@ describe('列表渲染的条数、顺序与归属', () => {
     expect(srcs).toEqual(['/u/a.jpg', '/u/b.jpg', '/u/c.jpg'])
   })
 })
-

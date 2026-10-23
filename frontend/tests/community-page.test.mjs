@@ -23,8 +23,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import axios from 'axios'
 
-import { fetchCommunityVideos, searchCommunity } from '../src/api/community.js'
-import { fetchChatSession } from '../src/api/history.js'
+import { fetchCommunityVideos, searchCommunity } from '../src/api/community.ts'
+import { fetchChatSession } from '../src/api/history.ts'
+import { sliceBetween } from './helpers/source-slice.mjs'
 
 /** 归一化行尾符：本仓库是 CRLF，直接按 \n 切块会切空。 */
 function read(...parts) {
@@ -39,20 +40,23 @@ function read(...parts) {
  * 那些说明文字会把自己判成违规——断言被自己的注释推翻是可笑的。
  */
 function stripComments(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
-        // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
-        // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
-    .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
-    .join('\n')
+  return (
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
+      // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
+      // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
+      .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+      .join('\n')
+  )
 }
 
-const communityApi = read('../src/api/community.js')
 const appVue = read('../src/App.vue')
 const summaryVue = read('../src/components/VideoSummary.vue')
 const pageVue = read('../src/components/CommunityPage.vue')
+const homeView = read('../src/views/HomeView.vue')
+const routerTs = read('../src/router/index.ts')
 
 function jsonResponse(body) {
   return new Response(JSON.stringify(body), {
@@ -78,12 +82,17 @@ beforeEach(() => {
   axios.defaults.adapter = 'fetch'
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
 })
-
 
 /**
  * 记下请求打到哪、带没带 Authorization —— 接线断言靠这个而不是靠实现细节。
@@ -97,15 +106,12 @@ function spyFetch(responder) {
   globalThis.fetch = async (input, init = {}) => {
     const asRequest = input instanceof Request
     const url = asRequest ? input.url : String(input)
-    const auth = asRequest
-      ? input.headers.get('authorization')
-      : (init.headers?.Authorization ?? null)
+    const auth = asRequest ? input.headers.get('authorization') : (init.headers?.Authorization ?? null)
     calls.push({ url, auth })
     return responder(url, auth)
   }
   return calls
 }
-
 
 describe('社区列表 · 未登录也能取', () => {
   test('不因缺 token 就跳过请求：列表是公开的', async () => {
@@ -132,7 +138,6 @@ describe('社区列表 · 未登录也能取', () => {
   })
 })
 
-
 describe('搜索 · 401 被翻译成 needLogin，而不是抛异常', () => {
   test('未登录搜索返回 needLogin 而不是把 401 变成报错', async () => {
     spyFetch(() => new Response(JSON.stringify({ detail: '请先登录' }), { status: 401 }))
@@ -150,8 +155,7 @@ describe('搜索 · 401 被翻译成 needLogin，而不是抛异常', () => {
 
   test('非 401 的失败照常抛出：别把真故障一起吞成「请登录」', async () => {
     spyFetch(() => new Response('boom', { status: 500 }))
-    await assert.rejects(() => searchCommunity({ q: 'x' }),
-      '服务端故障被吞成了 needLogin')
+    await assert.rejects(() => searchCommunity({ q: 'x' }), '服务端故障被吞成了 needLogin')
   })
 
   test('关键词与标签都作为查询参数传出去', async () => {
@@ -163,7 +167,6 @@ describe('搜索 · 401 被翻译成 needLogin，而不是抛异常', () => {
   })
 })
 
-
 /**
  * 社区页组件：列表只渲染封面 / 标题 / 标签。
  *
@@ -171,10 +174,7 @@ describe('搜索 · 401 被翻译成 needLogin，而不是抛异常', () => {
  */
 describe('CommunityPage 列表只渲染卡片字段', () => {
   const pageCode = stripComments(pageVue)
-  const cardBlock = pageCode.slice(
-    pageCode.indexOf('<ul v-else class="grid gap-4'),
-    pageCode.indexOf('<!-- 翻页 -->'),
-  )
+  const cardBlock = pageCode.slice(pageCode.indexOf('<ul v-else class="grid gap-4'), pageCode.indexOf('<!-- 翻页 -->'))
 
   test('列表区渲染封面、标题、标签', () => {
     assert.notEqual(cardBlock.length, 0, '没找到卡片列表区')
@@ -190,21 +190,22 @@ describe('CommunityPage 列表只渲染卡片字段', () => {
     assert.notEqual(cardBlock.length, 0, '卡片列表区切片是空的（锚点变了？）')
     for (const field of ['summary', 'mindmap', 'subtitle']) {
       assert.doesNotMatch(
-        cardBlock, new RegExp(`item\\.${field}`),
+        cardBlock,
+        new RegExp(`item\\.${field}`),
         `列表区读了 item.${field}：内容字段不该出现在公开列表的渲染里`,
       )
     }
   })
 
   test('翻页与标签筛选都接到了 load 上', () => {
-    assert.match(pageCode, /function goPage\(n\)/)
+    assert.match(pageCode, /function goPage\(/)
     assert.match(pageCode, /@click="goPage\(page \+ 1\)"/, '下一页按钮没接上')
 
     // goPage 的两条也得落到函数体里。只查函数名等于什么都没断——
     // 删掉 goPage 里的 load()，界面的形态是「点了下一页没反应」：
     // 不报错、页码不动、内容也不换。那与「onTagsChange 忘了 load」
     // 是同一类失败，而 onTagsChange 那三条是落到函数体的，goPage 不是。
-    const goPageAt = pageCode.indexOf('function goPage(n)')
+    const goPageAt = pageCode.indexOf('function goPage(')
     const goPageBody = pageCode.slice(goPageAt, pageCode.indexOf('}', goPageAt))
     assert.notEqual(goPageBody.length, 0, 'goPage 的函数体没找到')
     assert.match(goPageBody, /page\.value = n/, '翻页没把页码写回去')
@@ -215,7 +216,7 @@ describe('CommunityPage 列表只渲染卡片字段', () => {
     // 这里只断函数名等于什么都没断 —— 页码不复位、忘了 load，界面上都是
     // 「筛选点了没反应」，所以三条都得落到函数体里。
     assert.match(pageCode, /@update:selected="onTagsChange"/, '标签行没接上 onTagsChange')
-    const start = pageCode.indexOf('function onTagsChange(next)')
+    const start = pageCode.indexOf('function onTagsChange(')
     assert.notEqual(start, -1, '没有 onTagsChange')
     const body = pageCode.slice(start, pageCode.indexOf('}', start))
     assert.match(body, /activeTags\.value = next/, '新选的标签没写进去')
@@ -229,7 +230,6 @@ describe('CommunityPage 列表只渲染卡片字段', () => {
   })
 })
 
-
 /**
  * 两条「别让用户看到假象」的行为。
  *
@@ -241,15 +241,9 @@ describe('CommunityPage 把故障与空结果分开', () => {
   const pageCode = stripComments(pageVue)
 
   test('catch 记录故障原因，而不是把列表清空就完事', () => {
-    const catchBlock = pageCode.slice(
-      pageCode.indexOf('} catch'),
-      pageCode.indexOf('} finally'),
-    )
+    const catchBlock = pageCode.slice(pageCode.indexOf('} catch'), pageCode.indexOf('} finally'))
     assert.notEqual(catchBlock.length, 0, '没找到 load 的 catch 分支')
-    assert.match(
-      catchBlock, /loadError/,
-      'catch 分支没有记录 loadError：一次 500 会被渲染成「社区还是空的」',
-    )
+    assert.match(catchBlock, /loadError/, 'catch 分支没有记录 loadError：一次 500 会被渲染成「社区还是空的」')
   })
 
   test('故障态排在空状态之前', () => {
@@ -258,26 +252,18 @@ describe('CommunityPage 把故障与空结果分开', () => {
     assert.notEqual(failIdx, -1, '模板里没有故障态分支')
     assert.ok(
       failIdx < emptyIdx,
-      '故障态必须排在空状态之前，否则 loadError 时 items 为空，'
-      + 'v-else-if 会先命中「社区还是空的」那一支',
+      '故障态必须排在空状态之前，否则 loadError 时 items 为空，' + 'v-else-if 会先命中「社区还是空的」那一支',
     )
   })
 
   test('空状态的文案没有被故障分支借用', () => {
-    const catchBlock = pageCode.slice(
-      pageCode.indexOf('} catch'),
-      pageCode.indexOf('} finally'),
-    )
+    const catchBlock = pageCode.slice(pageCode.indexOf('} catch'), pageCode.indexOf('} finally'))
     // 同上：切片为空时 doesNotMatch 恒真，守卫必须跟着切片走，
     // 不能指望别处有一条替它守着。
     assert.notEqual(catchBlock.length, 0, 'catch 块切片是空的（锚点变了？）')
-    assert.doesNotMatch(
-      catchBlock, /emptyText|emptyHint/,
-      'catch 里动了空状态文案：故障与「真的没有」会显示同一句话',
-    )
+    assert.doesNotMatch(catchBlock, /emptyText|emptyHint/, 'catch 里动了空状态文案：故障与「真的没有」会显示同一句话')
   })
 })
-
 
 /**
  * 短查询的真相由后端说。
@@ -300,13 +286,12 @@ describe('短查询提示由后端说了算', () => {
   test('前端没有把 trigram 的下限写死', () => {
     const hardcoded = pageCode.match(/length\s*<\s*3|min_chars\s*[:=]\s*3/g) || []
     assert.deepEqual(
-      hardcoded, [],
-      `前端把分词器下限写死成了 3：${JSON.stringify(hardcoded)}。`
-      + '换分词器时前后端会各说各话',
+      hardcoded,
+      [],
+      `前端把分词器下限写死成了 3：${JSON.stringify(hardcoded)}。` + '换分词器时前后端会各说各话',
     )
   })
 })
-
 
 /**
  * 最关键的一条：详情内容不得再从个人历史回填。
@@ -321,11 +306,10 @@ describe('VideoSummary 详情只走 /api/summarize', () => {
     // props 声明本身不算「使用」——它只是把 prop 接进来。
     const uses = (setup.match(/initialHistory[^\n]*/g) || [])
       .map((l) => l.trim())
-      .filter((l) => !/^initialHistory:\s*Object/.test(l))
+      .filter((l) => !/^initialHistory\s*:/.test(l))
     assert.ok(uses.length > 0, '前提不成立：initialHistory 一次也没被用到，断言无意义')
     for (const line of uses) {
-      assert.match(line, /chat_history/,
-        `initialHistory 被用在 chat_history 以外的地方：${line}`)
+      assert.match(line, /chat_history/, `initialHistory 被用在 chat_history 以外的地方：${line}`)
     }
   })
 
@@ -342,11 +326,13 @@ describe('VideoSummary 详情只走 /api/summarize', () => {
   })
 
   test('聊天记录仍按原样回填（个人数据，不属社区内容）', () => {
-    assert.match(setup, /chatHistoryList\.value = props\.initialHistory\.chat_history/,
-      '个人问答历史没被回填，问答抽屉会变空')
+    assert.match(
+      setup,
+      /chatHistoryList\.value = props\.initialHistory\.chat_history/,
+      '个人问答历史没被回填，问答抽屉会变空',
+    )
   })
 })
-
 
 describe('App.vue 接线', () => {
   const appCode = stripComments(appVue)
@@ -359,8 +345,11 @@ describe('App.vue 接线', () => {
     // 原来这里是 `const cached = await fetchHistoryByUrl(key)`，命中就把
     // cached.video_data 直接塞进 videoData 并 return。只要 `cached` 这个
     // 变量还在，就说明那条「拿到别人的内容就自己渲染」的路没走干净。
-    assert.doesNotMatch(handleParse, /\bcached\b/,
-      'by-url 的返回值仍被当成内容用：详情会绕过 /api/summarize 与社区视频表')
+    assert.doesNotMatch(
+      handleParse,
+      /\bcached\b/,
+      'by-url 的返回值仍被当成内容用：详情会绕过 /api/summarize 与社区视频表',
+    )
   })
 
   test('by-url 只被用来置提示标志', () => {
@@ -369,28 +358,32 @@ describe('App.vue 接线', () => {
     // 陌生人打开社区视频时会被判成没有，于是复用提示与重新解析按钮
     // 都永远不出现。
     assert.match(handleParse, /fetchCommunityByUrl\(key\)/)
-    assert.doesNotMatch(handleParse, /fetchHistoryByUrl/,
-      '仍在用个人解析历史判断社区里有没有这一份')
+    assert.doesNotMatch(handleParse, /fetchHistoryByUrl/, '仍在用个人解析历史判断社区里有没有这一份')
     assert.match(handleParse, /fromCache\.value\s*=/)
   })
 
   test('详情渲染仍由 VideoSummary 承担（没把组件删掉绕过去）', () => {
-    assert.match(appCode, /<VideoSummary/)
-    assert.match(appCode, /:videoUrl="currentUrl"/)
+    // 首页模板整体搬进了 HomeView，组件本身没被绕开。
+    assert.match(homeView, /<VideoSummary/)
+    assert.match(homeView, /:videoUrl="currentUrl"/)
   })
 
   test('社区页已挂上，并接了返回 / 登录 / 点开视频', () => {
-    assert.match(appCode, /<CommunityPage/)
-    assert.match(appCode, /@back="currentPage = 'home'"/)
-    assert.match(appCode, /@need-login="showAuthModal\('login'\)"/)
-    assert.match(appCode, /@open-video="openCommunityVideo"/)
+    // 组件挂在路由表上（ADR 0018），事件由 App.vue 的 listenersFor 接。
+    assert.match(routerTs, /path: '\/community'[\s\S]{0,200}component: CommunityPage/)
+    const listeners = sliceBetween(
+      appCode,
+      'function listenersFor(page: PageKey)',
+      'const viewListeners',
+      'App.vue 的 listenersFor',
+    )
+    assert.match(listeners, /back:\s*goHomeKeepingResult/, '社区页没接返回')
+    assert.match(listeners, /'need-login':\s*(?:\(\)\s*=>\s*)?showAuthModal\('login'\)/, '社区页没接登录')
+    assert.match(listeners, /'open-video':\s*openCommunityVideo/, '社区页没接点开视频')
   })
 
   test('点开社区视频先判登录，未登录走登录框', () => {
-    const open = appCode.slice(
-      appCode.indexOf('function openCommunityVideo('),
-      appCode.indexOf('function reparse('),
-    )
+    const open = appCode.slice(appCode.indexOf('function openCommunityVideo('), appCode.indexOf('function reparse('))
     assert.match(open, /isLoggedIn\(\)/)
     assert.match(open, /showAuthModal\('login'\)/)
     assert.match(open, /handleParse\(item\.video_url\)/)
@@ -403,30 +396,29 @@ describe('App.vue 接线', () => {
   })
 
   test('卡片回填失败要留痕迹，但不打断主流程', () => {
-    const publish = appCode.slice(
-      appCode.indexOf('function publishCard('),
-      appCode.indexOf('function reparse('),
-    )
+    const publish = appCode.slice(appCode.indexOf('function publishCard('), appCode.indexOf('function reparse('))
     // 这条原来断言的是 `.catch(() => {})` 这个**字面形状**——
     // 它锁的是写法不是行为，于是「静默」本身被当成了要保护的东西。
     // 工单 #17 第 2 项之后首次解析必然拿到 updated:0（那一行还没建），
     // 那个 0 是预期结果，不必报；真正该留痕的是请求本身失败。
-    assert.doesNotMatch(publish, /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/,
-      '回填失败仍然完全静默：服务端为什么不填在控制台里一个字都没有')
+    assert.doesNotMatch(
+      publish,
+      /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/,
+      '回填失败仍然完全静默：服务端为什么不填在控制台里一个字都没有',
+    )
     // 非空但无声也要挡住：`.catch(() => null)` 同样什么都没留下。
-    assert.match(publish, /console\.(warn|error)/,
-      'catch 体里必须真的记一条，而不是随便返回点什么')
-    assert.doesNotMatch(publish, /\bthrow\b/,
-      '回填失败会打断解析流程')
+    assert.match(publish, /console\.(warn|error)/, 'catch 体里必须真的记一条，而不是随便返回点什么')
+    assert.doesNotMatch(publish, /\bthrow\b/, '回填失败会打断解析流程')
   })
 })
 
-
 describe('追问会话读出口（工单 #8 补单）', () => {
   test('按 url 取当前用户的会话，返回的正是 [{question, answer}]', async () => {
-    const calls = spyFetch(() => jsonResponse({
-      chat_history: [{ question: 'B 问的', answer: '答案::B 问的' }],
-    }))
+    const calls = spyFetch(() =>
+      jsonResponse({
+        chat_history: [{ question: 'B 问的', answer: '答案::B 问的' }],
+      }),
+    )
     const turns = await fetchChatSession('https://example.com/v/shared')
 
     assert.match(calls[0].url, /\/api\/history\/chat/, '打错了端点')

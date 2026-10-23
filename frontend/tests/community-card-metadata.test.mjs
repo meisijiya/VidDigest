@@ -23,7 +23,7 @@ import { test, describe, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { summarizeVideo } from '../src/api/summarize.js'
+import { summarizeVideo } from '../src/api/summarize.ts'
 
 const DONE_STREAM = ['event: done\n', 'data: [DONE]\n']
 
@@ -42,9 +42,15 @@ function fakeStream(chunks) {
 beforeEach(() => {
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
 })
 
@@ -71,8 +77,7 @@ function stripComments(src) {
     .join('\n')
 }
 
-const summaryVue = stripComments(readFileSync(
-  new URL('../src/components/VideoSummary.vue', import.meta.url), 'utf8'))
+const summaryVue = stripComments(readFileSync(new URL('../src/components/VideoSummary.vue', import.meta.url), 'utf8'))
 
 /** 抽出一个具名函数的函数体，按大括号配平 */
 function bodyOf(src, signature) {
@@ -147,8 +152,7 @@ describe('VideoSummary 的元数据接线', () => {
     assert.ok(fn, '找不到 startSummarize')
     const args = callArgsOf(fn, 'summarizeVideo')
     assert.ok(args, '找不到 summarizeVideo 调用')
-    assert.match(args, /videoTitle:\s*props\.videoTitle/,
-      `标题没有透传：实参尾部是 ${args.slice(-160)}`)
+    assert.match(args, /videoTitle:\s*props\.videoTitle/, `标题没有透传：实参尾部是 ${args.slice(-160)}`)
   })
 
   test('封面取自 videoData.thumbnail，不是 videoData.cover', () => {
@@ -157,8 +161,7 @@ describe('VideoSummary 的元数据接线', () => {
     // 写成 videoData.cover_url 恒为 undefined，而症状是「封面永远是空的」。
     assert.ok(fn, '找不到 startSummarize')
     const args = callArgsOf(fn, 'summarizeVideo')
-    assert.match(args, /coverUrl:\s*props\.videoData\?\.thumbnail/,
-      `封面字段取错了：实参尾部是 ${args.slice(-160)}`)
+    assert.match(args, /coverUrl:\s*props\.videoData\?\.thumbnail/, `封面字段取错了：实参尾部是 ${args.slice(-160)}`)
     assert.doesNotMatch(args, /coverUrl:\s*props\.videoData\?\.cover_url/)
   })
 })

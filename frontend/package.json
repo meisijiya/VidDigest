@@ -14,7 +14,11 @@
     "preview": "vite preview",
     "test": "node --test --test-timeout=10000 \"tests/**/*.test.mjs\"",
     "test:mount": "vitest run",
-    "test:all": "npm test && npm run test:mount"
+    "test:all": "npm test && npm run test:mount",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@vueuse/core": "^14.3.0",
@@ -22,16 +26,29 @@
     "marked": "^18.0.3",
     "markmap-lib": "^0.18.12",
     "markmap-view": "^0.18.12",
-    "vue": "^3.5.32"
+    "pinia": "^4.1.0",
+    "vue": "^3.5.32",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.2.4",
     "@vitejs/plugin-vue": "^6.0.6",
     "@vue/test-utils": "^2.5.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.11.1",
+    "globals": "^16.5.0",
     "jsdom": "^29.1.1",
+    "prettier": "^3.9.10",
     "tailwindcss": "^4.2.4",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.72.0",
     "vite": "^8.0.10",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "vue-eslint-parser": "^10.4.1",
+    "vue-tsc": "^3.3.13"
   }
 }

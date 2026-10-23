@@ -7,6 +7,54 @@
  * 断流/异常时前端永远等不到，loading 卡死。
  */
 
+import type { QuotaPayload } from '../lib/quota.ts'
+
+/**
+ * 一条 SSE 事件。
+ *
+ * `data` 是 `unknown`：它来自 `JSON.parse`，运行时没有任何东西校验过它的
+ * 形状。**这里不假装它是可信的**——真正给出形状的是下面那几组
+ * `*Payload` 接口，它们描述的是**后端约定**（见 `backend/api_summarize.py`），
+ * 调用方拿到的是已经被这里按事件名分派过的具体类型。
+ */
+export interface SseEvent {
+  event: string
+  data: unknown
+}
+
+/** `ownership` 事件：这份内容当前用户能不能改写（ADR 0007）。 */
+export interface OwnershipPayload {
+  can_regenerate: boolean
+}
+
+/** 字幕分段。 */
+export interface SubtitleSegment {
+  start: number
+  end: number
+  text: string
+}
+
+/** `subtitle` 事件。回放时 `segments` 为空（社区表只存全文）。 */
+export interface SubtitlePayload {
+  has_subtitle: boolean
+  full_text: string
+  segments: SubtitleSegment[]
+}
+
+/** `mindmap` 事件。 */
+export interface MindmapPayload {
+  markdown: string
+}
+
+/** `error` 事件。 */
+export interface SseErrorPayload {
+  message: string
+  need_login?: boolean
+  need_vip?: boolean
+  reason?: string
+  byok?: boolean
+}
+
 /**
  * SSE 行解析器。状态（未消费的半行 + 当前事件名）必须跨 feed 保持，
  * 因为 `event: x` 和 `data: {...}` 常落在不同的 chunk 里。
@@ -17,7 +65,7 @@ export function createSseParser() {
 
   return {
     /** 喂入一段文本，返回本次已完整的行（最后半行留在 buffer 里等下个 chunk） */
-    feed(text) {
+    feed(text: string): string[] {
       buffer += text
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
@@ -25,7 +73,7 @@ export function createSseParser() {
     },
 
     /** 消费一行。返回 { event, data }，非事件行返回 null */
-    take(line) {
+    take(line: string): SseEvent | null {
       if (line.startsWith('event: ')) {
         currentEvent = line.slice(7).trim()
         return null
@@ -37,7 +85,7 @@ export function createSseParser() {
       try {
         return { event: currentEvent, data: JSON.parse(data) }
       } catch {
-        return { event: currentEvent, data }  // 非 JSON 负载原样透传
+        return { event: currentEvent, data } // 非 JSON 负载原样透传
       }
     },
   }
@@ -45,12 +93,33 @@ export function createSseParser() {
 
 const TOKEN_KEY = 'auth_token'
 
+/** `streamSse` 的行为开关。 */
+interface StreamOptions {
+  /** 按事件名分派负载。 */
+  route: (event: string, data: unknown) => void
+  onError?: (error: { message: string }) => void
+  onCancel?: () => void
+  onDone?: () => void
+}
+
+/** 一条 SSE 流的句柄。 */
+export interface SseStream {
+  /** 结束的 Promise。断流 / 异常 / 取消都会让它 settle。 */
+  done: Promise<void>
+  /** 用户主动停止。 */
+  cancel: () => void
+}
+
 /**
  * 读一个 SSE 端点。
  * onDone 保证被调用恰好一次：正常收到 [DONE]、流自然结束、抛异常、用户取消，四条路径都会走到。
  * 返回 { done, cancel }：done 是结束的 Promise，cancel 是用户主动停止。
  */
-function streamSse(path, payload, { route, onError, onCancel, onDone }) {
+function streamSse(
+  path: string,
+  payload: Record<string, unknown>,
+  { route, onError, onCancel, onDone }: StreamOptions,
+): SseStream {
   const parser = createSseParser()
   const controller = new AbortController()
   let cancelled = false
@@ -74,6 +143,9 @@ function streamSse(path, payload, { route, onError, onCancel, onDone }) {
         signal: controller.signal,
       })
 
+      if (!res.body) {
+        throw new Error('响应没有可读流')
+      }
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
 
@@ -90,10 +162,11 @@ function streamSse(path, payload, { route, onError, onCancel, onDone }) {
       }
     } catch (err) {
       // 主动取消不算错误：走 onCancel，让调用方区分「用户停了」和「出错了」
-      if (cancelled || err?.name === 'AbortError') onCancel?.()
-      else onError?.({ message: err.message })
+      const e = err as { name?: string; message?: string }
+      if (cancelled || e?.name === 'AbortError') onCancel?.()
+      else onError?.({ message: e?.message || '未知错误' })
     } finally {
-      finish()  // 断流 / 异常 / 取消都收尾，UI 不会永久停在 loading
+      finish() // 断流 / 异常 / 取消都收尾，UI 不会永久停在 loading
     }
   })()
 
@@ -107,6 +180,12 @@ function streamSse(path, payload, { route, onError, onCancel, onDone }) {
   }
 }
 
+/**
+ * 解析事件对应的回调名。
+ *
+ * 这张表是「事件名 → 前端回调」的**唯一**映射：前端不按事件名 if/else
+ * 拼一遍，后端加一个事件时这里加一行就够。
+ */
 const SUMMARY_ROUTES = {
   ownership: 'onOwnership',
   subtitle: 'onSubtitle',
@@ -115,12 +194,90 @@ const SUMMARY_ROUTES = {
   tags: 'onTags',
   quota: 'onQuota',
   error: 'onError',
-}
+} as const
 
 const CHAT_ROUTES = {
   answer: 'onAnswer',
   quota: 'onQuota',
   error: 'onError',
+} as const
+
+/** 解析事件（`/api/summarize`）的回调。 */
+export interface SummaryCallbacks {
+  onOwnership?: (data: OwnershipPayload) => void
+  onSubtitle?: (data: SubtitlePayload) => void
+  onSummary?: (token: string) => void
+  onMindmap?: (data: MindmapPayload) => void
+  onTags?: (data: string[]) => void
+  onQuota?: (data: QuotaPayload) => void
+  onError?: (error: { message: string }) => void
+  onCancel?: () => void
+  onDone?: () => void
+}
+
+/** 追问事件（`/api/chat`）的回调。 */
+export interface ChatCallbacks {
+  onAnswer?: (token: string) => void
+  onQuota?: (data: QuotaPayload) => void
+  onError?: (error: { message: string }) => void
+  onCancel?: () => void
+  onDone?: () => void
+}
+
+/**
+ * 内部分派用的回调形状。
+ *
+ * `payload: any` 只存在于**这一层**：负载是 `JSON.parse` 出来的，运行时
+ * 没有任何东西校验过它的形状。对外的 `SummaryCallbacks` / `ChatCallbacks`
+ * 给的是具体类型（`onTags?: (data: string[]) => void`），组件拿到的
+ * 仍然是**被类型管过的**那一份。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 见上面那段说明：负载是未校验的 JSON，any 只存在于这一层
+type RouteCallback = (payload: any) => void
+
+/**
+ * 按事件名分派负载。
+ *
+ * 事件名不在表里就没人接（后端加一个事件时，这里加一行）。
+ * 负载的形状由**调用方那侧的接口**声明（`SummaryCallbacks` 等），
+ * 这里不重复声明第二份——两份声明会各自漂移，而漂移的那份没人会红。
+ */
+function dispatch(
+  routes: Record<string, string>,
+  callbacks: SummaryCallbacks | ChatCallbacks,
+  event: string,
+  data: unknown,
+): void {
+  const name = routes[event]
+  if (!name) return
+  const fn = (callbacks as Record<string, RouteCallback | undefined>)[name]
+  if (typeof fn === 'function') fn(data)
+}
+
+/** 自带凭据（来自 lib/byok）。逐字段列举，理由见下面的注释。 */
+export interface SummarizeCredential {
+  apiKey: string
+  baseUrl?: string
+  model?: string
+}
+
+/** `summarizeVideo` 的可选项。 */
+export interface SummarizeOptions {
+  /** 覆盖社区里已有的那一份（ADR 0007）。 */
+  overwrite?: boolean
+  /** 自带凭据。 */
+  credential?: SummarizeCredential
+  /** 平台元数据（工单 #17 第 2 项）。 */
+  videoTitle?: string
+  coverUrl?: string
+}
+
+/** `chatWithVideo` 的可选项。 */
+export interface ChatOptions {
+  /** 自带凭据（工单 #9）。 */
+  credential?: SummarizeCredential
+  /** 兼容旧调用方：只给 key 不给完整凭据。 */
+  userApiKey?: string
 }
 
 /**
@@ -146,8 +303,13 @@ const CHAT_ROUTES = {
  * 取决于调用方写了什么。`videoData` 来自历史记录里存下来的 JSON，
  * 老数据里出现 `"thumbnail": null` 是完全可能的。
  */
-export function summarizeVideo(url, language, callbacks, options = {}) {
-  const payload = {
+export function summarizeVideo(
+  url: string,
+  language: string,
+  callbacks: SummaryCallbacks,
+  options: SummarizeOptions = {},
+): SseStream {
+  const payload: Record<string, unknown> = {
     url,
     language,
     overwrite: !!options.overwrite,
@@ -161,7 +323,7 @@ export function summarizeVideo(url, language, callbacks, options = {}) {
     if (cred.model) payload.model = cred.model
   }
   return streamSse('/api/summarize', payload, {
-    route: (event, data) => callbacks[SUMMARY_ROUTES[event]]?.(data),
+    route: (event, data) => dispatch(SUMMARY_ROUTES, callbacks, event, data),
     onError: callbacks.onError,
     onCancel: callbacks.onCancel,
     onDone: callbacks.onDone,
@@ -177,8 +339,13 @@ export function summarizeVideo(url, language, callbacks, options = {}) {
  * 留成可选的第 4 个参数而不是塞进 callbacks：签名改动会波及既有调用方，
  * 而凭据是「有没有都行」的东西，不该强迫不带它的调用方改写法。
  */
-export function chatWithVideo(url, question, callbacks, options = {}) {
-  const payload = { url, question }
+export function chatWithVideo(
+  url: string,
+  question: string,
+  callbacks: ChatCallbacks,
+  options: ChatOptions = {},
+): SseStream {
+  const payload: Record<string, unknown> = { url, question }
   const cred = options?.credential
   if (cred) {
     payload.user_api_key = cred.apiKey
@@ -189,7 +356,7 @@ export function chatWithVideo(url, question, callbacks, options = {}) {
     payload.user_api_key = options.userApiKey
   }
   return streamSse('/api/chat', payload, {
-    route: (event, data) => callbacks[CHAT_ROUTES[event]]?.(data),
+    route: (event, data) => dispatch(CHAT_ROUTES, callbacks, event, data),
     onError: callbacks.onError,
     onCancel: callbacks.onCancel,
     onDone: callbacks.onDone,
@@ -197,11 +364,11 @@ export function chatWithVideo(url, question, callbacks, options = {}) {
 }
 
 /** 当前剩余额度。只读，不消耗。 */
-export async function fetchQuota() {
+export async function fetchQuota(): Promise<QuotaPayload> {
   const token = localStorage.getItem(TOKEN_KEY)
   const res = await fetch('/api/quota', {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
   if (!res.ok) throw new Error('获取额度失败')
-  return res.json()
+  return (await res.json()) as QuotaPayload
 }

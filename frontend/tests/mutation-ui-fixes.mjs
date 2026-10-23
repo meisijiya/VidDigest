@@ -65,7 +65,7 @@ const MUTANTS = [
   },
   {
     name: 'M7 错误分类器恒返回第一个分支（分类形同虚设）',
-    file: join(FE, 'src/lib/errors.js'),
+    file: join(FE, 'src/lib/errors.ts'),
     from: '  if (looksLikeThrottled(err)) {',
     to: '  if (false) {',
     expect: /限流时没说清/,
@@ -148,13 +148,17 @@ const survivors = []
 const broken = []
 
 for (const m of MUTANTS) {
-  if (!existsSync(m.file)) { broken.push(`${m.name} —— 文件不存在: ${m.file}`); continue }
+  if (!existsSync(m.file)) {
+    broken.push(`${m.name} —— 文件不存在: ${m.file}`)
+    continue
+  }
   const backup = m.file + '.mutbak'
   let src
   try {
     src = readFileSync(m.file, 'utf8')
   } catch (e) {
-    broken.push(`${m.name} —— 读取失败: ${e.message}`); continue
+    broken.push(`${m.name} —— 读取失败: ${e.message}`)
+    continue
   }
   if (!src.includes(m.from)) {
     // 锚点没命中**必须**算失败。静默跳过会让「这条变异没跑过」

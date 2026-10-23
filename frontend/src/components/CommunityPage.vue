@@ -3,11 +3,23 @@
     <div class="max-w-4xl mx-auto px-4 sm:px-6 py-8">
       <!-- 页头 -->
       <div class="flex items-center gap-3 mb-6">
-        <button @click="$emit('back')"
-          class="w-9 h-9 rounded-xl bg-panel border border-line flex items-center justify-center
-                 text-gray-500 hover:text-gray-800 hover:border-gray-300 transition-colors">
-          <svg class="w-4.5 h-4.5" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>
+        <button
+          @click="$emit('back')"
+          class="w-9 h-9 rounded-xl bg-panel border border-line flex items-center justify-center text-gray-500 hover:text-gray-800 hover:border-gray-300 transition-colors"
+        >
+          <svg
+            class="w-4.5 h-4.5"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M19 12H5" />
+            <path d="M12 19l-7-7 7-7" />
           </svg>
         </button>
         <div>
@@ -20,42 +32,64 @@
            列表本来就不需要登录，把搜索入口藏起来反而让人以为没有搜索。 -->
       <form @submit.prevent="doSearch" class="flex flex-wrap items-center gap-2 mb-4">
         <div class="relative flex-1 min-w-[220px]">
-          <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+          <svg
+            class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="11" cy="11" r="8" />
+            <path d="M21 21l-4.35-4.35" />
           </svg>
-          <input v-model="keyword" type="search"
+          <input
+            v-model="keyword"
+            type="search"
             placeholder="搜视频名称关键词，或粘贴完整视频链接"
-            class="w-full pl-9 pr-3 py-2 rounded-xl bg-panel border border-line text-sm
-                   text-gray-800 placeholder-gray-400 focus:border-blue-200 focus:outline-none" />
+            class="w-full pl-9 pr-3 py-2 rounded-xl bg-panel border border-line text-sm text-gray-800 placeholder-gray-400 focus:border-blue-200 focus:outline-none"
+          />
         </div>
-        <button type="submit" :disabled="searching"
-          class="px-4 py-2 rounded-xl bg-blue text-on-primary text-sm font-medium
-                 hover:bg-blue-600 transition-colors disabled:opacity-50">
+        <button
+          type="submit"
+          :disabled="searching"
+          class="px-4 py-2 rounded-xl bg-blue text-on-primary text-sm font-medium hover:bg-blue-600 transition-colors disabled:opacity-50"
+        >
           {{ searching ? '搜索中...' : '搜索' }}
         </button>
-        <button v-if="activeQuery || activeTags.length" type="button" @click="clearSearch"
-          class="px-3 py-2 rounded-xl text-xs text-gray-400 hover:text-gray-700
-                 hover:bg-panel transition-colors">
+        <button
+          v-if="activeQuery || activeTags.length"
+          type="button"
+          @click="clearSearch"
+          class="px-3 py-2 rounded-xl text-xs text-gray-400 hover:text-gray-700 hover:bg-panel transition-colors"
+        >
           清除
         </button>
       </form>
 
       <!-- 搜索需登录：明确说清是登录问题，不是搜索坏了 -->
-      <div v-if="needLogin" class="mb-4 flex items-center gap-3 rounded-xl px-4 py-2.5
-           bg-amber-50 border border-amber-100 text-xs text-amber-700">
+      <div
+        v-if="needLogin"
+        class="mb-4 flex items-center gap-3 rounded-xl px-4 py-2.5 bg-amber-50 border border-amber-100 text-xs text-amber-700"
+      >
         <span>搜索与视频详情需要登录后使用</span>
-        <button @click="$emit('need-login')"
-          class="ml-auto px-3 py-1 rounded-lg bg-panel border border-amber-200 font-medium
-                 hover:bg-amber-100 transition-colors">去登录</button>
+        <button
+          @click="$emit('need-login')"
+          class="ml-auto px-3 py-1 rounded-lg bg-panel border border-amber-200 font-medium hover:bg-amber-100 transition-colors"
+        >
+          去登录
+        </button>
       </div>
 
       <!-- 短查询必然召回 0（trigram 滑窗至少 3 字符）。
            把这个边界说出来，否则「搜不到」与「社区里没有」长得一模一样。 -->
-      <div v-if="tooShort" class="mb-4 rounded-xl px-4 py-2.5 bg-amber-50 border
-           border-amber-100 text-xs text-amber-700">
-        关键词「{{ tooShort.q }}」不足 {{ tooShort.min }} 个字符，全文检索
-        至少需要 {{ tooShort.min }} 个——补全一点再搜。
+      <div
+        v-if="tooShort"
+        class="mb-4 rounded-xl px-4 py-2.5 bg-amber-50 border border-amber-100 text-xs text-amber-700"
+      >
+        关键词「{{ tooShort.q }}」不足 {{ tooShort.min }} 个字符，全文检索 至少需要
+        {{ tooShort.min }} 个——补全一点再搜。
       </div>
 
       <!-- 标签筛选：选项来自服务端完整清单（/api/community/tags），取一次后常驻。
@@ -64,19 +98,29 @@
       <div v-if="tagOptions.length || tagLoadError" class="mb-5">
         <!-- 加载失败要说出来：静默变成一条空标签行，和「社区里还没有标签」
              长得一模一样，用户会以为是自己筛出来的。 -->
-        <div v-if="tagLoadError" class="mb-2 flex items-center gap-3 rounded-xl px-3 py-2
-             bg-amber-50 border border-amber-100 text-xs text-amber-700">
+        <div
+          v-if="tagLoadError"
+          class="mb-2 flex items-center gap-3 rounded-xl px-3 py-2 bg-amber-50 border border-amber-100 text-xs text-amber-700"
+        >
           <span>标签列表加载失败：{{ tagLoadError }}</span>
-          <button @click="loadTags"
-            class="ml-auto px-2.5 py-1 rounded-lg bg-panel border border-amber-200 font-medium
-                   hover:bg-amber-100 transition-colors">重试</button>
+          <button
+            @click="loadTags"
+            class="ml-auto px-2.5 py-1 rounded-lg bg-panel border border-amber-200 font-medium hover:bg-amber-100 transition-colors"
+          >
+            重试
+          </button>
         </div>
         <div v-if="tagOptions.length">
-          <TagFilterRow :tags="tagOptions" :selected="activeTags" multiple show-count
-            all-label="全部" label="社区标签筛选" @update:selected="onTagsChange" />
-          <p class="mt-1 text-[11px] font-pixel text-gray-400">
-            可多选，取并集（命中任一标签即列出）
-          </p>
+          <TagFilterRow
+            :tags="tagOptions"
+            :selected="activeTags"
+            multiple
+            show-count
+            all-label="全部"
+            label="社区标签筛选"
+            @update:selected="onTagsChange"
+          />
+          <p class="mt-1 text-[11px] font-pixel text-gray-400">可多选，取并集（命中任一标签即列出）</p>
         </div>
       </div>
 
@@ -91,8 +135,12 @@
       <div v-else-if="loadError" class="flex flex-col items-center justify-center py-24">
         <p class="text-sm mb-1 text-red-500">社区列表加载失败</p>
         <p class="text-xs text-gray-400">{{ loadError }}</p>
-        <button @click="load" class="mt-4 px-3 py-1.5 rounded-lg bg-panel border border-line
-                text-xs text-gray-500 hover:border-gray-300 transition-colors">重试</button>
+        <button
+          @click="load"
+          class="mt-4 px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500 hover:border-gray-300 transition-colors"
+        >
+          重试
+        </button>
       </div>
 
       <!-- 空状态 -->
@@ -113,20 +161,34 @@
                键盘能聚焦、回车能触发、屏幕阅读器会念成可点击。
                之前 div + @click 让卡片「看起来能点但点不动」——用户
                按了空白处没反应，只能以为功能坏了。 -->
-          <button type="button" @click="openDetail(item)"
-            class="group w-full h-full text-left bg-panel rounded-2xl border border-line
-                   hover:border-blue-200 hover:shadow-md transition-all duration-200
-                   active:scale-[0.995] focus:outline-none focus-visible:ring-2
-                   focus-visible:ring-blue-400 overflow-hidden">
+          <button
+            type="button"
+            @click="openDetail(item)"
+            class="group w-full h-full text-left bg-panel rounded-2xl border border-line hover:border-blue-200 hover:shadow-md transition-all duration-200 active:scale-[0.995] focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 overflow-hidden"
+          >
             <div class="flex gap-4 p-4">
-              <img v-if="item.cover_url" :src="proxyThumbnail(item.cover_url)"
-                :alt="item.video_title || '视频封面'" loading="lazy"
-                class="w-28 h-20 rounded-xl object-cover bg-panel border border-line flex-shrink-0" />
-              <div v-else
-                class="w-28 h-20 rounded-xl bg-blue-50 border border-line flex-shrink-0
-                       flex items-center justify-center">
-                <svg class="w-6 h-6 text-blue-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+              <img
+                v-if="item.cover_url"
+                :src="proxyThumbnail(item.cover_url)"
+                :alt="item.video_title || '视频封面'"
+                loading="lazy"
+                class="w-28 h-20 rounded-xl object-cover bg-panel border border-line flex-shrink-0"
+              />
+              <div
+                v-else
+                class="w-28 h-20 rounded-xl bg-blue-50 border border-line flex-shrink-0 flex items-center justify-center"
+              >
+                <svg
+                  class="w-6 h-6 text-blue-300"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polygon points="23 7 16 12 23 17 23 7" />
+                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
                 </svg>
               </div>
               <div class="flex-1 min-w-0">
@@ -135,9 +197,12 @@
                 </h3>
                 <p class="text-xs font-pixel text-gray-400 truncate mt-1">{{ item.video_url }}</p>
                 <div v-if="item.tags.length" class="flex flex-wrap gap-1.5 mt-2">
-                  <span v-for="tag in item.tags" :key="tag"
-                    class="text-[10px] font-pixel bg-blue-50 text-blue-400 border border-blue-100
-                           px-1.5 py-0.5 rounded font-medium">{{ tag }}</span>
+                  <span
+                    v-for="tag in item.tags"
+                    :key="tag"
+                    class="text-[10px] font-pixel bg-blue-50 text-blue-400 border border-blue-100 px-1.5 py-0.5 rounded font-medium"
+                    >{{ tag }}</span
+                  >
                 </div>
               </div>
             </div>
@@ -147,27 +212,36 @@
 
       <!-- 翻页 -->
       <div v-if="totalPages > 1" class="flex items-center justify-center gap-3 mt-6">
-        <button @click="goPage(page - 1)" :disabled="page <= 1 || loading"
-          class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
-                 hover:border-gray-300 transition-colors disabled:opacity-40">上一页</button>
+        <button
+          @click="goPage(page - 1)"
+          :disabled="page <= 1 || loading"
+          class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500 hover:border-gray-300 transition-colors disabled:opacity-40"
+        >
+          上一页
+        </button>
         <span class="text-xs text-gray-400 font-pixel">{{ page }} / {{ totalPages }}</span>
-        <button @click="goPage(page + 1)" :disabled="page >= totalPages || loading"
-          class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500
-                 hover:border-gray-300 transition-colors disabled:opacity-40">下一页</button>
+        <button
+          @click="goPage(page + 1)"
+          :disabled="page >= totalPages || loading"
+          class="px-3 py-1.5 rounded-lg bg-panel border border-line text-xs text-gray-500 hover:border-gray-300 transition-colors disabled:opacity-40"
+        >
+          下一页
+        </button>
       </div>
     </div>
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { fetchCommunityVideos, searchCommunity, fetchCommunityTags } from '../api/community.js'
-import { tagsToQuery } from '../lib/tag-filter.js'
+import { fetchCommunityVideos, searchCommunity, fetchCommunityTags } from '../api/community.ts'
+import type { CommunityCard, CommunityList, CommunityTag } from '../api/community.ts'
+import { tagsToQuery } from '../lib/tag-filter.ts'
 import TagFilterRow from './TagFilterRow.vue'
 
 const emit = defineEmits(['back', 'need-login', 'open-video'])
 
-const items = ref([])
+const items = ref<CommunityCard[]>([])
 const total = ref(0)
 const totalPages = ref(0)
 const page = ref(1)
@@ -188,7 +262,7 @@ const loadError = ref('')
  * 所以后端会把这个边界一起返回（q_too_short / min_chars）。
  * 不说的话，「搜机器」和「社区里没有机器」在界面上完全一样。
  */
-const tooShort = ref(null)
+const tooShort = ref<{ q: string; min: number } | null>(null)
 
 /** 生效中的关键词：空串表示未按关键词筛选。 */
 const activeQuery = ref('')
@@ -199,14 +273,14 @@ const keyword = ref('')
  * 用数组而不是单值，是为了让「再加一个标签」真的成立：单值形态下点第二个
  * 就会顶掉第一个，用户只能先清空重来。
  */
-const activeTags = ref([])
+const activeTags = ref<string[]>([])
 
 /**
  * 标签选项：服务端给的**完整**清单，取一次后常驻。
  * 刻意不从当前页卡片汇总——那样翻页或选中某个标签之后，其余标签会从
  * 筛选行里消失，而「选择之后标签显示不减少」正是这一行存在的理由。
  */
-const tagOptions = ref([])
+const tagOptions = ref<CommunityTag[]>([])
 
 /**
  * 标签清单加载失败的原因。刻意与「真的还没有标签」分开：两者都表现为
@@ -216,15 +290,13 @@ const tagLoadError = ref('')
 
 const hasFilter = computed(() => Boolean(activeQuery.value) || activeTags.value.length > 0)
 const emptyText = computed(() => (hasFilter.value ? '没有匹配的内容' : '社区还是空的'))
-const emptyHint = computed(() => (hasFilter.value
-  ? '换个关键词，或按标签浏览'
-  : '第一个解析视频的人会把它放进来'))
+const emptyHint = computed(() => (hasFilter.value ? '换个关键词，或按标签浏览' : '第一个解析视频的人会把它放进来'))
 
 /**
  * 缩略图走本站代理：视频站普遍有防盗链，直连会返回一片灰。
  * 封面地址来自社区卡片（可被回填），因此仍然经代理而不是浏览器直取。
  */
-function proxyThumbnail(url) {
+function proxyThumbnail(url: string) {
   if (!url) return ''
   if (url.startsWith('/')) return url
   return `/api/proxy/thumbnail?url=${encodeURIComponent(url)}`
@@ -236,7 +308,10 @@ async function load() {
   tooShort.value = null
   try {
     const res = await searchCommunity({
-      q: activeQuery.value, tag: tagsToQuery(activeTags.value), page: page.value, pageSize,
+      q: activeQuery.value,
+      tag: tagsToQuery(activeTags.value),
+      page: page.value,
+      pageSize,
     })
     if (res.needLogin) {
       // 未登录：搜索不可用，退回公开列表。
@@ -245,18 +320,25 @@ async function load() {
       activeQuery.value = ''
       keyword.value = ''
       const list = await fetchCommunityVideos({
-        page: page.value, pageSize, tag: tagsToQuery(activeTags.value),
+        page: page.value,
+        pageSize,
+        tag: tagsToQuery(activeTags.value),
       })
       applyList(list)
       return
     }
     needLogin.value = false
     applyList(res)
-    if (res.q_too_short) tooShort.value = { q: activeQuery.value, min: res.min_chars }
+    // 只有后端真的判了「太短」并且给出了下限才提示。
+    // 少了下限那次不提示：界面上写「不足 undefined 个字符」比不提示更糟。
+    if (res.q_too_short && res.min_chars !== undefined) {
+      tooShort.value = { q: activeQuery.value, min: res.min_chars }
+    }
   } catch (e) {
     // 不再静默变成空列表：故障要说出来，否则用户分不清
     // 「社区没内容」和「这次请求挂了」。
-    loadError.value = (e && e.message) || '加载失败'
+    const err = e as { message?: string }
+    loadError.value = err.message || '加载失败'
     items.value = []
     total.value = 0
     totalPages.value = 0
@@ -265,7 +347,7 @@ async function load() {
   }
 }
 
-function applyList(res) {
+function applyList(res: CommunityList) {
   items.value = res.items || []
   total.value = res.total || 0
   totalPages.value = res.total_pages || 0
@@ -292,7 +374,7 @@ function clearSearch() {
  * 标签选择变化。清单是常驻的，所以这一步只改选中集合与页码——
  * chips 一个都不会少，也不用重新去拉清单。
  */
-function onTagsChange(next) {
+function onTagsChange(next: string[]) {
   activeTags.value = next
   page.value = 1
   load()
@@ -304,12 +386,12 @@ async function loadTags() {
   try {
     tagOptions.value = await fetchCommunityTags()
   } catch (e) {
-    tagLoadError.value = (e && e.message) || '加载失败'
+    tagLoadError.value = (e as { message?: string }).message || '加载失败'
     tagOptions.value = []
   }
 }
 
-function goPage(n) {
+function goPage(n: number) {
   if (n < 1 || (totalPages.value && n > totalPages.value)) return
   page.value = n
   load()
@@ -325,7 +407,7 @@ function goPage(n) {
  * 社区里已有结果时原样回放，不调模型也不扣额度；还没有才真正解析。
  * 因此不存在「详情从个人历史取」的第二条路径。
  */
-function openDetail(item) {
+function openDetail(item: CommunityCard) {
   emit('open-video', item)
 }
 

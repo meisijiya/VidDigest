@@ -39,12 +39,18 @@ import assert from 'node:assert/strict'
  */
 export function sliceBetween(src, startAnchor, endAnchor, label) {
   const start = src.indexOf(startAnchor)
-  assert.ok(start >= 0, `${label}：找不到起始锚点 ${JSON.stringify(startAnchor)} —— `
-    + '锚点多半是重命名/挪位置造成的，改判据前先确认这条要守的行为还在')
+  assert.ok(
+    start >= 0,
+    `${label}：找不到起始锚点 ${JSON.stringify(startAnchor)} —— ` +
+      '锚点多半是重命名/挪位置造成的，改判据前先确认这条要守的行为还在',
+  )
   const from = start + startAnchor.length
   const end = src.indexOf(endAnchor, from)
-  assert.ok(end >= 0, `${label}：起始锚点之后找不到结束锚点 ${JSON.stringify(endAnchor)} —— `
-    + '要么它被挪到了起始锚点之前，要么这块的写法整体变了')
+  assert.ok(
+    end >= 0,
+    `${label}：起始锚点之后找不到结束锚点 ${JSON.stringify(endAnchor)} —— ` +
+      '要么它被挪到了起始锚点之前，要么这块的写法整体变了',
+  )
   return src.slice(start, end)
 }
 
@@ -69,23 +75,96 @@ export function sliceBetween(src, startAnchor, endAnchor, label) {
  * @param {string} src   已归一化行尾的源码
  * @param {string} name  函数名（不带 `function ` 前缀）
  */
+
+/**
+ * 参数列表之后，函数体的 `{` 在哪。
+ *
+ * TypeScript 允许写返回类型：`function f(): { a: string } { ... }`。
+ * 那里紧跟参数列表的第一个 `{` 是**返回类型**的花括号，不是函数体 ——
+ * 直接拿它当函数体起点，抽出来的是一段签名，断言对象根本不在里面，
+ * 于是每条断言恒红，而红的原因不在被测代码上。
+ *
+ * 规则：
+ * - 返回类型里的对象字面量（含 `Promise<{...}>` 这种带尖括号的）先配平跳过；
+ * - 跳过一个花括号块之后如果**又**紧跟一个 `{`，那前一个是类型、后一个是函数体；
+ * - 尖括号（泛型）里的花括号属于类型，不算函数体。
+ */
+function findBodyStart(src, afterParams, name) {
+  let i = afterParams + 1
+  while (i < src.length && /\s/.test(src[i])) i += 1
+  if (src[i] === ':') {
+    i += 1
+    let angle = 0
+    while (i < src.length) {
+      const ch = src[i]
+      if (ch === '<') {
+        angle += 1
+        i += 1
+        continue
+      }
+      if (ch === '>') {
+        angle -= 1
+        i += 1
+        continue
+      }
+      if (ch === '{') {
+        if (angle > 0) {
+          let d = 0
+          for (; i < src.length; i += 1) {
+            if (src[i] === '{') d += 1
+            else if (src[i] === '}') {
+              d -= 1
+              if (d === 0) {
+                i += 1
+                break
+              }
+            }
+          }
+          continue
+        }
+        let d = 0
+        let end = -1
+        for (let j = i; j < src.length; j += 1) {
+          if (src[j] === '{') d += 1
+          else if (src[j] === '}') {
+            d -= 1
+            if (d === 0) {
+              end = j
+              break
+            }
+          }
+        }
+        let k = end + 1
+        while (k < src.length && /\s/.test(src[k])) k += 1
+        if (src[k] === '{') return k
+        return i
+      }
+      i += 1
+    }
+  }
+  while (i < src.length && /\s/.test(src[i])) i += 1
+  assert.ok(i < src.length && src[i] === '{', `${name} 的参数列表之后找不到函数体起始的 {`)
+  return i
+}
+
 export function extractFn(src, name) {
   const at = src.indexOf(`function ${name}(`)
   assert.ok(at > 0, `抽不出 ${name} —— 函数改名了？`)
   const paren = src.indexOf('(', at)
   let pDepth = 0
-  let bodyStart = -1
+  let afterParams = -1
   for (let i = paren; i < src.length; i += 1) {
     if (src[i] === '(') pDepth += 1
     else if (src[i] === ')') {
       pDepth -= 1
       if (pDepth === 0) {
-        bodyStart = src.indexOf('{', i)
+        afterParams = i
         break
       }
     }
   }
-  assert.ok(bodyStart > 0, `${name} 的参数列表没配平，或找不到函数体起始的 {`)
+  assert.ok(afterParams > 0, `${name} 的参数列表没配平`)
+  const bodyStart = findBodyStart(src, afterParams, name)
   let depth = 0
   for (let j = bodyStart; j < src.length; j += 1) {
     if (src[j] === '{') depth += 1

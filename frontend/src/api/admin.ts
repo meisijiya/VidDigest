@@ -1,11 +1,12 @@
 import axios from 'axios'
 
-import { toItems, toModelItem } from './models.js'
+import { toItems, toModelItem } from './models.ts'
+import type { ModelItem } from './models.ts'
 
 /**
  * 管理端接口。**需登录且是管理员**（服务端 `require_admin`）。
  *
- * 认证实例的写法与 `api/community.js` 一致：token 从 `auth_token` 取，
+ * 认证实例的写法与 `api/community.ts` 一致：token 从 `auth_token` 取，
  * 没有就不发 Authorization 头（而不是发一个空的 Bearer）。
  */
 function client() {
@@ -25,16 +26,22 @@ function client() {
  *
  * `enabled` 同样是 0 / 1 数字，与库表和接口口径一致。
  */
-export function toAdminModelItem(raw) {
+export interface AdminModelItem extends ModelItem {
+  enabled: 0 | 1
+  sortOrder: number
+}
+
+export function toAdminModelItem(raw: unknown): AdminModelItem {
+  const row = (raw ?? {}) as Record<string, unknown>
   return {
     ...toModelItem(raw),
-    enabled: Number(raw?.enabled) ? 1 : 0,
-    sortOrder: Number(raw?.sort_order) || 0,
+    enabled: Number(row.enabled) ? 1 : 0,
+    sortOrder: Number(row.sort_order) || 0,
   }
 }
 
 /** 一次请求 + 一次形状检查。两种出口共用，免得两条路各断各的。 */
-async function fetchAdminItems(map) {
+async function fetchAdminItems(map: (raw: unknown) => AdminModelItem): Promise<{ items: AdminModelItem[] }> {
   const res = await client().get('/api/admin/models')
   return { items: toItems(res.data, map) }
 }
@@ -42,12 +49,10 @@ async function fetchAdminItems(map) {
 /**
  * 全部厂商清单（含 `enabled = 0` 的行）。**仅管理员**。
  *
- * 注意与 `api/models.js` 的 `fetchPublicModelCatalog` 分开：普通用户调这个
+ * 注意与 `api/models.ts` 的 `fetchPublicModelCatalog` 分开：普通用户调这个
  * 会拿到 403，BYOK 面板要用的是公开那一份。
- *
- * @returns {Promise<{ items: object[] }>} items 已转成 camelCase
  */
-export async function fetchAdminModelCatalog() {
+export async function fetchAdminModelCatalog(): Promise<{ items: AdminModelItem[] }> {
   return fetchAdminItems(toAdminModelItem)
 }
 
@@ -63,22 +68,37 @@ export async function fetchAdminModelCatalog() {
 // 组件若还按自己请求的 500 算页数，翻到第二页就会漏行 / 重复行。
 
 /** 把组件的 page/pageSize 翻成服务端的 limit/offset。page 从 1 起。 */
-function toLimitOffset(page, pageSize) {
+interface LimitOffset {
+  limit: number
+  offset: number
+}
+
+function toLimitOffset(page: number, pageSize: number): LimitOffset {
   const p = Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1
   const size = Number.isFinite(pageSize) && pageSize >= 1 ? Math.floor(pageSize) : 20
   return { limit: size, offset: (p - 1) * size }
 }
 
 /** 形状不对就抛，与 `toItems` 同一纪律：接口没按约定返回 ≠ 这一页是空的。 */
-function toPage(data, what) {
-  if (!data || !Array.isArray(data.items)) {
+interface PageEnvelope<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+  page: number
+  pageSize: number
+}
+
+function toPage<T>(data: unknown, what: string): PageEnvelope<T> {
+  const body = (data ?? {}) as { items?: T[]; total?: number; limit?: number; offset?: number }
+  if (!body || !Array.isArray(body.items)) {
     throw new Error(`${what}响应形状不对`)
   }
-  const limit = Number(data.limit) > 0 ? Number(data.limit) : data.items.length
-  const offset = Number(data.offset) >= 0 ? Number(data.offset) : 0
+  const limit = Number(body.limit) > 0 ? Number(body.limit) : body.items.length
+  const offset = Number(body.offset) >= 0 ? Number(body.offset) : 0
   return {
-    items: data.items,
-    total: Number(data.total) || 0,
+    items: body.items,
+    total: Number(body.total) || 0,
     limit,
     offset,
     page: Math.floor(offset / limit) + 1,
@@ -110,7 +130,25 @@ function toPage(data, what) {
  * ② `sort_order` 已翻成 `sortOrder`，`toAdminModelItem` 再读 `sort_order` 读不到就
  * 退回 0，于是**每保存一次就把该行排序号抹成 0**。两处单看都对，数据流上是错的。
  */
-const num = (v) => (typeof v === 'number' ? v : Number(v) || 0)
+const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v) || 0)
+
+/** 后台用户行（后端是 snake_case，这里是它在前端的 camelCase 形态）。 */
+export interface AdminUser {
+  id: number
+  email: string
+  isAdmin: boolean
+  isVip: boolean
+  vipExpireAt: string | null
+  createdAt: string
+  parseUsed: number
+  chatUsed: number
+  parseLimit: number
+  chatLimit: number
+  parseLimitOverride: number | null
+  chatLimitOverride: number | null
+  parseLimitSource: string
+  chatLimitSource: string
+}
 
 /**
  * 后台用户行 → camelCase。
@@ -119,7 +157,8 @@ const num = (v) => (typeof v === 'number' ? v : Number(v) || 0)
  * （`-1` 无限、`0` 停用，数字判定比布尔更直接）；`*_override` 保持原值，
  * 因为 `null`（=回落全局）与 `0`（=一条都不能用）是**两种不同状态**。
  */
-export function toAdminUser(r) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
+export function toAdminUser(r: Record<string, any>): AdminUser {
   return {
     id: r.id,
     email: r.email,
@@ -138,13 +177,25 @@ export function toAdminUser(r) {
   }
 }
 
+/** 后台社区行（camelCase 形态）。 */
+export interface AdminCommunityItem {
+  id: number
+  videoUrl: string
+  title: string
+  authorEmail: string
+  tags: string[]
+  status: string
+  createdAt: string
+}
+
 /**
  * 后台社区行 → camelCase。
  *
  * `status` 原样透传：组件要靠它分「占位中」与「已就绪」，
  * 翻成布尔会把两个状态压成一个。
  */
-export function toAdminCommunityItem(r) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
+export function toAdminCommunityItem(r: Record<string, any>): AdminCommunityItem {
   return {
     id: r.id,
     videoUrl: r.video_url,
@@ -156,24 +207,38 @@ export function toAdminCommunityItem(r) {
   }
 }
 
+/** 一页后台列表（分页信息 + 已翻好的 items）。 */
+export interface AdminPage<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+  page: number
+  pageSize: number
+}
+
+/** 后台用户列表的查询参数。 */
+export interface AdminUserQuery {
+  page?: number
+  pageSize?: number
+  q?: string
+}
+
 /**
  * 后台用户列表（只读）。**需管理员**。
  *
  * 返回 **items 已转成 camelCase**（`toAdminUser`）。转换在 api 层做完，
  * 组件拿到就能直接用——不再自己 `.map(toUser)`。
- *
- * @param {object} o
- * @param {number} [o.page=1]      从 1 起
- * @param {number} [o.pageSize=20]
- * @param {string} [o.q='']        按邮箱模糊匹配
- * @returns {Promise<{items: object[], total: number, page: number, pageSize: number}>}
  */
-export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' } = {}) {
+export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' }: AdminUserQuery = {}): Promise<
+  AdminPage<AdminUser>
+> {
   const { limit, offset } = toLimitOffset(page, pageSize)
   const res = await client().get('/api/admin/users', {
     params: { limit, offset, q: String(q || '').trim() },
   })
-  const page1 = toPage(res.data, '用户列表')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
+  const page1 = toPage<Record<string, any>>(res.data, '用户列表')
   return { ...page1, items: page1.items.map(toAdminUser) }
 }
 
@@ -186,12 +251,13 @@ export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' } = {}) 
  *
  * 返回 **items 已转成 camelCase**（`toAdminCommunityItem`）。
  */
-export async function fetchAdminCommunity({ page = 1, pageSize = 20 } = {}) {
+export async function fetchAdminCommunity({ page = 1, pageSize = 20 } = {}): Promise<AdminPage<AdminCommunityItem>> {
   const { limit, offset } = toLimitOffset(page, pageSize)
   const res = await client().get('/api/admin/community', {
     params: { limit, offset },
   })
-  const p = toPage(res.data, '社区记录')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
+  const p = toPage<Record<string, any>>(res.data, '社区记录')
   return { ...p, items: p.items.map(toAdminCommunityItem) }
 }
 
@@ -209,11 +275,13 @@ export async function fetchAdminCommunity({ page = 1, pageSize = 20 } = {}) {
  * 本函数**总是**把两个键都发出去，因为组件的 `toQuotaValue` 只会产出
  * `null` 或整数（留空 = 清除），语义一致。
  *
- * @returns {Promise<{user: object, note: string|null, message: string}>}
- *   `user` 是**回读**结果（服务端重查库），不是请求值的回显。
- *   `note === 'vip_not_effective'` 时本次调整此刻不生效（VIP 短路）。
+ * `user` 是**回读**结果（服务端重查库），不是请求值的回显。
+ * `note === 'vip_not_effective'` 时本次调整此刻不生效（VIP 短路）。
  */
-export async function setUserQuota(userId, { parseLimit = null, chatLimit = null } = {}) {
+export async function setUserQuota(
+  userId: number,
+  { parseLimit = null, chatLimit = null }: { parseLimit?: number | null; chatLimit?: number | null } = {},
+): Promise<{ user: AdminUser; note: string | null; message: string }> {
   const res = await client().post(`/api/admin/users/${userId}/quota`, {
     parse_limit: parseLimit ?? null,
     chat_limit: chatLimit ?? null,
@@ -223,8 +291,20 @@ export async function setUserQuota(userId, { parseLimit = null, chatLimit = null
   }
   return { user: toAdminUser(res.data.user), note: res.data.note ?? null, message: res.data.message ?? '' }
 }
+
+/** 改厂商行时可能带上的键（只带调用方真的传了的那些）。 */
+export interface AdminModelPatch {
+  label?: string
+  hint?: string
+  baseUrl?: string
+  models?: string[]
+  defaultModel?: string
+  enabled?: boolean
+  sortOrder?: number
+}
+
 /**
- * 改一个厂商行（ADR 0010「模型清单可改」）。**需管理员**。
+ * 改一个厂商行（ADR 0010「模型清单可改」）。**需管理员。**
  *
  * 两条不可省的翻译：
  *
@@ -237,12 +317,14 @@ export async function setUserQuota(userId, { parseLimit = null, chatLimit = null
  * 键名翻成 snake_case：发 camelCase 的话 pydantic 会当成「七个字段都没出现」，
  * 静默什么都不改还返回 200 —— 与 setUserQuota 那条是同一类坑。
  *
- * @returns {Promise<{item: object, platformDefault: string|null}>}
- *   `item` 是**回读**结果。`platformDefault` 让前端能当场显示
- *   「这一改会影响平台默认模型是什么」，而不是让管理员去猜。
+ * `item` 是**回读**结果。`platformDefault` 让前端能当场显示
+ * 「这一改会影响平台默认模型是什么」，而不是让管理员去猜。
  */
-export async function updateAdminModel(providerId, patch = {}) {
-  const body = {}
+export async function updateAdminModel(
+  providerId: string,
+  patch: AdminModelPatch = {},
+): Promise<{ item: AdminModelItem; platformDefault: string | null }> {
+  const body: Record<string, unknown> = {}
   if ('label' in patch) body.label = patch.label
   if ('hint' in patch) body.hint = patch.hint
   if ('baseUrl' in patch) body.base_url = patch.baseUrl
@@ -273,9 +355,13 @@ export async function updateAdminModel(providerId, patch = {}) {
  * 显式翻成布尔——后端声明的是 `bool`，发 0/1 虽然也能过，但让「这个字段
  * 是不是开关」这件事在契约上只有一个答案。
  *
- * @returns {Promise<{user: object}>} `user` 是**回读**结果，不是请求值的回显。
+ * `user` 是**回读**结果，不是请求值的回显。
  */
-export async function createAdminUser({ email, password, isAdmin = false } = {}) {
+export async function createAdminUser({
+  email,
+  password,
+  isAdmin = false,
+}: { email?: string; password?: string; isAdmin?: boolean } = {}): Promise<{ user: AdminUser }> {
   const res = await client().post('/api/admin/users', {
     email,
     password,
@@ -292,10 +378,8 @@ export async function createAdminUser({ email, password, isAdmin = false } = {})
  *
  * **只发 is_admin 一个键**：后端 `UserAdminUpdateRequest` 是 extra="forbid"，
  * 多带一个键会整个 422（其中包括 is_vip——VIP 不在后台可改范围）。
- *
- * @returns {Promise<{user: object}>}
  */
-export async function setUserAdmin(userId, isAdmin) {
+export async function setUserAdmin(userId: number, isAdmin: boolean): Promise<{ user: AdminUser }> {
   const res = await client().patch(`/api/admin/users/${userId}`, {
     is_admin: !!isAdmin,
   })
@@ -305,8 +389,14 @@ export async function setUserAdmin(userId, isAdmin) {
   return { user: toAdminUser(res.data.user) }
 }
 
+/** 标签词表的一组。 */
+export interface TagGroup {
+  name: string
+  tags: string[]
+}
+
 /**
- * 标签词表（分组 + 上限）。**需管理员**。
+ * 标签词表（分组 + 上限）。**需管理员。**
  *
  * 前端**不**自己维护一份词表：`CommunityPage.vue` 的标签筛选已经是
  * 「从已加载的卡片汇总」，不在前端抄第二份。后台要让人**勾选**标签就绕不开
@@ -314,10 +404,8 @@ export async function setUserAdmin(userId, isAdmin) {
  *
  * 保留 groups 是因为词表分组顺带说明了每个标签的适用语境，摊平就把这个
  * 信息丢了。maxTags 由服务端给出，是上限的唯一真值。
- *
- * @returns {Promise<{maxTags: number, groups: {name: string, tags: string[]}[]}>}
  */
-export async function fetchTagVocabulary() {
+export async function fetchTagVocabulary(): Promise<{ maxTags: number; groups: TagGroup[] }> {
   const res = await client().get('/api/admin/tags/vocabulary')
   const d = res.data || {}
   if (!Array.isArray(d.groups) || !d.groups.length) {
@@ -333,21 +421,21 @@ export async function fetchTagVocabulary() {
   return {
     maxTags: Number(d.maxTags),
     groups: d.groups
-      .filter((g) => g && Array.isArray(g.tags) && g.tags.length)
-      .map((g) => ({ name: String(g.name || ''), tags: g.tags.map(String) })),
+      .filter((g: TagGroup) => g && Array.isArray(g.tags) && g.tags.length)
+      .map((g: TagGroup) => ({ name: String(g.name || ''), tags: g.tags.map(String) })),
   }
 }
 
 /**
- * 改某条社区视频的标签。**需管理员**。
+ * 改某条社区视频的标签。**需管理员。**
  *
  * `tags` 发**词表内**的值，最多 3 个。服务端会严格校验：词表外一律 400 并在
  * detail 里点名被拒的值——不像模型那条路径会静默回落到「其他」，因为管理员
  * 打错字不该被藏起来（见 ADR 0013）。
  *
- * @returns {Promise<{item: object}>} `item` 是**回读**结果，不是请求值的回显。
+ * `item` 是**回读**结果，不是请求值的回显。
  */
-export async function updateCommunityTags(videoId, tags) {
+export async function updateCommunityTags(videoId: number, tags: string[]): Promise<{ item: AdminCommunityItem }> {
   const res = await client().patch(`/api/admin/community/${videoId}`, {
     tags: (tags || []).map(String),
   })
@@ -358,14 +446,12 @@ export async function updateCommunityTags(videoId, tags) {
 }
 
 /**
- * 删掉一条社区视频（ADR 0013）。**需管理员**。
+ * 删掉一条社区视频（ADR 0013）。**需管理员。**
  *
  * **只删 `videos` 那一行**。解析过它的用户在自己「历史」里的记录不受影响——
  * 库里没有任何外键指向 videos，这正是该语义成立的前提。
- *
- * @returns {Promise<{deleted: number}>}
  */
-export async function deleteCommunityVideo(videoId) {
+export async function deleteCommunityVideo(videoId: number): Promise<{ deleted: number }> {
   const res = await client().delete(`/api/admin/community/${videoId}`)
   return { deleted: res.data?.deleted ?? videoId }
 }
@@ -378,10 +464,9 @@ export async function deleteCommunityVideo(videoId) {
  * 本函数把 blockers 原样带出去（不塞进 message）：前端要的是数字，
  * 「还剩几行要处理」不能靠从中文里正则抠。
  *
- * @returns {Promise<{deleted: number}>}
- * @throws {Error} 附带 `.status` 与 `.blockers`（409 时）
+ * 409 时抛出的 Error 附带 `.status` 与 `.blockers`。
  */
-export async function deleteAdminUser(userId) {
+export async function deleteAdminUser(userId: number): Promise<{ deleted: number }> {
   const res = await client().delete(`/api/admin/users/${userId}`)
   return { deleted: res.data?.deleted ?? userId }
 }

@@ -16,7 +16,7 @@ import { test, describe, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.js'
+import { summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.ts'
 import { sliceBetween } from './helpers/source-slice.mjs'
 
 /** 只在这个文件里出现、任何服务商都不会签发的哨兵 */
@@ -31,28 +31,30 @@ function read(...parts) {
 
 /** 去掉注释：断言要看代码，不是解释代码的散文 */
 function stripComments(src) {
-  return src
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
-        // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
-        // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
-    .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
-    .join('\n')
+  return (
+    src
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      // 协议里的 // 不是注释：只剥「前面不是冒号」的那种，否则
+      // `https://x.com` 会被削成 `https:`，域名连同后面整行一起消失，
+      // 扫源码的断言于是永远看不到它 —— 这条判据会变成死的。
+      .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+      .join('\n')
+  )
 }
 
 const summaryVue = read('../src/components/VideoSummary.vue')
 const template = stripComments(summaryVue.split('</template>')[0])
 const summaryTemplate = template
-const script = stripComments(summaryVue.split('<script setup>')[1] ?? '')
+const script = stripComments(summaryVue.split('<script setup')[1] ?? '')
 
 // 集中管理之后，凭据的输入处搬到了弹窗，存储搬到了 lib/byok。
 // 下面三条是它们各自被断言的形态。
 const dialogVue = read('../src/components/ByokDialog.vue')
 const dialogTemplate = stripComments(dialogVue.split('</template>')[0])
-const dialogScript = stripComments(dialogVue.split('<script setup>')[1] ?? '')
-const byokLib = read('../src/lib/byok.js')
+const dialogScript = stripComments(dialogVue.split('<script setup')[1] ?? '')
+const byokLib = read('../src/lib/byok.ts')
 
 /** 造一个能响应 AbortSignal 的假流 */
 function fakeStream(chunks, { signal } = {}) {
@@ -87,9 +89,15 @@ beforeEach(() => {
   responseTexts = []
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
   globalThis.fetch = async (path, init = {}) => {
     requests.push({ path, init })
@@ -100,11 +108,6 @@ beforeEach(() => {
     return fakeStream(chunks, { signal: init.signal })
   }
 })
-
-/** 把每一次请求摊平成可搜索的文本：URL、请求头、请求体 */
-function searchable(entries) {
-  return entries.map((r) => `${r.path}\n${JSON.stringify(r.init.headers ?? {})}\n${r.init.body ?? ''}`).join('\n')
-}
 
 function quietCallbacks() {
   return { onAnswer() {}, onQuota() {}, onError() {}, onDone() {} }
@@ -161,7 +164,7 @@ describe('chatWithVideo：凭据只进 /api/chat', () => {
 
 describe('BYOK 前端接线（集中管理后）', () => {
   // 凭据的归属地从「VideoSummary 里的三个 ref」搬到了
-  // lib/byok.js（真值）+ ByokDialog.vue（唯一输入处）。
+  // lib/byok.ts（真值）+ ByokDialog.vue（唯一输入处）。
   // 下面每条断言都跟着搬到新的归属地，而不是被删掉——
   // 它们守的承诺没变，只是承载它的文件换了。
 
@@ -171,9 +174,13 @@ describe('BYOK 前端接线（集中管理后）', () => {
     // 原写法是 `script.slice(indexOf(x))` 再 `.slice(0, indexOf(y))`：
     // 任一 indexOf 给出 -1，另一段就一路切到文件末尾，于是脚本里**任何位置**
     // 的 chatWithVideo 调用都能让这条通过。
-    const head = sliceBetween(script, 'const stream = chatWithVideo', 'chatStream = stream',
-      'VideoSummary 的 chatWithVideo 调用')
-    assert.match(head, /chatWithVideo\(\s*props\.videoUrl,\s*question,[\s\S]*?\{\s*credential\s*\}\s*\)/)
+    const head = sliceBetween(
+      script,
+      'const stream = chatWithVideo',
+      'chatStream = stream',
+      'VideoSummary 的 chatWithVideo 调用',
+    )
+    assert.match(head, /chatWithVideo\(\s*props\.videoUrl,\s*question,[\s\S]*?credential[\s\S]*?\)/)
     // 真值必须是从共享出口取的，不是组件自己存的
     assert.match(script, /const credential = getRequestCredential\(\)/)
   })
@@ -185,14 +192,21 @@ describe('BYOK 前端接线（集中管理后）', () => {
     // 于是这句删掉就没人知道了，而它删掉没有任何测试会红。
     //
     // 这条是 KEEP_TEXT：判据对象**就是**源码文本本身，没有对应的运行时行为可挂载。
-    assert.match(dialogTemplate, /改用平台 Key 不会删掉已保存的那把/,
-      '弹窗没说清「切到平台模式不清 key」—— 用户会以为这把 Key 没了')
+    assert.match(
+      dialogTemplate,
+      /改用平台 Key 不会删掉已保存的那把/,
+      '弹窗没说清「切到平台模式不清 key」—— 用户会以为这把 Key 没了',
+    )
   })
 
   test('输入框提交后立刻清空', () => {
     // 现在输入框住在 ByokDialog：明文活到点「保存」为止。
-    const body = sliceBetween(dialogScript, 'function saveAndClose()', 'function usePlatformMode',
-      'ByokDialog 的 saveAndClose')
+    const body = sliceBetween(
+      dialogScript,
+      'function saveAndClose()',
+      'function usePlatformMode',
+      'ByokDialog 的 saveAndClose',
+    )
     assert.match(body, /apiKeyInput\.value = ''/)
   })
 
@@ -203,10 +217,13 @@ describe('BYOK 前端接线（集中管理后）', () => {
   test('凭据不绑在任何会渲染出来的节点上', () => {
     // {{ }} 插值一旦提到凭据，它就出现在 DOM 里、也进得了截图与转发。
     // 两个文件都要查：凭据的输入处在弹窗，但状态提示在卡片上。
-    for (const [where, src] of [['VideoSummary', template], ['ByokDialog', dialogTemplate]]) {
+    for (const [where, src] of [
+      ['VideoSummary', template],
+      ['ByokDialog', dialogTemplate],
+    ]) {
       const interpolations = src.match(/\{\{[^}]*\}\}/g) ?? []
-      const leaking = interpolations.filter(
-        (s) => /userApiKey|savedUserApiKey|apiKeyInput|getRequestCredential/.test(s),
+      const leaking = interpolations.filter((s) =>
+        /userApiKey|savedUserApiKey|apiKeyInput|getRequestCredential/.test(s),
       )
       assert.deepEqual(leaking, [], `${where} 把凭据渲染出来了：${leaking.join(' ')}`)
     }

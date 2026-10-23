@@ -142,9 +142,9 @@ export async function gotoTab(wrapper, label) {
 
 /** 表格正文里有多少条数据行（不含表头与展开出来的编辑行）。 */
 export function dataRowCount(wrapper) {
-  return wrapper.findAll('tbody tr').filter(
-    (tr) => !tr.attributes('id')?.startsWith('quota-editor-') && !tr.text().includes('确认删除'),
-  ).length
+  return wrapper
+    .findAll('tbody tr')
+    .filter((tr) => !tr.attributes('id')?.startsWith('quota-editor-') && !tr.text().includes('确认删除')).length
 }
 
 /** 界面全文。判「某句话有没有被渲染出来」时用它。 */

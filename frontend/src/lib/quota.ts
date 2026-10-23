@@ -6,11 +6,43 @@
  * 也不会让展示规则散落在 computed 与模板之间。
  */
 
-function quotaOf(q, kind) {
+/**
+ * 一种额度的一格。`remaining === -1` 表示无限（不是「剩负一次」）。
+ */
+export interface QuotaSlot {
+  allowed?: boolean
+  remaining: number
+  limit: number
+}
+
+/**
+ * 额度负载的形状。
+ *
+ * 顶层 `remaining` / `limit` / `unlimited` 是**兼容别名**，跟随「这次事件
+ * 刚动的是哪类额度」（后端 `_quota_payload` 的注释说明了为什么）。
+ * 底下按种类分的 `parse` / `chat` 是主结构。
+ *
+ * 索引签名是 `unknown` 而不是 `QuotaSlot`：后端可能加新的额度种类
+ * （`QUOTA_KINDS` 是个列表），写死成 QuotaSlot 就等于把这个列表
+ * 抄一份到前端——多一种额度时前端会静默少显示一种，而没有任何东西变红。
+ */
+export interface QuotaPayload {
+  logged_in?: boolean
+  unlimited?: boolean
+  remaining?: number
+  limit?: number
+  /** 自带凭据时为 true：这次没动平台额度 */
+  byok?: boolean
+  consumed?: boolean
+  [kind: string]: unknown
+}
+
+function quotaOf(q: QuotaPayload | null, kind: string): QuotaSlot | null {
   const v = q?.[kind]
   if (v && typeof v === 'object') {
-    const remaining = Number(v.remaining)
-    const limit = Number(v.limit)
+    const slot = v as Partial<QuotaSlot>
+    const remaining = Number(slot.remaining)
+    const limit = Number(slot.limit)
     if (Number.isFinite(remaining) && Number.isFinite(limit)) {
       return { remaining, limit }
     }
@@ -19,7 +51,7 @@ function quotaOf(q, kind) {
 }
 
 /** 兼容期回退：后端可能仍只给顶层 remaining / limit。 */
-function fallbackQuota(q) {
+function fallbackQuota(q: QuotaPayload | null): QuotaSlot | null {
   const remaining = Number(q?.remaining)
   const limit = Number(q?.limit)
   if (Number.isFinite(remaining) && Number.isFinite(limit)) {
@@ -28,12 +60,12 @@ function fallbackQuota(q) {
   return null
 }
 
-function isUnlimited(slot) {
+function isUnlimited(slot: QuotaSlot | null): boolean {
   return slot != null && slot.remaining === -1
 }
 
 /** 两个额度都取不到有效值时不硬拼文案，直接给占位符。 */
-export function describeQuota(q) {
+export function describeQuota(q: QuotaPayload | null): string {
   if (!q) return '—'
   if (!q.logged_in) return '登录后可用'
   if (q.unlimited) return '无限次'
@@ -48,7 +80,7 @@ export function describeQuota(q) {
     return `今日剩余 ${fb.remaining} / ${fb.limit} 次`
   }
 
-  const parts = []
+  const parts: string[] = []
   if (parse) {
     parts.push(
       isUnlimited(parse)
@@ -70,11 +102,11 @@ export function describeQuota(q) {
   return parts.join(' · ')
 }
 
-export function quotaBadgeClass(q) {
+export function quotaBadgeClass(q: QuotaPayload | null): string {
   if (!q || !q.logged_in) return 'bg-ink/60 text-gray-500'
   if (q.unlimited) return 'bg-amber-100 text-amber-700'
 
-  const slots = [quotaOf(q, 'parse'), quotaOf(q, 'chat')].filter(Boolean)
+  const slots = [quotaOf(q, 'parse'), quotaOf(q, 'chat')].filter((s): s is QuotaSlot => s !== null)
   if (slots.length === 0) {
     const fb = fallbackQuota(q)
     if (!fb) return 'bg-ink/60 text-gray-500'

@@ -1,20 +1,32 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="visible"
+      <div
+        v-if="visible"
         class="fixed inset-0 z-[100] flex items-center justify-center px-4"
-        @click.self="$emit('close')">
+        @click.self="$emit('close')"
+      >
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
 
-        <div role="alertdialog" aria-modal="true" :aria-labelledby="titleId"
-          class="relative bg-panel border border-line rounded-2xl shadow-2xl shadow-black/50
-                 w-full max-w-md animate-scale-in">
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          :aria-labelledby="titleId"
+          class="relative bg-panel border border-line rounded-2xl shadow-2xl shadow-black/50 w-full max-w-md animate-scale-in"
+        >
           <div class="p-8 pb-6">
             <!-- 图标 -->
             <div class="flex justify-center mb-4">
               <div class="w-14 h-14 rounded-2xl bg-red-50 border border-red-500/20 flex items-center justify-center">
-                <svg class="w-7 h-7 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg
+                  class="w-7 h-7 text-red-500"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
                   <circle cx="12" cy="12" r="10" />
                   <line x1="12" y1="8" x2="12" y2="12" />
                   <line x1="12" y1="16" x2="12.01" y2="16" />
@@ -32,9 +44,10 @@
           </div>
 
           <div class="px-8 pb-8">
-            <button @click="$emit('close')"
-              class="w-full py-2.5 rounded-xl bg-blue text-on-primary font-medium text-sm
-                     hover:bg-blue-600 transition-all duration-200 active:scale-95">
+            <button
+              @click="$emit('close')"
+              class="w-full py-2.5 rounded-xl bg-blue text-on-primary font-medium text-sm hover:bg-blue-600 transition-all duration-200 active:scale-95"
+            >
               {{ actionText }}
             </button>
           </div>
@@ -44,7 +57,7 @@
   </Teleport>
 </template>
 
-<script setup>
+<script setup lang="ts">
 /**
  * 统一错误弹窗。
  *
@@ -58,7 +71,7 @@
  */
 import { computed } from 'vue'
 
-const props = defineProps({
+defineProps({
   visible: { type: Boolean, default: false },
   title: { type: String, default: '出错了' },
   message: { type: String, default: '' },
@@ -76,10 +89,23 @@ const titleId = computed(() => 'err-modal-title')
   animation: errScaleIn 0.2s ease-out;
 }
 @keyframes errScaleIn {
-  from { opacity: 0; transform: scale(0.96) translateY(8px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
-.modal-enter-active { transition: opacity 0.2s ease; }
-.modal-leave-active { transition: opacity 0.15s ease; }
-.modal-enter-from, .modal-leave-to { opacity: 0; }
+.modal-enter-active {
+  transition: opacity 0.2s ease;
+}
+.modal-leave-active {
+  transition: opacity 0.15s ease;
+}
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
 </style>

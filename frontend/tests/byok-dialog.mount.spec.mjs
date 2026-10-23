@@ -13,7 +13,7 @@
  *   - 不关闭 → 点完弹窗还开着，用户以为没生效又点一次
  *   - DOM 留明文 → 进浏览器自动填充，也进「检查元素」与截图
  *
- * ## 为什么**不能** mock lib/byok.js
+ * ## 为什么**不能** mock lib/byok.ts
  *
  * 本文件的判据对象恰恰是「真的写进了 localStorage」。mock 掉 byok 就等于
  * 把判据对象本身拿走，剩下的是一个对着空壳断言的空壳。所以这里只 mock
@@ -22,7 +22,7 @@
  *
  * ## 为什么 localStorage 要用 vi.hoisted
  *
- * `lib/byok.js` 顶层就有 `let state = read()`，而 ESM 的 import 全部先于模块体
+ * `lib/byok.ts` 顶层就有 `let state = read()`，而 ESM 的 import 全部先于模块体
  * 执行 —— 写在模块顶层的 `globalThis.localStorage = …` 会**晚一步**，
  * 真值读到的是 jsdom 那个空的。`vi.hoisted` 是 vitest 提供的唯一
  * 「早于 import」的时机。
@@ -40,9 +40,15 @@ const { ls } = vi.hoisted(() => {
   const s = {}
   const impl = {
     getItem: (k) => s[k] ?? null,
-    setItem: (k, v) => { s[k] = String(v) },
-    removeItem: (k) => { delete s[k] },
-    clear: () => { for (const k of Object.keys(s)) delete s[k] },
+    setItem: (k, v) => {
+      s[k] = String(v)
+    },
+    removeItem: (k) => {
+      delete s[k]
+    },
+    clear: () => {
+      for (const k of Object.keys(s)) delete s[k]
+    },
     _dump: () => ({ ...s }),
   }
   // 必须走 stubGlobal 而不是 `globalThis.localStorage = impl`：
@@ -56,25 +62,31 @@ const { ls } = vi.hoisted(() => {
   return { ls: impl }
 })
 
-vi.mock('../src/api/models.js', () => ({
+vi.mock('../src/api/models.ts', () => ({
   fetchPublicModelCatalog: vi.fn(),
 }))
 
 import ByokDialog from '../src/components/ByokDialog.vue'
-import { fetchPublicModelCatalog } from '../src/api/models.js'
+import { fetchPublicModelCatalog } from '../src/api/models.ts'
 // clear 是**被验对象的函数**，不是判据。这里用它只是为了把 byok 的模块闭包归零，
 // 见 beforeEach 的注释 —— 理由比「顺手清一下」重要得多。
-import { clear } from '../src/lib/byok.js'
+import { clear } from '../src/lib/byok.ts'
 
 const SENTINEL = 'sk-byok-dialog-ZZUNIQUEZZ'
 const CATALOG = [
   {
-    id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-chat', hint: '国产模型',
+    id: 'deepseek',
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-chat',
+    hint: '国产模型',
   },
   {
-    id: 'moonshot', label: 'Moonshot', baseUrl: 'https://api.moonshot.cn/v1',
-    defaultModel: 'kimi', hint: '',
+    id: 'moonshot',
+    label: 'Moonshot',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    defaultModel: 'kimi',
+    hint: '',
   },
 ]
 
@@ -84,7 +96,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   // ⚠️ 两步都要，且顺序不能反。
   //
-  // `ls.clear()` 只清**盘上的**数据，而 `lib/byok.js` 的模块闭包 `state`
+  // `ls.clear()` 只清**盘上的**数据，而 `lib/byok.ts` 的模块闭包 `state`
   // 仍然攥着上一条用例留下的 apiKey —— 它从外部没有任何办法重置。
   // 于是下一条用例只要碰一次 `chooseProvider`（它会 `save({ apiKey: state.apiKey })`），
   // 上一条的 key 就被**顺手写回盘上**，而那条用例正想断言「盘上不该有 key」。
@@ -184,8 +196,7 @@ describe('ByokDialog 挂载 · 保存', () => {
     // 真正会留在 DOM 上的是 input 当前的 value property。
     const keyInput = w.find('#byok-key')
     expect(keyInput.exists(), '保存后弹窗不该自己关掉，这里仍能看到输入框').toBe(true)
-    expect(keyInput.element.value, 'key 明文还留在输入框里 —— 会进浏览器自动填充与「检查元素」')
-      .toBe('')
+    expect(keyInput.element.value, 'key 明文还留在输入框里 —— 会进浏览器自动填充与「检查元素」').toBe('')
   })
 
   test('留空 = 沿用已保存的那把，不是清空', async () => {
@@ -201,8 +212,7 @@ describe('ByokDialog 挂载 · 保存', () => {
     await buttonByText(w2, '保存').trigger('click')
     await flushPromises()
 
-    expect(ls._dump().viddigest_user_api_key, '只改厂商就把 key 静默清空了 —— 占位符承诺的是「沿用」')
-      .toBe(SENTINEL)
+    expect(ls._dump().viddigest_user_api_key, '只改厂商就把 key 静默清空了 —— 占位符承诺的是「沿用」').toBe(SENTINEL)
     expect(ls._dump().viddigest_byok_config).toContain('moonshot')
   })
 
@@ -228,8 +238,7 @@ describe('ByokDialog 挂载 · 保存', () => {
     await flushPromises()
 
     expect(JSON.parse(ls._dump().viddigest_byok_config).provider).toBe('platform')
-    expect(ls._dump().viddigest_user_api_key, '切到平台模式把 key 删了 —— 切回来还得重填')
-      .toBe(SENTINEL)
+    expect(ls._dump().viddigest_user_api_key, '切到平台模式把 key 删了 —— 切回来还得重填').toBe(SENTINEL)
   })
 })
 

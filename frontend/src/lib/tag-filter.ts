@@ -20,14 +20,12 @@
  * @param {boolean} multiple true = 多选
  * @returns {string[]} 新的选中集合（**总是新数组**，便于 v-model 触发更新）
  */
-export function toggleTag(selected, tag, multiple = true) {
+export function toggleTag(selected: string[] | null | undefined, tag: string, multiple = true): string[] {
   const current = Array.isArray(selected) ? selected : []
   if (!multiple) {
     return current.length === 1 && current[0] === tag ? [] : [tag]
   }
-  return current.includes(tag)
-    ? current.filter((t) => t !== tag)
-    : [...current, tag]
+  return current.includes(tag) ? current.filter((t) => t !== tag) : [...current, tag]
 }
 
 /**
@@ -43,7 +41,7 @@ export function toggleTag(selected, tag, multiple = true) {
  * shouldShowToggle 拥有 —— 两条规则分散在两个函数里，历史上就出过一次
  * 「measure 把 overflowing 抹成 false，按钮跟着消失，用户再也收不回去」。
  */
-export function needsExpand(scrollWidth, clientWidth) {
+export function needsExpand(scrollWidth: number, clientWidth: number): boolean {
   return scrollWidth > clientWidth + 1
 }
 
@@ -58,7 +56,7 @@ export function needsExpand(scrollWidth, clientWidth) {
  * @param {boolean} overflowing 收起态下实测是否溢出
  * @param {boolean} expanded 当前是否已展开
  */
-export function shouldShowToggle(tagCount, overflowing, expanded) {
+export function shouldShowToggle(tagCount: number, overflowing: boolean, expanded: boolean): boolean {
   if (tagCount <= 1) return false
   return Boolean(expanded) || Boolean(overflowing)
 }
@@ -76,7 +74,7 @@ export function shouldShowToggle(tagCount, overflowing, expanded) {
  * @param {number} limit 标签行可视区域的右边缘
  * @returns {number} 被裁掉（即右边缘越过 limit）的标签个数
  */
-export function countHiddenChips(rights, limit) {
+export function countHiddenChips(rights: number[] | null | undefined, limit: number): number {
   if (!Array.isArray(rights)) return 0
   return rights.filter((r) => r > limit).length
 }
@@ -92,13 +90,16 @@ export function countHiddenChips(rights, limit) {
  * 之外的任何判断：那个判断留在调用方，因为两个页面对「未选中」的处理
  * 理由不同（社区要退回公开列表，历史要回到全量）。
  */
-export function tagsToQuery(selected) {
+export function tagsToQuery(selected: string[] | null | undefined): string {
   const list = Array.isArray(selected) ? selected : []
   return list.length === 1 ? list[0] : list.join(',')
 }
 
 /** 解析回单值 / 多值。后端按逗号分隔传，兼容单值。 */
-export function parseTagQuery(raw) {
+export function parseTagQuery(raw: string | null | undefined): string[] {
   if (!raw) return []
-  return String(raw).split(',').map((s) => s.trim()).filter(Boolean)
+  return String(raw)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
 }

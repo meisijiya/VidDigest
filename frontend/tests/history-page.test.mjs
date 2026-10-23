@@ -3,7 +3,7 @@
  *
  * 判据分三类，都按「能变红」的标准挑：
  *
- *  1. **纯函数真跑**（直接 import `src/lib/tag-filter.js`）。多选/单选这两个
+ *  1. **纯函数真跑**（直接 import `src/lib/tag-filter.ts`）。多选/单选这两个
  *     分支写错的话，界面上是「点第二个把第一个也取消了」，从模板上看不出来。
  *  2. **`params()` 抽出来真跑**。四个筛选维度是「组合」的，而组合最容易被
  *     悄悄做丢一个 —— 只断源码里出现过 `ai` 这个词，测不到它有没有进查询。
@@ -17,8 +17,9 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { tagsToQuery, toggleTag, needsExpand, shouldShowToggle, parseTagQuery } from '../src/lib/tag-filter.js'
-import { extractFn, sliceBetween } from './helpers/source-slice.mjs'
+import { tagsToQuery, toggleTag, needsExpand, shouldShowToggle, parseTagQuery } from '../src/lib/tag-filter.ts'
+import { extractFn } from './helpers/source-slice.mjs'
+import { transpileTs } from './helpers/ts-sandbox.mjs'
 
 function read(...parts) {
   return readFileSync(new URL(...parts, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -39,26 +40,20 @@ function stripComments(src) {
 
 const vue = read('../src/components/HistoryPage.vue')
 const code = stripComments(vue)
-const api = read('../src/api/history.js')
+const api = read('../src/api/history.ts')
 
 /**
  * 真跑组件里的 `params()`。它引用了一堆 ref，这里用同名形参把 scope 补上 ——
  * 注入的是真实形状（`{value: ...}`），不是随手编的值。
  */
 function runParams({ query = '', tags = [], ai = '', favorite = false, page = 1, size = 20 }) {
-  const src = `${extractFn(code, 'params')}; return params()`
-  const fn = new Function(
-    'activeQuery', 'activeTags', 'ai', 'favoriteOnly', 'page', 'PAGE_SIZE', 'tagsToQuery',
-    src,
-  )
+  const src = `${transpileTs(extractFn(code, 'params'), 'history-page-script.ts')}; return params()`
+  const fn = new Function('activeQuery', 'activeTags', 'ai', 'favoriteOnly', 'page', 'PAGE_SIZE', 'tagsToQuery', src)
   // activeQuery / activeTags / ai / favoriteOnly / page 在组件里都是 ref，
   // 源码取的是 `.value`；PAGE_SIZE 是普通常量，**不能**包成 ref。
   // 这个坑实测过一次：一开始五个都传裸值，于是 ai 与 favorite 全成
   // undefined，页面看着像「筛选没生效」，而失败点在测试的注入形状上。
-  return fn(
-    { value: query }, { value: tags }, { value: ai }, { value: favorite },
-    { value: page }, size, tagsToQuery,
-  )
+  return fn({ value: query }, { value: tags }, { value: ai }, { value: favorite }, { value: page }, size, tagsToQuery)
 }
 
 // ── 纯逻辑 ────────────────────────────────────────────────
@@ -127,7 +122,11 @@ describe('params() 把四个筛选维度都带上', () => {
 
   test('关键词 / 标签 / AI 状态 / 仅收藏 同时生效', () => {
     const p = runParams({
-      query: '秋促', tags: ['编程', '架构设计'], ai: 'ai', favorite: true, page: 3,
+      query: '秋促',
+      tags: ['编程', '架构设计'],
+      ai: 'ai',
+      favorite: true,
+      page: 3,
     })
     assert.equal(p.q, '秋促')
     assert.equal(p.tag, '编程,架构设计')
@@ -138,10 +137,7 @@ describe('params() 把四个筛选维度都带上', () => {
 
   test('每个键都在——少一个就是「组合筛选」名存实亡', () => {
     // 封口断言：只逐个断值的话，某个键整个消失时上面的用例仍会绿。
-    assert.deepEqual(
-      Object.keys(runParams({})).sort(),
-      ['ai', 'favorite', 'page', 'page_size', 'q', 'tag'],
-    )
+    assert.deepEqual(Object.keys(runParams({})).sort(), ['ai', 'favorite', 'page', 'page_size', 'q', 'tag'])
   })
 
   test('「仅解析」与「AI解析」是两个不同的值，不是同一个开关', () => {
@@ -156,31 +152,20 @@ describe('标签选项来自服务端，不从当前页汇总', () => {
     // 断的是 `await fetchHistoryFacets()` —— 带调用括号。**不能**断
     // `includes('fetchHistoryFacets')`：import 行里也有这个词，
     // 于是「把唯一的调用删掉」这条变异照样绿（实测过一次）。
-    assert.ok(
-      /await\s+fetchHistoryFacets\s*\(\s*\)/.test(code),
-      '没有真的拉取标签清单（或 import 了但从没调用）',
-    )
+    assert.ok(/await\s+fetchHistoryFacets\s*\(\s*\)/.test(code), '没有真的拉取标签清单（或 import 了但从没调用）')
     assert.ok(api.includes('/api/history/facets'), 'API 层没有这个出口')
   })
 
   test('任何地方都不从 items 里长出标签选项', () => {
     // 比 F11 那条更宽：不只挡一种写法。整份组件里 items 只该喂列表
     // 与删除，**不该**参与决定筛选选项。
-    assert.doesNotMatch(
-      code, /new Set\(\s*items\.value/, '标签选项又从当前页汇总了',
-    )
-    assert.doesNotMatch(
-      code, /items\.value\.flatMap/, '标签选项又从当前页汇总了',
-    )
+    assert.doesNotMatch(code, /new Set\(\s*items\.value/, '标签选项又从当前页汇总了')
+    assert.doesNotMatch(code, /items\.value\.flatMap/, '标签选项又从当前页汇总了')
   })
 
   test('不再从 items 里汇总标签选项', () => {
     // 前端汇总 = 翻页或一筛选标签就会增减，用户读起来是「筛选不生效」。
-    assert.doesNotMatch(
-      code,
-      /for \(const item of items\.value\)[^\n]*tags/,
-      '标签选项又变回从当前页卡片汇总了',
-    )
+    assert.doesNotMatch(code, /for \(const item of items\.value\)[^\n]*tags/, '标签选项又变回从当前页卡片汇总了')
   })
 
   test('标签行是共享组件，不是各写一套', () => {
@@ -227,14 +212,12 @@ describe('模板把三组筛选和分页都摆出来了', () => {
     const m = code.match(/const PAGE_SIZE = (\d+)/)
     assert.ok(m, '找不到 PAGE_SIZE')
     const n = Number(m[1])
-    assert.ok(n > 0 && n < 1000,
-      `单页 ${n} 条：上限是保留 1000 条，单页不能也取 1000`)
+    assert.ok(n > 0 && n < 1000, `单页 ${n} 条：上限是保留 1000 条，单页不能也取 1000`)
   })
 
   test('每条记录有收藏星标，语义是「设为收藏」不是「翻转」', () => {
     assert.ok(code.includes('aria-pressed="item.is_favorite"'))
-    assert.ok(code.includes('setHistoryFavorite(item.id, next)'),
-      '收藏走的是翻转而不是幂等设置')
+    assert.ok(code.includes('setHistoryFavorite(item.id, next)'), '收藏走的是翻转而不是幂等设置')
   })
 
   test('页头不再说「最近 30 条」', () => {
@@ -244,9 +227,10 @@ describe('模板把三组筛选和分页都摆出来了', () => {
   test('故障与空状态是两条分支', () => {
     assert.ok(code.includes('v-else-if="loadError"'))
     assert.ok(code.includes('v-else-if="!items.length"'))
-    assert.ok(code.indexOf('v-else-if="loadError"')
-      < code.indexOf('v-else-if="!items.length"'),
-    '故障分支必须排在空状态之前，否则一次 500 会被渲染成「暂无解析历史」')
+    assert.ok(
+      code.indexOf('v-else-if="loadError"') < code.indexOf('v-else-if="!items.length"'),
+      '故障分支必须排在空状态之前，否则一次 500 会被渲染成「暂无解析历史」',
+    )
   })
 
   test('空状态区分「没有筛选命中」与「从来没有记录」', () => {
@@ -258,8 +242,7 @@ describe('模板把三组筛选和分页都摆出来了', () => {
 
 describe('收藏项的删除有第二道确认', () => {
   test('第二道确认是页面上的一行，不是又弹一次 confirm', () => {
-    assert.ok(code.includes('pendingDeleteId === item.id'),
-      '收藏项没有被要求二次确认')
+    assert.ok(code.includes('pendingDeleteId === item.id'), '收藏项没有被要求二次确认')
     assert.ok(code.includes('confirmDelete(item)'))
   })
 
@@ -277,8 +260,7 @@ describe('收藏项的删除有第二道确认', () => {
     const fn = deleteHistorySrc()
     assert.match(fn, /status === 409/, 'deleteHistory 里没有 409 分支')
     assert.match(fn, /refused: true/, '没有把 409 翻译成 refused')
-    assert.ok(code.includes('if (res.refused)'),
-      '组件没处理 refused，会直接当删除成功')
+    assert.ok(code.includes('if (res.refused)'), '组件没处理 refused，会直接当删除成功')
   })
 
   test('不是 409 的错误照常抛出', () => {
@@ -292,8 +274,7 @@ describe('收藏项的删除有第二道确认', () => {
 
   test('清空走服务端一次性接口，不是前端循环删 N 次', () => {
     assert.ok(api.includes("client().delete('/api/history'"))
-    assert.doesNotMatch(code, /Promise\.all\(items\.value\.map/,
-      '又变回前端循环删了 —— 1000 条时那是 1000 个请求')
+    assert.doesNotMatch(code, /Promise\.all\(items\.value\.map/, '又变回前端循环删了 —— 1000 条时那是 1000 个请求')
   })
 })
 
@@ -306,7 +287,6 @@ describe('列表用的是完整信封', () => {
     // 原来用 `api.split('fetchHistoryFacets')[0]` 划范围，那是**位置型守卫**：
     // fetchHistoryFacets 一旦改名或挪位置，split 找不到就返回整份文件，
     // 断言退化成「全仓没有 return res.data.items」，观察范围悄悄放大而不报错。
-    assert.doesNotMatch(fn, /return res\.data\.items\b/,
-      'fetchHistories 退回了只返回 items')
+    assert.doesNotMatch(fn, /return res\.data\.items\b/, 'fetchHistories 退回了只返回 items')
   })
 })

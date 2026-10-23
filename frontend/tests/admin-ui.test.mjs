@@ -45,15 +45,16 @@ function stripComments(src) {
 const admin = read('../src/components/AdminPage.vue')
 const adminCode = stripComments(admin)
 const appVue = stripComments(read('../src/App.vue'))
+const routerTs = stripComments(read('../src/router/index.ts'))
 const headerVue = stripComments(read('../src/components/AppHeader.vue'))
 const css = read('../src/style.css')
 
 /**
- * api/admin.js 的源码。**声明在模块顶层**，不在某个 describe 体里——
+ * api/admin.ts 的源码。**声明在模块顶层**，不在某个 describe 体里——
  * 三份转换（toAdminUser / toAdminCommunityItem / toAdminModelItem）都在这个
  * 文件里断言，而它们分散在多个 describe 组，作用域外的变量会直接 TDZ 报错。
  */
-const apiAdmin = stripComments(read('../src/api/admin.js'))
+const apiAdmin = stripComments(read('../src/api/admin.ts'))
 
 /**
  * <template> 段。转换点收在一处要靠它来验。
@@ -77,8 +78,24 @@ const themeBlock = css.slice(css.indexOf('@theme {'), css.indexOf('\n}', css.ind
 const TOKENS = new Set([...themeBlock.matchAll(/--color-([a-z0-9-]+):/g)].map((m) => m[1]))
 
 /** 消费颜色的工具类前缀 */
-const COLOR_PREFIXES = ['text', 'bg', 'border', 'ring', 'outline', 'fill', 'stroke',
-  'from', 'via', 'to', 'divide', 'decoration', 'placeholder', 'shadow', 'accent', 'caret']
+const COLOR_PREFIXES = [
+  'text',
+  'bg',
+  'border',
+  'ring',
+  'outline',
+  'fill',
+  'stroke',
+  'from',
+  'via',
+  'to',
+  'divide',
+  'decoration',
+  'placeholder',
+  'shadow',
+  'accent',
+  'caret',
+]
 
 /**
  * 每个前缀的「不是颜色」形态。
@@ -90,7 +107,8 @@ const COLOR_PREFIXES = ['text', 'bg', 'border', 'ring', 'outline', 'fill', 'stro
 const NON_COLOR = {
   text: /^(xs|sm|base|lg|xl|\d?xl|left|center|right|justify|start|end|wrap|nowrap|truncate|ellipsis|balance|pretty|clip|uppercase|lowercase|capitalize|underline|overline|line-through|no-underline|transparent|current|inherit|none)$/,
   bg: /^(transparent|current|inherit|none|repeat|no-repeat|repeat-x|repeat-y|cover|contain|auto|center|top|bottom|left|right|fixed|local|scroll|border)$/,
-  border: /^([trblxyse](-\d+)?|\d+|solid|dashed|dotted|double|none|hidden|collapse|separate|transparent|current|inherit)$/,
+  border:
+    /^([trblxyse](-\d+)?|\d+|solid|dashed|dotted|double|none|hidden|collapse|separate|transparent|current|inherit)$/,
   ring: /^(\d+|inset|none|transparent|current|inherit)$/,
   outline: /^(\d+|none|dashed|dotted|double|hidden|transparent|current|inherit)$/,
   divide: /^([xy](-reverse)?|reverse|transparent|current|inherit|none)$/,
@@ -122,25 +140,30 @@ function classTokens(src) {
   for (const m of src.matchAll(/:class="([^"]*)"/g)) {
     for (const s of m[1].matchAll(/'([^']*)'/g)) out.push(s[1])
   }
-  return out.join(' ').split(/\s+/).filter(Boolean).map((t) => {
-    let s = t.replace(/["'`]/g, '')
-    // 收尾的 `]` 削掉；以 `[` 开头的是任意值（text-[10px]），要留着
-    if (!s.includes('[') && s.endsWith(']')) s = s.slice(0, -1)
-    // 数组元素之间的逗号会粘在 token 尾巴上
-    return s.replace(/,+$/, '')
-  }).filter(Boolean)
+  return out
+    .join(' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => {
+      let s = t.replace(/["'`]/g, '')
+      // 收尾的 `]` 削掉；以 `[` 开头的是任意值（text-[10px]），要留着
+      if (!s.includes('[') && s.endsWith(']')) s = s.slice(0, -1)
+      // 数组元素之间的逗号会粘在 token 尾巴上
+      return s.replace(/,+$/, '')
+    })
+    .filter(Boolean)
 }
 
 function colorValueOf(tok) {
-  const t = tok.replace(/^[a-z-]+:/, '')                       // 去变体前缀 hover: / focus: / last:
+  const t = tok.replace(/^[a-z-]+:/, '') // 去变体前缀 hover: / focus: / last:
   const i = t.indexOf('-')
   if (i < 0) return null
   const prefix = t.slice(0, i)
   if (!COLOR_PREFIXES.includes(prefix)) return null
-  const value = t.slice(i + 1).replace(/\/[\w.]+$/, '')        // 去 /70 这类透明度后缀
+  const value = t.slice(i + 1).replace(/\/[\w.]+$/, '') // 去 /70 这类透明度后缀
   if (!value) return null
-  if (/^\[/.test(value)) return null                            // 任意值：交给「零色值」那条
-  if (/^\d+$/.test(value)) return null                          // 纯数字：宽度 / 透明度
+  if (/^\[/.test(value)) return null // 任意值：交给「零色值」那条
+  if (/^\d+$/.test(value)) return null // 纯数字：宽度 / 透明度
   if (NON_COLOR[prefix] && NON_COLOR[prefix].test(value)) return null
   return value
 }
@@ -166,25 +189,31 @@ describe('视觉 · 后台长在 @theme 令牌体系里', () => {
     const hits = []
     // hex：3/4/6/8 位都算
     for (const m of adminCode.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) hits.push(m[0])
-    for (const m of adminCode.matchAll(/\b(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color-mix|color)\s*\(/g)) hits.push(m[0])
-    assert.deepEqual(hits, [],
-      `后台组件里出现了色值字面量：${hits.join(' ')}\n`
-      + '  —— 视觉的唯一来源是 src/style.css 的 @theme 令牌。'
-      + '在这里写死一个 hex，明亮主题下它不会跟着翻，必然留下深色残留。')
+    for (const m of adminCode.matchAll(/\b(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color-mix|color)\s*\(/g))
+      hits.push(m[0])
+    assert.deepEqual(
+      hits,
+      [],
+      `后台组件里出现了色值字面量：${hits.join(' ')}\n` +
+        '  —— 视觉的唯一来源是 src/style.css 的 @theme 令牌。' +
+        '在这里写死一个 hex，明亮主题下它不会跟着翻，必然留下深色残留。',
+    )
   })
 
   test('AdminPage.vue 里的每个颜色类都存在于 @theme', () => {
     const { names } = usedColors(adminCode)
     // 只量真实用过的类：这里不小于 20 就说明枚举器本身坏了
     //（类名改了 / 模板被搬走），空集合会让下面这条断言恒真。
-    assert.ok(names.size >= 20,
-      `只枚举出 ${names.size} 个颜色类 —— 枚举器或模板变了，先修枚举器再谈越界`)
+    assert.ok(names.size >= 20, `只枚举出 ${names.size} 个颜色类 —— 枚举器或模板变了，先修枚举器再谈越界`)
     const offenders = [...names].filter((n) => !TOKENS.has(n)).sort()
-    assert.deepEqual(offenders, [],
-      `这些颜色类不在 @theme 里：${offenders.join(' ')}\n`
-      + `  —— 当前令牌体系有 ${TOKENS.size} 个：${[...TOKENS].sort().join(' ')}\n`
-      + '  写一个 @theme 之外的名字，等于在后台另起一套设计；'
-      + '两套设计的漂移不会报错，只会在某个主题下看起来不对。')
+    assert.deepEqual(
+      offenders,
+      [],
+      `这些颜色类不在 @theme 里：${offenders.join(' ')}\n` +
+        `  —— 当前令牌体系有 ${TOKENS.size} 个：${[...TOKENS].sort().join(' ')}\n` +
+        '  写一个 @theme 之外的名字，等于在后台另起一套设计；' +
+        '两套设计的漂移不会报错，只会在某个主题下看起来不对。',
+    )
   })
 
   test('页头新加的管理入口也没带越界色类', () => {
@@ -192,17 +221,19 @@ describe('视觉 · 后台长在 @theme 令牌体系里', () => {
     assert.ok(btn, '找不到管理入口按钮')
     const { names } = usedColors(btn[0])
     const offenders = [...names].filter((n) => !TOKENS.has(n))
-    assert.deepEqual(offenders, [],
-      `管理入口用了 @theme 之外的色类：${offenders.join(' ')}`)
+    assert.deepEqual(offenders, [], `管理入口用了 @theme 之外的色类：${offenders.join(' ')}`)
   })
 
   test('SVG 的颜色属性只有 none / currentColor（不许写死填充色）', () => {
     const hits = [...adminCode.matchAll(/\s(?:fill|stroke)="([^"]*)"/g)]
       .map((m) => m[1])
       .filter((v) => v !== 'none' && v !== 'currentColor')
-    assert.deepEqual(hits, [],
-      `这些 SVG 颜色属性不是 none / currentColor：${hits.join(' ')}\n`
-      + '  —— currentColor 会跟着文字色的 class 走，写死值则不跟主题。')
+    assert.deepEqual(
+      hits,
+      [],
+      `这些 SVG 颜色属性不是 none / currentColor：${hits.join(' ')}\n` +
+        '  —— currentColor 会跟着文字色的 class 走，写死值则不跟主题。',
+    )
   })
 
   test('后台没有另起一套：它用的是既有那几个结构类', () => {
@@ -216,8 +247,11 @@ describe('视觉 · 后台长在 @theme 令牌体系里', () => {
   test('后台不自己判主题（data-theme / viddigest-theme 都不该出现在这里）', () => {
     // 主题判定有两处权威：index.html 的内联脚本（首帧前）与 useTheme（只读 DOM）。
     // 后台再写第三处，表现形式是「切到后台主题跳回去」，且不报错。
-    assert.doesNotMatch(adminCode, /data-theme|viddigest-theme/,
-      'AdminPage.vue 里自己动了主题 —— 主题判定只能有 index.html 与 useTheme 两处')
+    assert.doesNotMatch(
+      adminCode,
+      /data-theme|viddigest-theme/,
+      'AdminPage.vue 里自己动了主题 —— 主题判定只能有 index.html 与 useTheme 两处',
+    )
   })
 })
 
@@ -226,16 +260,22 @@ describe('视觉 · 后台长在 @theme 令牌体系里', () => {
 // ─────────────────────────────────────────────────────────
 describe('入口 · 只对管理员可见（前端隐藏是体验，不是边界）', () => {
   test('「管理」入口在顶部导航 <nav> 里', () => {
-    assert.match(headerVue, /<nav[\s\S]*?open-admin[\s\S]*?<\/nav>/,
-      '管理入口不在 <nav> 里 —— 它成了页头角落里的一个孤立按钮')
+    assert.match(
+      headerVue,
+      /<nav[\s\S]*?open-admin[\s\S]*?<\/nav>/,
+      '管理入口不在 <nav> 里 —— 它成了页头角落里的一个孤立按钮',
+    )
   })
 
   test('管理入口的按钮上挂着 v-if="isAdmin"', () => {
     const btn = headerVue.match(/<button[^>]*open-admin[^>]*>/)
     assert.ok(btn, 'AppHeader 里没有 emit open-admin 的按钮')
-    assert.match(btn[0], /v-if="isAdmin"/,
-      '管理入口没有 v-if="isAdmin" —— 非管理员也看得见，'
-      + '而「看不见」正是这一条要守的东西（前端隐藏只做体验，边界在后端 403）')
+    assert.match(
+      btn[0],
+      /v-if="isAdmin"/,
+      '管理入口没有 v-if="isAdmin" —— 非管理员也看得见，' +
+        '而「看不见」正是这一条要守的东西（前端隐藏只做体验，边界在后端 403）',
+    )
   })
 
   test('isAdmin 声明成 prop 且默认 false', () => {
@@ -248,9 +288,11 @@ describe('入口 · 只对管理员可见（前端隐藏是体验，不是边界
   test('open-admin 在 defineEmits 里（漏声明 = 点击静默失效）', () => {
     const m = headerVue.match(/defineEmits\(\[([^\]]*)\]\)/)
     assert.ok(m, '找不到 defineEmits')
-    assert.match(m[1], /['"]open-admin['"]/,
-      "open-admin 没进 defineEmits —— Vue 只对未声明的事件发警告，"
-      + '而点击**看起来正常**，父组件就是收不到')
+    assert.match(
+      m[1],
+      /['"]open-admin['"]/,
+      'open-admin 没进 defineEmits —— Vue 只对未声明的事件发警告，' + '而点击**看起来正常**，父组件就是收不到',
+    )
   })
 
   test('App.vue 传了 is-admin 并监听了 open-admin', () => {
@@ -261,8 +303,9 @@ describe('入口 · 只对管理员可见（前端隐藏是体验，不是边界
   test('openAdmin 真的切页并改 URL', () => {
     const m = appVue.match(/function openAdmin\(\)\s*\{([\s\S]*?)\n\}/)
     assert.ok(m, 'App.vue 里没有 openAdmin')
-    assert.match(m[1], /currentPage\.value\s*=\s*'admin'/, 'openAdmin 没有把 currentPage 切到 admin')
-    assert.match(m[1], /pushPage\('admin'\)/, 'openAdmin 没有改 URL —— 刷新就掉回首页')
+    // 页面由路由决定（ADR 0018），切页就是 router.push —— URL 与页面同源，
+    // 不会再出现「页面变了但 URL 没变」这种两套真值。
+    assert.match(m[1], /router\.push\('\/admin'\)/, "openAdmin 没有 router.push('/admin') —— 点了管理页面不动")
   })
 
   // 这条判据曾在工单 #33 收尾时删掉：它由 3 条文本断言组成，两条判别力≈0
@@ -288,51 +331,59 @@ describe('入口 · 只对管理员可见（前端隐藏是体验，不是边界
 function loadFn(src, name) {
   const m = src.match(new RegExp(`function ${name}\\(([^)]*)\\)\\s*\\{([\\s\\S]*?)\\n\\}`))
   assert.ok(m, `AdminPage.vue / App.vue 里没有纯函数 ${name}`)
-  return new Function(...m[1].split(',').map((s) => s.trim()).filter(Boolean), m[2])
+  return new Function(
+    ...m[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    m[2],
+  )
 }
 
-describe('轻路由 · /admin 进得来也留得住', () => {
-  test('HistoryPage 从 v-else 改成了 v-else-if（否则整条链塌掉）', () => {
-    assert.match(appVue, /<HistoryPage v-else-if="currentPage === 'history'"/,
-      'HistoryPage 还挂在 v-else 上 —— 后面再插一个 v-else-if 分支，'
-      + '历史页会被前面抢光，整条条件链塌掉')
+describe('路由 · 页面由 URL 决定（ADR 0018）', () => {
+  test('四条路径各带一个 meta.page', () => {
+    const table = [
+      ['/', 'home'],
+      ['/history', 'history'],
+      ['/community', 'community'],
+      ['/admin', 'admin'],
+    ]
+    for (const [path, page] of table) {
+      assert.match(
+        routerTs,
+        new RegExp(`path: '${path}'[\\s\\S]{0,200}meta: \\{ page: '${page}' \\}`),
+        `路由表里没有 ${path} → ${page} 的映射 —— 那个页面进不去`,
+      )
+    }
   })
 
-  test('admin 分支排在 history 分支之前', () => {
-    const adminAt = appVue.indexOf(`currentPage === 'admin'`)
-    const historyAt = appVue.indexOf(`currentPage === 'history'`)
-    assert.ok(adminAt > 0 && historyAt > 0, '两个分支没都找到')
-    assert.ok(adminAt < historyAt,
-      'admin 分支排在 history 之后 —— 顺序反了的话历史页永远进不去')
+  test('App.vue 的当前页由 route.meta.page 派生，不是自己维护的 ref', () => {
+    assert.match(appVue, /useRoute\(\)/, 'App.vue 没用 useRoute —— 页面与 URL 会各走各的')
+    assert.match(appVue, /route\.meta\.page/, '当前页不是从 route.meta.page 派生的')
+    assert.doesNotMatch(appVue, /const currentPage = ref\(/, 'currentPage 又变回自己维护的 ref —— URL 与页面会各说各话')
   })
 
-  test('初始页由 location.pathname 决定（刷新停在 /admin）', () => {
-    assert.match(appVue, /const currentPage = ref\(pageFromPath\(/,
-      'currentPage 不是从 URL 读出来的 —— 刷新 /admin 会掉回首页')
-    assert.match(appVue, /function pageFromPath\(/, 'App.vue 里没有 pageFromPath')
+  test('手写轻路由不许复活（pushState / popstate / pageFromPath 都不该回来）', () => {
+    assert.doesNotMatch(appVue, /pushState/, '又手写了 history.pushState —— 前进后退会跟路由打架')
+    assert.doesNotMatch(appVue, /popstate/, '又手写了 popstate 监听 —— 浏览器后退会跟路由打架')
+    assert.doesNotMatch(appVue, /function pageFromPath/, 'pageFromPath 又回来了 —— 页面判定有第二个真值')
   })
 
-  test('pageFromPath：/admin 与 /admin/ 都落 admin，其余落 home', () => {
-    const pageFromPath = loadFn(appVue, 'pageFromPath')
-    // 尾部斜杠是真实存在的输入（某些部署会在 /admin/ 下发页面）。
-    // 不容忍它的话，刷新一次就掉回首页——而且只在那个部署下复现。
-    assert.equal(pageFromPath('/admin'), 'admin')
-    assert.equal(pageFromPath('/admin/'), 'admin')
-    assert.equal(pageFromPath('/'), 'home')
-    assert.equal(pageFromPath(''), 'home')
-    assert.equal(pageFromPath('/history'), 'home',
-      '把 /history 也认成 admin 就反了 —— 那是历史页的活儿')
+  test('切页走 router.push，不再自己改 URL', () => {
+    const table = [
+      ['openAdmin', '/admin'],
+      ['openHistory', '/history'],
+      ['openCommunity', '/community'],
+    ]
+    for (const [fn, path] of table) {
+      const m = appVue.match(new RegExp(`function ${fn}\\(\\)\\s*\\{([\\s\\S]*?)\\n\\}`))
+      assert.ok(m, `App.vue 里没有 ${fn}`)
+      assert.match(m[1], new RegExp(`router\\.push\\('${path}'\\)`), `${fn} 没有 router.push('${path}') —— 点了不动`)
+    }
   })
 
-  test('监听 popstate（浏览器后退能退回主站）', () => {
-    assert.match(appVue, /addEventListener\('popstate', syncPageFromUrl\)/,
-      "没监听 popstate —— 浏览器后退后 URL 与页面会对不上")
-    assert.match(appVue, /function syncPageFromUrl\(\)/, 'App.vue 里没有 syncPageFromUrl')
-  })
-
-  test('popstate 在卸载时解绑（否则组件重建后一次后退切多遍）', () => {
-    assert.match(appVue, /onUnmounted\(\(\)\s*=>\s*\{[\s\S]*?removeEventListener\('popstate'/,
-      'popstate 没有解绑 —— 每次重建都多挂一个监听')
+  test('/admin 不做前端守卫（真边界在服务端 ADR 0010）', () => {
+    assert.doesNotMatch(routerTs, /beforeEnter/, '路由里加了前端守卫 —— 管理员边界会出现第二个口径，而服务端那才是真的')
   })
 })
 
@@ -356,8 +407,7 @@ describe('三个页签 · 各自有取数路径', () => {
     const m = adminCode.match(/const LOADERS = \{([\s\S]*?)\n\}/)
     assert.ok(m, 'AdminPage.vue 里没有 LOADERS')
     const keys = [...m[1].matchAll(/^\s*([a-z]+):\s*load[A-Za-z]+,?\s*$/gm)].map((x) => x[1])
-    assert.deepEqual(keys, ['users', 'community', 'models'],
-      'LOADERS 与 TABS 不是一一对应 —— 某个页签永远取不到数')
+    assert.deepEqual(keys, ['users', 'community', 'models'], 'LOADERS 与 TABS 不是一一对应 —— 某个页签永远取不到数')
   })
 
   /** 逐页签独立成条：三个请求全打断时，三条一起红，不是一条顶三条。 */
@@ -369,20 +419,19 @@ describe('三个页签 · 各自有取数路径', () => {
     test(`${label}页签的 ${fn} 真的调 ${api}`, () => {
       const m = adminCode.match(new RegExp(`async function ${fn}\\(\\)[\\s\\S]*?\\n\\}`))
       assert.ok(m, `AdminPage.vue 里没有 ${fn}`)
-      assert.ok(m[0].includes(api),
-        `${fn} 里没有调 ${api} —— 「${label}」页签的数据出口断了，`
-        + '而页签本身还会照常渲染，症状是「点开永远是空的」')
+      assert.ok(
+        m[0].includes(api),
+        `${fn} 里没有调 ${api} —— 「${label}」页签的数据出口断了，` +
+          '而页签本身还会照常渲染，症状是「点开永远是空的」',
+      )
     })
   }
 
   test('空状态三份文案都在（不是只给某一页写）', () => {
     const m = adminCode.match(/const EMPTY = \{([\s\S]*?)\n\}/)
     assert.ok(m, 'AdminPage.vue 里没有 EMPTY')
-    const keys = Object.keys(
-      Object.fromEntries([...m[1].matchAll(/^\s*([a-z]+):\s*\{/gm)].map((x) => [x[1], 1])),
-    )
-    assert.deepEqual(keys, ['users', 'community', 'models'],
-      '空状态文案没覆盖三个页签 —— 某一页空时会渲染成白屏')
+    const keys = Object.keys(Object.fromEntries([...m[1].matchAll(/^\s*([a-z]+):\s*\{/gm)].map((x) => [x[1], 1])))
+    assert.deepEqual(keys, ['users', 'community', 'models'], '空状态文案没覆盖三个页签 —— 某一页空时会渲染成白屏')
   })
 
   test('页签是 role="tab" 的真按钮，带 aria-selected', () => {
@@ -396,16 +445,22 @@ describe('三个页签 · 各自有取数路径', () => {
   test('内容区是 role="tabpanel" 且与页签 id 互相指向', () => {
     assert.match(adminTemplate, /role="tabpanel"/, '内容区没有 role="tabpanel"')
     assert.match(adminTemplate, /:id="`admin-panel-\$\{tab\}`"/, 'tabpanel 的 id 没跟着页签走')
-    assert.match(adminTemplate, /:aria-labelledby="`admin-tab-\$\{tab\}`"/,
-      'tabpanel 没有 aria-labelledby —— 读屏时不知道自己在哪个页签下')
+    assert.match(
+      adminTemplate,
+      /:aria-labelledby="`admin-tab-\$\{tab\}`"/,
+      'tabpanel 没有 aria-labelledby —— 读屏时不知道自己在哪个页签下',
+    )
   })
 
   test('每个页签的请求都写进自己的状态槽（切页不会串台）', () => {
     const m = adminCode.match(/const views = reactive\(\{([\s\S]*?)\n\}\)/)
     assert.ok(m, 'AdminPage.vue 里没有 views')
     const keys = [...m[1].matchAll(/^\s*([a-z]+):\s*blankView\(\),?\s*$/gm)].map((x) => x[1])
-    assert.deepEqual(keys, ['users', 'community', 'models'],
-      'views 不是三份独立状态 —— 在「用户」页加载中会把「社区」页的内容一起换成骨架屏')
+    assert.deepEqual(
+      keys,
+      ['users', 'community', 'models'],
+      'views 不是三份独立状态 —— 在「用户」页加载中会把「社区」页的内容一起换成骨架屏',
+    )
   })
 
   test('编辑区只在点当前这一行时才展开', () => {
@@ -414,13 +469,14 @@ describe('三个页签 · 各自有取数路径', () => {
     assert.ok(m, '没有 editorOpen')
     // 单开：expandedId 是单值而非集合。这里若是与 tab 相关的表达式，
     // 则“一行展开”又变成了整页的状态。
-    assert.match(m[1], /expandedId\.value === u\.id/,
-      'editorOpen 不是单开判断')
-    assert.doesNotMatch(m[1], /tab\.value/,
-      'editorOpen 还在看 tab —— 展开不应该是整页的状态')
+    assert.match(m[1], /expandedId\.value === u\.id/, 'editorOpen 不是单开判断')
+    assert.doesNotMatch(m[1], /tab\.value/, 'editorOpen 还在看 tab —— 展开不应该是整页的状态')
     assert.match(adminCode, /function toggleRow\(u\)/, '没有 toggleRow ——点行展开没有入口')
-    assert.match(adminCode, /expandedId\.value = expandedId\.value === u\.id \? null : u\.id/,
-      'toggleRow 不是点当前行展开、点其他行收起')
+    assert.match(
+      adminCode,
+      /expandedId\.value = expandedId\.value === u\.id \? null : u\.id/,
+      'toggleRow 不是点当前行展开、点其他行收起',
+    )
   })
 
   test('点整行可展开，但邻近的按钮不会转发点事件', () => {
@@ -428,19 +484,23 @@ describe('三个页签 · 各自有取数路径', () => {
     // 里面的按钮必须 @click.stop：不否则点「删除」会顶掉轻点、
     // 同时把脚本下的编辑行展开——两个动作互相打扰。
     for (const fn of ['toggleAdmin', 'askDelete']) {
-      assert.match(adminTemplate, new RegExp(`@click\\.stop="${fn}\\(`),
-        `${fn} 没有 @click.stop ——点它会顶掉行上的展开动作`)
+      assert.match(
+        adminTemplate,
+        new RegExp(`@click\\.stop="${fn}\\(`),
+        `${fn} 没有 @click.stop ——点它会顶掉行上的展开动作`,
+      )
     }
   })
 
   test('行内编辑行的 aria 与那个按钮真的对得上', () => {
     // 只做行点击的话键盘用户完全挂地——所以那个邮箱格必须是真按钮。
-    assert.match(adminTemplate, /:aria-expanded="editorOpen\(u\) \? 'true' : 'false'"/,
-      '邮箱按钮没有 aria-expanded')
-    assert.match(adminTemplate, /:aria-controls="`quota-editor-\$\{u\.id\}`"/,
-      '邮箱按钮没有 aria-controls')
-    assert.match(adminTemplate, /:id="`quota-editor-\$\{u\.id\}`"/,
-      '编辑行没有那个 id ——aria-controls 指向不存在的目标')
+    assert.match(adminTemplate, /:aria-expanded="editorOpen\(u\) \? 'true' : 'false'"/, '邮箱按钮没有 aria-expanded')
+    assert.match(adminTemplate, /:aria-controls="`quota-editor-\$\{u\.id\}`"/, '邮箱按钮没有 aria-controls')
+    assert.match(
+      adminTemplate,
+      /:id="`quota-editor-\$\{u\.id\}`"/,
+      '编辑行没有那个 id ——aria-controls 指向不存在的目标',
+    )
   })
 
   test('用户页签有搜索与分页（契约里的 q / limit / offset）', () => {
@@ -452,8 +512,7 @@ describe('三个页签 · 各自有取数路径', () => {
     assert.match(adminTemplate, /@click="goPage\(view\.page \+ 1\)"/, '没有下一页')
     assert.match(adminTemplate, /共 \{\{ view\.total \}\} 条/, '分页没显示总条数')
     // 翻页不能落到模型页签上：那张清单是全量的
-    assert.match(adminTemplate, /v-if="tab !== 'models' && view\.total > PAGE_SIZE"/,
-      '分页块没有排除模型页签')
+    assert.match(adminTemplate, /v-if="tab !== 'models' && view\.total > PAGE_SIZE"/, '分页块没有排除模型页签')
   })
 
   test('goPage 不越界（否则最后一页的「下一页」会打出一个越界请求）', () => {
@@ -471,17 +530,22 @@ describe('每个页签的 loading / 空 / 错误三态', () => {
   test('loading 态：骨架屏 + 屏幕阅读器能读到的文字', () => {
     assert.match(adminTemplate, /v-if="view\.loading"/, '没有 loading 分支')
     assert.match(adminTemplate, /class="[^"]*skeleton/, 'loading 分支没有骨架屏')
-    assert.match(adminTemplate, /正在加载\{\{ tabLabel \}\}/,
-      'loading 分支没有可读文案 —— 只有一块会动的灰，屏幕阅读器读不到任何东西')
+    assert.match(
+      adminTemplate,
+      /正在加载\{\{ tabLabel \}\}/,
+      'loading 分支没有可读文案 —— 只有一块会动的灰，屏幕阅读器读不到任何东西',
+    )
   })
 
   test('空状态分支的条件是「列表真的空了」', () => {
     // 声明在「顺序」那条**前面**：两条都在守空状态，但条件这条更具体。
     // 顺序颠倒的话，把条件改坏会先被后面那条的「分支还在不在」挡住，
     // 指定来守条件的那条断言就成了死代码（变异实测过）。
-    assert.match(adminTemplate, /v-else-if="!view\.items\.length"/,
-      '空状态的判据不是 items 为空 —— 列表空着时会直接渲染出一张空表，'
-      + '而不是告诉管理员「没有数据」')
+    assert.match(
+      adminTemplate,
+      /v-else-if="!view\.items\.length"/,
+      '空状态的判据不是 items 为空 —— 列表空着时会直接渲染出一张空表，' + '而不是告诉管理员「没有数据」',
+    )
   })
 
   test('错误态在空状态**之前**（否则一次 500 被渲染成「没有数据」）', () => {
@@ -489,9 +553,10 @@ describe('每个页签的 loading / 空 / 错误三态', () => {
     const emptyAt = adminTemplate.indexOf('v-else-if="!view.items.length"')
     assert.ok(errAt > 0, '没有错误分支')
     assert.ok(emptyAt > 0, '没有空状态分支')
-    assert.ok(errAt < emptyAt,
-      '错误分支排在空状态之后 —— 请求挂了会被渲染成「没有数据」，'
-      + '用户会以为该换个关键词再搜，真正的原因被吞掉')
+    assert.ok(
+      errAt < emptyAt,
+      '错误分支排在空状态之后 —— 请求挂了会被渲染成「没有数据」，' + '用户会以为该换个关键词再搜，真正的原因被吞掉',
+    )
   })
 
   test('错误态有 role="alert" 与重试入口', () => {
@@ -507,8 +572,7 @@ describe('每个页签的 loading / 空 / 错误三态', () => {
   })
 
   test('403 是整页可读错误态，不是白屏', () => {
-    assert.match(adminTemplate, /v-if="view\.forbidden"/,
-      '没有 403 分支 —— 非管理员手动访问 /admin 会看到一片空白')
+    assert.match(adminTemplate, /v-if="view\.forbidden"/, '没有 403 分支 —— 非管理员手动访问 /admin 会看到一片空白')
     const m = adminTemplate.match(/v-if="view\.forbidden"[\s\S]*?<\/button>/)
     assert.ok(m, '取不到 403 分支的正文')
     assert.match(m[0], /没有管理员权限/, '403 分支没有说明「没有管理员权限」')
@@ -521,8 +585,7 @@ describe('每个页签的 loading / 空 / 错误三态', () => {
     // 只会听到一片沉默。
     const m = adminTemplate.match(/v-if="view\.forbidden"[\s\S]*?<\/button>/)
     assert.ok(m, '取不到 403 分支的正文')
-    assert.match(m[0], /role="alert"/,
-      '403 整页态没有 role="alert" —— 读屏用户听到的是静默，而不是「没有管理员权限」')
+    assert.match(m[0], /role="alert"/, '403 整页态没有 role="alert" —— 读屏用户听到的是静默，而不是「没有管理员权限」')
   })
 
   test('markFailure 真的按 403 分流（而不是把拒绝当成「列表为空」）', () => {
@@ -535,19 +598,25 @@ describe('每个页签的 loading / 空 / 错误三态', () => {
 
 describe('改额度 · 成功与失败都要有反馈', () => {
   test('成功反馈是一条看得见的文案', () => {
-    assert.match(adminCode, /feedbackOf\(u\.id\)\.kind\s*=\s*'ok'/,
-      'saveQuota 里没有成功分支的反馈 —— 改完没有任何确认')
+    assert.match(
+      adminCode,
+      /feedbackOf\(u\.id\)\.kind\s*=\s*'ok'/,
+      'saveQuota 里没有成功分支的反馈 —— 改完没有任何确认',
+    )
     assert.match(adminCode, /text = '额度已更新'/, '成功反馈没有文案')
   })
 
   test('失败反馈是另一条，不与成功共用一句话', () => {
     const fn = adminCode.match(/async function saveQuota\([\s\S]*?\n\}/)
     assert.ok(fn, '取不到 saveQuota')
-    const m = fn[0].match(/catch \(err\) \{([\s\S]*?)\n  \}/)
+    const m = fn[0].match(/catch \(err\) \{([\s\S]*?)\n {2}\}/)
     assert.ok(m, 'saveQuota 里没有 catch —— 请求失败会一路冒到组件边界，管理员什么都看不到')
     assert.match(m[1], /kind\s*=\s*'error'/, 'catch 里没有标成 error')
-    assert.match(m[1], /messageOf\(err\)/,
-      'catch 里没带服务端原因 —— 管理员只看到「失败」，无从判断是自己填错还是服务端挂了')
+    assert.match(
+      m[1],
+      /messageOf\(err\)/,
+      'catch 里没带服务端原因 —— 管理员只看到「失败」，无从判断是自己填错还是服务端挂了',
+    )
   })
 
   test('不做乐观更新：本地数字只被服务端回读的那份替换', () => {
@@ -555,22 +624,18 @@ describe('改额度 · 成功与失败都要有反馈', () => {
     assert.ok(m, '取不到 saveQuota')
     const body = m[0]
     const replaceAt = body.indexOf('replaceUser(')
-    const okAt = body.indexOf('kind = \'ok\'')
+    const okAt = body.indexOf("kind = 'ok'")
     assert.ok(replaceAt > 0 && okAt > 0, 'saveQuota 里既没有 replaceUser 也没有成功分支')
     assert.ok(replaceAt < okAt, '成功反馈早于 replaceUser —— 顺序反了就会出现「先报成功再改数」')
     // 乐观更新的形态是「发请求之前就写本地行」
     const beforeReq = body.slice(0, body.indexOf('await setUserQuota'))
-    assert.doesNotMatch(beforeReq, /replaceUser\(/,
-      'replaceUser 出现在发请求之前 —— 那是乐观更新，失败时会留下假数字')
+    assert.doesNotMatch(beforeReq, /replaceUser\(/, 'replaceUser 出现在发请求之前 —— 那是乐观更新，失败时会留下假数字')
   })
 
   test('vip_not_effective 必须渲染出来（不提示管理员就会以为是自己操作错了）', () => {
-    assert.match(adminCode, /res\.note === 'vip_not_effective'/,
-      "没有判 note === 'vip_not_effective'")
-    assert.match(adminCode, /feedbackOf\(u\.id\)\.text = res\.message/,
-      'VIP 提示没有把服务端 message 显示出来')
-    assert.match(adminTemplate, /feedbackOf\(u\.id\)\.text/,
-      '反馈文案没有进模板 —— 后端说了什么前端都没显示')
+    assert.match(adminCode, /res\.note === 'vip_not_effective'/, "没有判 note === 'vip_not_effective'")
+    assert.match(adminCode, /feedbackOf\(u\.id\)\.text = res\.message/, 'VIP 提示没有把服务端 message 显示出来')
+    assert.match(adminTemplate, /feedbackOf\(u\.id\)\.text/, '反馈文案没有进模板 —— 后端说了什么前端都没显示')
   })
 
   test('成功后不收起编辑行（否则成功提示跟着一起消失）', () => {
@@ -581,9 +646,11 @@ describe('改额度 · 成功与失败都要有反馈', () => {
     const catchAt = body.indexOf('catch (err)')
     assert.ok(okAt > 0 && catchAt > okAt, 'saveQuota 里找不到成功分支')
     // 反馈写在这行里，收起编辑行等于把「改成功了」一起收走
-    assert.doesNotMatch(body.slice(okAt, catchAt), /closeEditor\(/,
-      "成功分支里调了 closeEditor —— 编辑行一收，「额度已更新」也跟着没了，"
-      + '管理员会以为自己没点上')
+    assert.doesNotMatch(
+      body.slice(okAt, catchAt),
+      /closeEditor\(/,
+      '成功分支里调了 closeEditor —— 编辑行一收，「额度已更新」也跟着没了，' + '管理员会以为自己没点上',
+    )
   })
 
   test('反馈区是 aria-live 的礼貌播报区', () => {
@@ -621,18 +688,24 @@ describe('键盘可达与 aria', () => {
     // 装在 <label>...<input></label> 里的 checkbox 不需要 id：包裹本身就是一种合法的
     // 关联方式（新增的标签勾选框就是这个形式）。真正要求的是
     // 「每个 input 都有可读名字」，而不是「每个 input 都有 id」。
-    const wrapped = new Set([...adminTemplate.matchAll(/<label[^>]*>[\s\S]*?<input[^>]*>[\s\S]*?<\/label>/g)]
-      .flatMap((m) => [...m[0].matchAll(/<input[^>]*>/g)].map((x) => x[0])))
+    const wrapped = new Set(
+      [...adminTemplate.matchAll(/<label[^>]*>[\s\S]*?<input[^>]*>[\s\S]*?<\/label>/g)].flatMap((m) =>
+        [...m[0].matchAll(/<input[^>]*>/g)].map((x) => x[0]),
+      ),
+    )
     const bare = all.filter((i) => !wrapped.has(i))
     for (const inp of bare) {
-      assert.ok(/(^|\s):?id="/.test(inp),
-        `input 没有 id 也没被 label 包裹（读屏无法读出它是什么）：${inp.slice(0, 60)}`)
+      assert.ok(
+        /(^|\s):?id="/.test(inp),
+        `input 没有 id 也没被 label 包裹（读屏无法读出它是什么）：${inp.slice(0, 60)}`,
+      )
     }
-    assert.ok(wrapped.size >= 1, '装在 label 里的标签 checkbox 一个都没有'
-      + '——删掉包裹之后它就变成了没有可读名字的无名控件')
+    assert.ok(
+      wrapped.size >= 1,
+      '装在 label 里的标签 checkbox 一个都没有' + '——删掉包裹之后它就变成了没有可读名字的无名控件',
+    )
     const fors = [...adminTemplate.matchAll(/:for="`quota-[a-z]+-\$\{u\.id\}`"/g)]
-    assert.equal(fors.length, 2,
-      `找到 ${fors.length} 个额度输入框的 label —— 解析与追问两个上限都要能定位`)
+    assert.equal(fors.length, 2, `找到 ${fors.length} 个额度输入框的 label —— 解析与追问两个上限都要能定位`)
   })
 
   test('表头是 th + scope="col"', () => {
@@ -667,13 +740,16 @@ describe('键盘可达与 aria', () => {
 })
 
 describe('后端契约 · snake_case 转换收在一处', () => {
-  test('从 ../api/admin.js 导入的名单与冻结契约一致，且不含任何 to* 转换', () => {
+  test('从 ../api/admin.ts 导入的名单与冻结契约一致，且不含任何 to* 转换', () => {
     // [^}]* 不是 [\s\S]*? —— 后者会从文件里第一个 import {（vue 那行）起吞到
     // 这里，名单里混进 'onMounted } from \'vue\'...' 这种垃圾。
     // [^}]* 天然锚定「最后一个 } 之前」的那条 import，同时照样能跨行。
-    const m = adminCode.match(/import \{([^}]*)\} from '\.\.\/api\/admin\.js'/)
-    assert.ok(m, "没有从 '../api/admin.js' 导入")
-    const names = m[1].split(',').map((s) => s.trim()).filter(Boolean)
+    const m = adminCode.match(/import \{([^}]*)\} from '\.\.\/api\/admin\.ts'/)
+    assert.ok(m, "没有从 '../api/admin.ts' 导入")
+    const names = m[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
     // 契约从五个长到八个（ADR 0012 账号生命周期）再到十一个：fetchTagVocabulary /
     // updateCommunityTags / deleteCommunityVideo 是 ADR 0013 社区审核的前端出口。
     // 工单 #15 收口：fetchAdminModels（原文出口）删掉，换成 fetchAdminModelCatalog；
@@ -681,12 +757,23 @@ describe('后端契约 · snake_case 转换收在一处', () => {
     // 现在在 api 层就翻好，组件一次都不需要自己翻。
     // **这份名单是冻结的**——少一个说明有路径绕过了 api 层，
     // 多一个说明有新的未审接口混进来了。
-    assert.deepEqual(names.sort(),
-      ['createAdminUser', 'deleteAdminUser', 'deleteCommunityVideo',
-       'fetchAdminCommunity', 'fetchAdminModelCatalog', 'fetchAdminUsers',
-       'fetchTagVocabulary', 'setUserAdmin', 'setUserQuota',
-       'updateAdminModel', 'updateCommunityTags'],
-      '导入的 API 名字与冻结的契约不一致')
+    assert.deepEqual(
+      names.sort(),
+      [
+        'createAdminUser',
+        'deleteAdminUser',
+        'deleteCommunityVideo',
+        'fetchAdminCommunity',
+        'fetchAdminModelCatalog',
+        'fetchAdminUsers',
+        'fetchTagVocabulary',
+        'setUserAdmin',
+        'setUserQuota',
+        'updateAdminModel',
+        'updateCommunityTags',
+      ],
+      '导入的 API 名字与冻结的契约不一致',
+    )
 
     // 名单删掉两个名字之后，逐个列名字的判据自己就漏了：将来新增第四份转换
     // （比如 `toQuota`）时它不在名单里，上面那条 deepEqual 照样绿，而组件
@@ -696,24 +783,27 @@ describe('后端契约 · snake_case 转换收在一处', () => {
     // 换掉的只是**判据形式**。列名字的做法在收口前是成立的（那时组件确实该翻
     // 回读原文），收口之后不再成立。
     const converters = names.filter((n) => /^to[A-Z]/.test(n))
-    assert.deepEqual(converters, [],
-      `组件又 import 了转换函数：${converters.join(', ')} —— api 层出口返回的`
-      + '已经是 camelCase，组件再 import 转换就等于两份映射各改各的')
+    assert.deepEqual(
+      converters,
+      [],
+      `组件又 import 了转换函数：${converters.join(', ')} —— api 层出口返回的` +
+        '已经是 camelCase，组件再 import 转换就等于两份映射各改各的',
+    )
   })
 
   test('组件里不再自己定义转换函数（工单 #15 收口，同族项）', () => {
-    // 三份转换（用户 / 社区 / 模型）都在 `api/admin.js` 定义。组件若另写一份，
+    // 三份转换（用户 / 社区 / 模型）都在 `api/admin.ts` 定义。组件若另写一份，
     // 同一份数据就有两种转换归属——而「读不到的键」不报错、只退化成默认值：
     // `enabled` 键名两种形态相同所以读得到（症状是某几列显示异常），
     // 而 `sort_order` 已翻成 `sortOrder`，再读旧键读不到就退回 0。
     for (const fn of ['toUser', 'toCommunityItem', 'toModel']) {
-      assert.ok(!new RegExp(`const\\s+${fn}\\s*=`).test(adminCode),
-        `组件里又出现了一份 ${fn} —— 转换该归 api 层独有，`
-        + '组件留一份就等于两份映射各改各的')
+      assert.ok(
+        !new RegExp(`const\\s+${fn}\\s*=`).test(adminCode),
+        `组件里又出现了一份 ${fn} —— 转换该归 api 层独有，` + '组件留一份就等于两份映射各改各的',
+      )
     }
     // 数字助手是转换的一部分，也跟着搬走了。
-    assert.ok(!/const num =/.test(adminCode),
-      '组件里又有 num 助手 —— 它只服务于那三份转换，应随转换一起在 api 层')
+    assert.ok(!/const num =/.test(adminCode), '组件里又有 num 助手 —— 它只服务于那三份转换，应随转换一起在 api 层')
   })
 
   test('三个 loader 都不再 .map（列表出口已经在 api 层转好）', () => {
@@ -722,36 +812,50 @@ describe('后端契约 · snake_case 转换收在一处', () => {
     // undefined 就退回 0 —— 于是「清空覆盖（null）」和「设成 0」在界面上
     // 变得一模一样，管理员改完看不出到底改没改成。
     for (const m of adminCode.matchAll(/v\.items\s*=\s*([^\n]+)/g)) {
-      assert.ok(!/\.map\(/.test(m[1]),
-        `loaders 里又出现了一次转换：${m[1].trim()}\n`
-        + '  —— 列表出口返回的已经是 camelCase，组件再翻一次就是第二份映射，'
-        + '而读不到的键只会退化成默认值、永远不报错')
+      assert.ok(
+        !/\.map\(/.test(m[1]),
+        `loaders 里又出现了一次转换：${m[1].trim()}\n` +
+          '  —— 列表出口返回的已经是 camelCase，组件再翻一次就是第二份映射，' +
+          '而读不到的键只会退化成默认值、永远不报错',
+      )
     }
   })
 
   test('模板里不出现 snake_case 取值（转换必须已经发生）', () => {
     const hits = [...adminTemplate.matchAll(/[A-Za-z_$][\w$]*\.[a-z]+_[a-z]+/g)].map((m) => m[0])
-    assert.deepEqual(hits, [],
-      `模板里直接读了 snake_case 字段：${hits.join(' ')}\n`
-      + '  —— 契约是 snake_case，camelCase 由 api 层那三份转换（toAdminUser / '
-      + 'toAdminCommunityItem / toAdminModelItem）一次性转好。'
-      + '模板里混着两种命名，后端一改字段，报错会散落在整份模板里。')
+    assert.deepEqual(
+      hits,
+      [],
+      `模板里直接读了 snake_case 字段：${hits.join(' ')}\n` +
+        '  —— 契约是 snake_case，camelCase 由 api 层那三份转换（toAdminUser / ' +
+        'toAdminCommunityItem / toAdminModelItem）一次性转好。' +
+        '模板里混着两种命名，后端一改字段，报错会散落在整份模板里。',
+    )
   })
 
   test('四个请求的调用形状与冻结契约一致', () => {
-    assert.match(adminCode, /fetchAdminUsers\(\{ page: v\.page, pageSize: PAGE_SIZE, q: query\.value\.trim\(\) \}\)/,
-      '用户列表的调用形状与契约不符（page / pageSize / q）')
-    assert.match(adminCode, /fetchAdminCommunity\(\{ page: v\.page, pageSize: PAGE_SIZE \}\)/,
-      '社区列表的调用形状与契约不符')
+    assert.match(
+      adminCode,
+      /fetchAdminUsers\(\{ page: v\.page, pageSize: PAGE_SIZE, q: query\.value\.trim\(\) \}\)/,
+      '用户列表的调用形状与契约不符（page / pageSize / q）',
+    )
+    assert.match(
+      adminCode,
+      /fetchAdminCommunity\(\{ page: v\.page, pageSize: PAGE_SIZE \}\)/,
+      '社区列表的调用形状与契约不符',
+    )
     assert.match(adminCode, /await fetchAdminModelCatalog\(\)/, '模型清单应当无参数调用')
-    assert.match(adminCode, /setUserQuota\(u\.id, \{ parseLimit: parseLimit\.value, chatLimit: chatLimit\.value \}\)/,
-      '改额度的调用形状与契约不符（userId + { parseLimit, chatLimit }）')
+    assert.match(
+      adminCode,
+      /setUserQuota\(u\.id, \{ parseLimit: parseLimit\.value, chatLimit: chatLimit\.value \}\)/,
+      '改额度的调用形状与契约不符（userId + { parseLimit, chatLimit }）',
+    )
   })
 
   test('解析上限与上限来源都读了（override 决定回填，source 决定解释）', () => {
     // 转换搬到 api 层后（工单 #15 收口），这条断言的目标也跟着搬过去。
     const m = apiAdmin.match(/export function toAdminUser\(([\s\S]*?)\n\}/)
-    assert.ok(m, '取不到 api/admin.js 的 toAdminUser')
+    assert.ok(m, '取不到 api/admin.ts 的 toAdminUser')
     for (const f of ['parse_limit_override', 'chat_limit_override', 'parse_limit_source', 'chat_limit_source']) {
       assert.ok(m[1].includes(f), `toAdminUser 没有读 ${f} —— 改完额度看不到有没有真的落成 override`)
     }
@@ -770,19 +874,23 @@ describe('AI 服务页签 · 模型清单可改（ADR 0010）', () => {
   })
 
   test('保存真的调 updateAdminModel（挂上函数不调用 = 装饰）', () => {
-    assert.match(adminCode, /import\s*\{[^}]*\bupdateAdminModel\b[^}]*\}\s*from\s*'\.\.\/api\/admin\.js'/,
-      'AdminPage.vue 没有 import updateAdminModel')
-    assert.match(adminCode, /await\s+updateAdminModel\(/,
-      '保存逻辑没有真的调 updateAdminModel')
-    assert.match(adminCode, /@click="saveModel\(/,
-      '保存按钮没有绑 saveModel')
+    assert.match(
+      adminCode,
+      /import\s*\{[^}]*\bupdateAdminModel\b[^}]*\}\s*from\s*'\.\.\/api\/admin\.ts'/,
+      'AdminPage.vue 没有 import updateAdminModel',
+    )
+    assert.match(adminCode, /await\s+updateAdminModel\(/, '保存逻辑没有真的调 updateAdminModel')
+    assert.match(adminCode, /@click="saveModel\(/, '保存按钮没有绑 saveModel')
   })
 
   test('enabled 必须翻成 0/1 —— 后端显式拒布尔值', () => {
     // Python 里 True == 1：`{"enabled": true}` 会静静地变成「上架」。
     // 这条断言断的是那层翻译真的在，而不是「enabled 这个词出现过」。
-    assert.match(apiAdmin, /body\.enabled\s*=\s*patch\.enabled\s*\?\s*1\s*:\s*0/,
-      'api/admin.js 没把 enabled 翻成 0/1，后端会拒布尔值')
+    assert.match(
+      apiAdmin,
+      /body\.enabled\s*=\s*patch\.enabled\s*\?\s*1\s*:\s*0/,
+      'api/admin.ts 没把 enabled 翻成 0/1，后端会拒布尔值',
+    )
   })
 
   test('只带调用方传了的键（PATCH 语义）', () => {
@@ -795,44 +903,54 @@ describe('AI 服务页签 · 模型清单可改（ADR 0010）', () => {
     // 无条件把七个字段全发过去 = 每次改一个显示名都顺手刷掉模型列表、
     // 端点、排序成草稿里的值 —— 而草稿可能没加载全。
     for (const key of ['label', 'hint', 'baseUrl', 'models', 'defaultModel', 'enabled', 'sortOrder']) {
-      assert.match(apiAdmin, new RegExp(`'${key}'\\s+in\\s+patch`),
-        `请求体无条件带上了 ${key}：没传这个键时后端也会改它，PATCH 语义被破坏`)
+      assert.match(
+        apiAdmin,
+        new RegExp(`'${key}'\\s+in\\s+patch`),
+        `请求体无条件带上了 ${key}：没传这个键时后端也会改它，PATCH 语义被破坏`,
+      )
     }
-    assert.match(apiAdmin, /Object\.keys\(body\)\.length\s*===\s*0/,
-      '空 patch 应当在前端就挡住（后端会回 400，但省一次往返）')
+    assert.match(
+      apiAdmin,
+      /Object\.keys\(body\)\.length\s*===\s*0/,
+      '空 patch 应当在前端就挡住（后端会回 400，但省一次往返）',
+    )
   })
 
   test('键名翻成 snake_case（发 camelCase 会静默什么都不改还返回 200）', () => {
     for (const key of ['base_url', 'default_model', 'sort_order']) {
-      assert.match(apiAdmin, new RegExp(`body\\.${key}\\s*=`),
-        `没有翻成 snake_case 的 ${key}`)
+      assert.match(apiAdmin, new RegExp(`body\\.${key}\\s*=`), `没有翻成 snake_case 的 ${key}`)
     }
   })
 
   test('成功用**回读**结果替换本地行，不做乐观更新', () => {
     // 先本地改卡片、请求失败时静默回滚 —— 管理员看到「改成功了」
     // 而实际没改，那比报错更坏。
-    assert.match(adminCode, /await\s+updateAdminModel\([\s\S]*?replaceModel\(res\.item\)/,
-      '保存成功后没有用服务端回读的那份替换本地行')
+    assert.match(
+      adminCode,
+      /await\s+updateAdminModel\([\s\S]*?replaceModel\(res\.item\)/,
+      '保存成功后没有用服务端回读的那份替换本地行',
+    )
     assert.match(adminCode, /function\s+replaceModel\(/, '缺少 replaceModel')
-    assert.ok(!/replaceModel\(\{\s*\.\.\./.test(adminCode),
-      'replaceModel 收了本地草稿而不是服务端回读结果')
+    assert.ok(!/replaceModel\(\{\s*\.\.\./.test(adminCode), 'replaceModel 收了本地草稿而不是服务端回读结果')
   })
 
   test('replaceModel 不再自己转换（api 层已经转过，翻第二次是静默 bug）', () => {
     // `updateAdminModel` 在 api 层就把回读原文转成 camelCase 了
-    // （`api/admin.js` 里 `item: toAdminModelItem(res.data.item)`）。
+    // （`api/admin.ts` 里 `item: toAdminModelItem(res.data.item)`）。
     // 组件若再翻一次**不会报错**：`enabled` 这个键两种形态同名，读得到；
     // 而 `sort_order` 已经变成 `sortOrder`，`toAdminModelItem` 读不到就退回 0
     // → 每保存一次就把该行的排序号静默抹成 0。
     const m = adminCode.match(/function\s+replaceModel\(([\s\S]*?)\n\}/)
     assert.ok(m, '取不到 replaceModel')
-    assert.ok(!/toAdminModelItem\(/.test(m[1]),
-      'replaceModel 又自己转换了一次 —— api 层已经转好，翻第二次会把 sortOrder 抹成 0')
+    assert.ok(
+      !/toAdminModelItem\(/.test(m[1]),
+      'replaceModel 又自己转换了一次 —— api 层已经转好，翻第二次会把 sortOrder 抹成 0',
+    )
     // 组件里根本不该再出现模型转换函数（工单 #15 收口后它归 api 层独有）
-    assert.ok(!/toAdminModelItem/.test(adminCode),
-      '组件里引入了 toAdminModelItem —— 那是 api 层独有的转换，'
-      + '组件再拿一份就等于两份映射各改各的')
+    assert.ok(
+      !/toAdminModelItem/.test(adminCode),
+      '组件里引入了 toAdminModelItem —— 那是 api 层独有的转换，' + '组件再拿一份就等于两份映射各改各的',
+    )
   })
 
   test('反馈走 aria-live，且成功提示说清平台默认变成了什么', () => {
@@ -844,24 +962,24 @@ describe('AI 服务页签 · 模型清单可改（ADR 0010）', () => {
   })
 
   test('前端挡住「默认模型不在可选列表里」，不等服务端 400', () => {
-    assert.match(adminCode, /list\.value\.indexOf\(d\.defaultModel\)\s*<\s*0/,
-      '没在前端校验「平台默认必须从可选模型里选」')
-    assert.match(adminCode, /indexOf\(p\)\s*!==\s*i/,
-      '没在前端挡住重复的模型名')
+    assert.match(
+      adminCode,
+      /list\.value\.indexOf\(d\.defaultModel\)\s*<\s*0/,
+      '没在前端校验「平台默认必须从可选模型里选」',
+    )
+    assert.match(adminCode, /indexOf\(p\)\s*!==\s*i/, '没在前端挡住重复的模型名')
   })
 
   test('草稿在渲染前播种（v-model 绑不到成员表达式）', () => {
     // 与额度草稿同一条硬约束：Vue 的 v-model 只接受成员表达式，
     // `modelDrafts[m.id].label` 必须在该 key 已存在时才合法。
     assert.match(adminCode, /function\s+primeModelDrafts\(/, '缺少 primeModelDrafts')
-    assert.match(adminCode, /primeModelDrafts\(v\.items\)/,
-      'loadModels 渲染前没有播种草稿')
+    assert.match(adminCode, /primeModelDrafts\(v\.items\)/, 'loadModels 渲染前没有播种草稿')
   })
 
   test('保存中禁用按钮，避免重复提交', () => {
     const modelEditor = admin.slice(admin.indexOf('openModelEditor(m.id)'))
-    assert.match(modelEditor, /:disabled="savingModelId\s*!==\s*null"/,
-      '保存中没禁用按钮，连点会发多次')
+    assert.match(modelEditor, /:disabled="savingModelId\s*!==\s*null"/, '保存中没禁用按钮，连点会发多次')
   })
 })
 // ── 把 saveModel 抽出来实跑 ──────────────────────────────────
@@ -914,37 +1032,57 @@ function makeSaveSandbox({ saving = null } = {}) {
     return modelFeedbacks[id]
   }
   const factory = new Function(
-    'modelDrafts', 'modelFeedbacks', 'savingModelId', 'modelFeedbackOf',
-    'updateAdminModel', 'replaceModel', 'messageOf',
+    'modelDrafts',
+    'modelFeedbacks',
+    'savingModelId',
+    'modelFeedbackOf',
+    'updateAdminModel',
+    'replaceModel',
+    'messageOf',
     `${SAVE_FN_BODY}\nreturn { saveModel, toModelList, hasModels }`,
   )
   const api = factory(
-    modelDrafts, modelFeedbacks, { value: saving }, modelFeedbackOf,
+    modelDrafts,
+    modelFeedbacks,
+    { value: saving },
+    modelFeedbackOf,
     async (id, patch) => {
       calls.push({ id, patch })
       return { item: { id, label: patch.label }, platformDefault: 'm1' }
     },
-    () => {}, (e) => String((e && e.message) || e),
+    () => {},
+    (e) => String((e && e.message) || e),
   )
   return { ...api, modelDrafts, calls, modelFeedbacks, modelFeedbackOf }
 }
 
 const REAL_ROW = {
-  id: 'bailian', label: '阿里云百炼', enabled: true, sortOrder: 10,
-  models: ['qwen-plus', 'qwen-turbo'], defaultModel: 'qwen-plus',
+  id: 'bailian',
+  label: '阿里云百炼',
+  enabled: true,
+  sortOrder: 10,
+  models: ['qwen-plus', 'qwen-turbo'],
+  defaultModel: 'qwen-plus',
 }
 /** platform / custom：后端播种就是 models=[] 的占位行 */
 const PLACEHOLDER_ROW = {
-  id: 'platform', label: '平台', enabled: true, sortOrder: 0,
-  models: [], defaultModel: '',
+  id: 'platform',
+  label: '平台',
+  enabled: true,
+  sortOrder: 0,
+  models: [],
+  defaultModel: '',
 }
 
 function seedDraft(box, row, over = {}) {
   box.modelDrafts[row.id] = {
-    label: row.label, hint: '', baseUrl: '',
+    label: row.label,
+    hint: '',
+    baseUrl: '',
     modelsText: (row.models || []).join(', '),
     defaultModel: row.defaultModel || '',
-    enabled: row.enabled ? 1 : 0, sortOrder: row.sortOrder,
+    enabled: row.enabled ? 1 : 0,
+    sortOrder: row.sortOrder,
     ...over,
   }
 }
@@ -954,8 +1092,7 @@ describe('saveModel 真跑 · 发出去的 payload', () => {
     const box = makeSaveSandbox()
     seedDraft(box, REAL_ROW, { label: '草稿里的名字' })
     await box.saveModel(REAL_ROW)
-    assert.equal(box.calls.length, 1,
-      '沙箱没接上：草稿写进了函数看不见的对象，后面所有用例都会假绿')
+    assert.equal(box.calls.length, 1, '沙箱没接上：草稿写进了函数看不见的对象，后面所有用例都会假绿')
   })
 
   test('正常行：带上 models 与 defaultModel，值取自草稿', async () => {
@@ -976,15 +1113,17 @@ describe('saveModel 真跑 · 发出去的 payload', () => {
     const box = makeSaveSandbox()
     seedDraft(box, PLACEHOLDER_ROW, { label: '平台（改名成功）', enabled: 0 })
     await box.saveModel(PLACEHOLDER_ROW)
-    assert.equal(box.calls.length, 1,
-      `占位行应当也能保存，实得 ${box.calls.length} 次调用：`
-      + `${box.modelFeedbacks.platform && box.modelFeedbacks.platform.text}`)
+    assert.equal(
+      box.calls.length,
+      1,
+      `占位行应当也能保存，实得 ${box.calls.length} 次调用：` +
+        `${box.modelFeedbacks.platform && box.modelFeedbacks.platform.text}`,
+    )
     const { patch } = box.calls[0]
     assert.equal(patch.label, '平台（改名成功）')
     assert.equal(patch.enabled, false, '下架也要能存')
     // 关键：不能发空数组。后端拒空 models，硬发等于让这一行彻底存不了
-    assert.ok(!('models' in patch),
-      `占位行不该发 models，实得 ${JSON.stringify(patch.models)}`)
+    assert.ok(!('models' in patch), `占位行不该发 models，实得 ${JSON.stringify(patch.models)}`)
     assert.ok(!('defaultModel' in patch), '占位行不该发 defaultModel')
   })
 
@@ -1068,36 +1207,61 @@ function makeUserSandbox({ items = [], total = 0, api = {} } = {}) {
   const impl = { ...defaultApi, ...api }
 
   const factory = new Function(
-    'createOpen', 'creating', 'busyUserId', 'pendingDeleteId',
-    'createDraft', 'createFeedback', 'opsFeedbacks', 'view',
-    'opsFeedbackOf', 'createAdminUser', 'setUserAdmin', 'deleteAdminUser',
-    'replaceUser', 'messageOf',
+    'createOpen',
+    'creating',
+    'busyUserId',
+    'pendingDeleteId',
+    'createDraft',
+    'createFeedback',
+    'opsFeedbacks',
+    'view',
+    'opsFeedbackOf',
+    'createAdminUser',
+    'setUserAdmin',
+    'deleteAdminUser',
+    'replaceUser',
+    'messageOf',
     `${USER_FN_BODY}\nreturn { saveNewUser, toggleAdmin, askDelete, cancelDelete, confirmDelete }`,
   )
   const fns = factory(
-    { value: false }, { value: false }, { value: null }, pendingDeleteId,
-    createDraft, createFeedback, opsFeedbacks, view,
+    { value: false },
+    { value: false },
+    { value: null },
+    pendingDeleteId,
+    createDraft,
+    createFeedback,
+    opsFeedbacks,
+    view,
     (id) => {
       if (!opsFeedbacks[id]) opsFeedbacks[id] = { kind: '', text: '' }
       return opsFeedbacks[id]
     },
-    impl.createAdminUser, impl.setUserAdmin, impl.deleteAdminUser,
+    impl.createAdminUser,
+    impl.setUserAdmin,
+    impl.deleteAdminUser,
     (user) => {
       // replaceUser 的替身：api 层已翻好，这里只做「用回读结果替换本地行」
       const i = view.value.items.findIndex((x) => x.id === user.id)
       if (i >= 0) view.value.items.splice(i, 1, user)
     },
-    (e) => String((e && e.response && e.response.data && e.response.data.detail)
-      || (e && e.message) || e),
+    (e) => String((e && e.response && e.response.data && e.response.data.detail) || (e && e.message) || e),
   )
   return { ...fns, calls, opsFeedbacks, createDraft, createFeedback, view, pendingDeleteId }
 }
 
 function userRow(id, over = {}) {
   return {
-    id, email: `u${id}@example.com`, isAdmin: false, isVip: false,
-    parseUsed: 0, chatUsed: 0, parseLimit: 3, chatLimit: 10,
-    parseLimitOverride: null, chatLimitOverride: null, createdAt: '2026-01-01',
+    id,
+    email: `u${id}@example.com`,
+    isAdmin: false,
+    isVip: false,
+    parseUsed: 0,
+    chatUsed: 0,
+    parseLimit: 3,
+    chatLimit: 10,
+    parseLimitOverride: null,
+    chatLimitOverride: null,
+    createdAt: '2026-01-01',
     ...over,
   }
 }
@@ -1162,8 +1326,13 @@ describe('账号生命周期 · 建号（ADR 0012）', () => {
 
   test('建号失败：给出错误，列表与 total 一个都不动', async () => {
     const box = makeUserSandbox({
-      items: [userRow(1)], total: 1,
-      api: { async createAdminUser() { throw conflictErr('该邮箱已注册', {}) } },
+      items: [userRow(1)],
+      total: 1,
+      api: {
+        async createAdminUser() {
+          throw conflictErr('该邮箱已注册', {})
+        },
+      },
     })
     box.createDraft.email = 'dupe@example.com'
     box.createDraft.password = 's3cret-pass'
@@ -1172,8 +1341,7 @@ describe('账号生命周期 · 建号（ADR 0012）', () => {
     assert.match(box.createFeedback.text, /该邮箱已注册/)
     assert.equal(box.view.value.items.length, 1, '失败不该往列表里塞行')
     assert.equal(box.view.value.total, 1)
-    assert.equal(box.createDraft.email, 'dupe@example.com',
-      '失败时表单要留着，让管理员改完再提交')
+    assert.equal(box.createDraft.email, 'dupe@example.com', '失败时表单要留着，让管理员改完再提交')
   })
 })
 
@@ -1191,20 +1359,25 @@ describe('账号生命周期 · 管理员标记（ADR 0012）', () => {
 
   test('成功用**回读**替换本地行，不做乐观更新', async () => {
     const box = makeUserSandbox({
-      items: [userRow(1)], total: 1,
+      items: [userRow(1)],
+      total: 1,
       // 回读说「其实没提成」——本地行必须跟着回读走。
       // 回读的形状是 api 层出口的形状，也就是 camelCase（工单 #22 收口后
       // setUserAdmin 已在 api 层翻好，沙箱里的替身模拟的正是它）。
-      api: { async setUserAdmin() { return { user: { id: 1, isAdmin: false } } } },
+      api: {
+        async setUserAdmin() {
+          return { user: { id: 1, isAdmin: false } }
+        },
+      },
     })
     await box.toggleAdmin(box.view.value.items[0])
-    assert.equal(box.view.value.items[0].isAdmin, false,
-      '本地行必须被回读结果替换，而不是调用方传进去的 flag')
+    assert.equal(box.view.value.items[0].isAdmin, false, '本地行必须被回读结果替换，而不是调用方传进去的 flag')
   })
 
   test('409（撤自己）：反馈是 error，行不变', async () => {
     const box = makeUserSandbox({
-      items: [userRow(1, { isAdmin: true })], total: 1,
+      items: [userRow(1, { isAdmin: true })],
+      total: 1,
       api: {
         async setUserAdmin() {
           throw conflictErr('不能撤销自己的管理员权限——那样就没有人能把它改回来了', {})
@@ -1223,20 +1396,23 @@ describe('账号生命周期 · 删除（ADR 0012）', () => {
     const box = makeUserSandbox({ items: [userRow(1), userRow(2)], total: 2 })
     await box.confirmDelete(box.view.value.items[0])
     assert.equal(box.calls[0].op, 'delete')
-    assert.deepEqual(box.view.value.items.map((x) => x.id), [2])
+    assert.deepEqual(
+      box.view.value.items.map((x) => x.id),
+      [2],
+    )
     assert.equal(box.view.value.total, 1)
   })
 
   test('409：行留下、total 不变、反馈里带**数字**', async () => {
     const box = makeUserSandbox({
-      items: [userRow(1)], total: 1,
+      items: [userRow(1)],
+      total: 1,
       api: {
         async deleteAdminUser() {
           // detail 里**故意不带数字**：它只说「还有内容」。
           // 于是断言里的「订单 2 条」只可能来自 blockers 的渲染——
           // 而服务端那句话本身已经含数字时，这条断言会被它白送。
-          throw conflictErr('这个账号名下还有内容，先处理掉再删。',
-            { orders: 2, parse_history: 5 })
+          throw conflictErr('这个账号名下还有内容，先处理掉再删。', { orders: 2, parse_history: 5 })
         },
       },
     })
@@ -1262,29 +1438,29 @@ describe('账号生命周期 · 删除（ADR 0012）', () => {
 
 describe('账号生命周期 · 静态契约', () => {
   test('模板里不用 window.confirm（它阻塞事件循环且无法断言）', () => {
-    assert.doesNotMatch(adminTemplate, /window\.confirm/,
-      '删除确认必须是内联二次确认，不是 window.confirm')
+    assert.doesNotMatch(adminTemplate, /window\.confirm/, '删除确认必须是内联二次确认，不是 window.confirm')
   })
 
   test('删除确认行存在，两个按钮都接上了各自的处理器', () => {
-    assert.match(adminTemplate, /v-if="pendingDeleteId === u\.id"/,
-      '没有内联二次确认行')
+    assert.match(adminTemplate, /v-if="pendingDeleteId === u\.id"/, '没有内联二次确认行')
     assert.match(adminTemplate, /@click="confirmDelete\(u\)"/)
     assert.match(adminTemplate, /@click="cancelDelete"/)
   })
 
   test('两条反馈都接进 aria-live（成功与失败都要被读屏读到）', () => {
     const live = [...adminTemplate.matchAll(/aria-live="polite"/g)]
-    assert.ok(live.length >= 2,
-      `只找到 ${live.length} 处 aria-live —— 建号反馈与行内操作反馈各要一处`)
+    assert.ok(live.length >= 2, `只找到 ${live.length} 处 aria-live —— 建号反馈与行内操作反馈各要一处`)
   })
 
   test('模板里从不写 is_vip —— VIP 不在后台可改范围', () => {
     const hits = [...adminTemplate.matchAll(/is_vip|vip_expire_at|vipExpireAt/g)].map((m) => m[0])
-    assert.deepEqual(hits, [],
-      `模板里出现了 VIP 字段：${hits.join(' ')}\n`
-      + '  —— VIP 只能由订单支付写入，后台写它会同时踩到'
-      + '「新增测试不得锁会员行为」这条纪律。')
+    assert.deepEqual(
+      hits,
+      [],
+      `模板里出现了 VIP 字段：${hits.join(' ')}\n` +
+        '  —— VIP 只能由订单支付写入，后台写它会同时踩到' +
+        '「新增测试不得锁会员行为」这条纪律。',
+    )
   })
 
   test('行内的管理员标记是**按钮开关**，不是可自由编辑的输入框', () => {
@@ -1295,9 +1471,12 @@ describe('账号生命周期 · 静态契约', () => {
     const rowScoped = [...adminTemplate.matchAll(/v-model="([^"]*[Ii]sAdmin[^"]*)"/g)]
       .map((m) => m[1])
       .filter((expr) => !/createDraft/.test(expr))
-    assert.deepEqual(rowScoped, [],
-      `行内出现了可编辑的管理员标记输入框：${rowScoped.join(' ')}`
-      + '——它是一次开关动作，不是可以随手改成任意值的字段。')
+    assert.deepEqual(
+      rowScoped,
+      [],
+      `行内出现了可编辑的管理员标记输入框：${rowScoped.join(' ')}` +
+        '——它是一次开关动作，不是可以随手改成任意值的字段。',
+    )
   })
 
   test('新建表单的每个输入都有 label（可达性判据要求 input 有 id）', () => {
@@ -1313,36 +1492,44 @@ describe('账号生命周期 · 静态契约', () => {
 // ─────────────────────────────────────────────────────────
 describe('社区审核 · 静态契约', () => {
   test('社区页签不再自称只读', () => {
-    assert.doesNotMatch(adminTemplate, /只读。社区视频的删除与下架不在后台范围内/,
-      '社区页签还在自称只读 —— 它现在有改标签与删除两个写出口')
-    assert.doesNotMatch(adminCode, /社区：只读/,
-      '源码注释还在说社区是只读（可见文案改了、注释没改）')
+    assert.doesNotMatch(
+      adminTemplate,
+      /只读。社区视频的删除与下架不在后台范围内/,
+      '社区页签还在自称只读 —— 它现在有改标签与删除两个写出口',
+    )
+    assert.doesNotMatch(adminCode, /社区：只读/, '源码注释还在说社区是只读（可见文案改了、注释没改）')
   })
 
   test('列表带上状态，pending 占位与真实内容分得开', () => {
     // 转换搬到 api 层后（工单 #15 收口），status 的映射跟着搬过去了。
-    assert.match(apiAdmin, /status: r\.status,/,
-      'toAdminCommunityItem 没有把 status 映射过来 —— 组件分不出空壳与真内容')
-    assert.match(adminTemplate, /c\.status === 'ready'/,
-      '模板没有按 status 区分渲染')
+    assert.match(
+      apiAdmin,
+      /status: r\.status,/,
+      'toAdminCommunityItem 没有把 status 映射过来 —— 组件分不出空壳与真内容',
+    )
+    assert.match(adminTemplate, /c\.status === 'ready'/, '模板没有按 status 区分渲染')
     assert.match(adminTemplate, /占位中/, '没有「占位中」的文案')
   })
 
   test('点行才展开（与用户表同一套交互）', () => {
     assert.match(adminTemplate, /@click="toggleCommunityRow\(c\)"/, '社区行不可点')
-    assert.match(adminTemplate, /@click\.stop="toggleCommunityRow\(c\)"/,
-      '标题按钮没有 @click.stop —— 点它会触发两次 toggle，等于没点')
+    assert.match(
+      adminTemplate,
+      /@click\.stop="toggleCommunityRow\(c\)"/,
+      '标题按钮没有 @click.stop —— 点它会触发两次 toggle，等于没点',
+    )
     const m = adminCode.match(/function communityEditorOpen\(([\s\S]*?)\n\}/)
     assert.ok(m, '没有 communityEditorOpen')
-    assert.match(m[1], /expandedCommunityId\.value === id/,
-      'communityEditorOpen 不是单开判断')
+    assert.match(m[1], /expandedCommunityId\.value === id/, 'communityEditorOpen 不是单开判断')
   })
 
   test('删除走两步确认，不是 window.confirm', () => {
-    assert.doesNotMatch(adminTemplate, /window\.confirm/,
-      '用了 window.confirm —— 阻塞事件循环、样式无法统一、也无法断言')
-    assert.match(adminTemplate, /v-if="pendingCommunityDeleteId === c\.id"/,
-      '没有二次确认行')
+    assert.doesNotMatch(
+      adminTemplate,
+      /window\.confirm/,
+      '用了 window.confirm —— 阻塞事件循环、样式无法统一、也无法断言',
+    )
+    assert.match(adminTemplate, /v-if="pendingCommunityDeleteId === c\.id"/, '没有二次确认行')
     assert.match(adminCode, /function askDeleteCommunity\(/, '没有 askDeleteCommunity')
     assert.match(adminCode, /function confirmDeleteCommunity\(/, '没有 confirmDeleteCommunity')
     assert.match(adminCode, /function cancelDeleteCommunity\(/, '没有 cancelDeleteCommunity')
@@ -1350,16 +1537,12 @@ describe('社区审核 · 静态契约', () => {
 
   test('**前端不自己抄一份标签词表**', () => {
     // 这条是最容易回归的：把词表抄进 AdminPage.vue 之后，下面所有断言照样全绿，
-    // 而漂移已经发生了（同 byok.js 硬编码 7 个厂商那一次）。
-    assert.match(adminCode, /fetchTagVocabulary\(/,
-      '没有从服务端取词表 —— 前端要么硬编码了一份，要么根本没接')
-    assert.match(adminTemplate, /vocabulary\.groups/,
-      '标签编辑器没有渲染词表分组')
-    assert.match(adminTemplate, /v-for="g in vocabulary\.groups"/,
-      '标签编辑器不是按词表分组渲染的')
+    // 而漂移已经发生了（同 byok.ts 硬编码 7 个厂商那一次）。
+    assert.match(adminCode, /fetchTagVocabulary\(/, '没有从服务端取词表 —— 前端要么硬编码了一份，要么根本没接')
+    assert.match(adminTemplate, /vocabulary\.groups/, '标签编辑器没有渲染词表分组')
+    assert.match(adminTemplate, /v-for="g in vocabulary\.groups"/, '标签编辑器不是按词表分组渲染的')
     for (const tag of ['人工智能', '前端开发', '其他']) {
-      assert.ok(!adminTemplate.includes(tag),
-        `模板里硬编码了标签「${tag}」—— 词表只能有一个真值来源`)
+      assert.ok(!adminTemplate.includes(tag), `模板里硬编码了标签「${tag}」—— 词表只能有一个真值来源`)
     }
   })
 
@@ -1371,19 +1554,21 @@ describe('社区审核 · 静态契约', () => {
     // 只因为源码正好有那个兜底。**守卫在强制缺陷存在**，而修好源码就会
     // 让它转红 —— 也就是说「把实现改对」这件事被这条断言挡着。
     // 记在这里是为了别有人再把它改回正向。
-    assert.ok(!/maxTags\s*\|\|\s*\d/.test(adminCode),
-      'maxTags 又出现了 `|| 数字` 兜底 —— 前端不是从服务端响应里读的，'
-      + '词表改上限时这里会静默过期，而界面不报错')
-    assert.match(adminCode, /const maxTags = computed\(\(\) => vocabulary\.value\.maxTags\)/,
-      'maxTags 没有直接取 vocabulary 里的值')
-    assert.match(adminTemplate, /selectedTagCount\(c\.id\) >= maxTags/,
-      '选满之后没有把其余选项禁掉')
+    assert.ok(
+      !/maxTags\s*\|\|\s*\d/.test(adminCode),
+      'maxTags 又出现了 `|| 数字` 兜底 —— 前端不是从服务端响应里读的，' + '词表改上限时这里会静默过期，而界面不报错',
+    )
+    assert.match(
+      adminCode,
+      /const maxTags = computed\(\(\) => vocabulary\.value\.maxTags\)/,
+      'maxTags 没有直接取 vocabulary 里的值',
+    )
+    assert.match(adminTemplate, /selectedTagCount\(c\.id\) >= maxTags/, '选满之后没有把其余选项禁掉')
   })
 
   test('确认文案说清「不删用户的解析历史」', () => {
     // 这份数据删完就看不见了，只能在点之前说。
-    assert.match(adminTemplate, /不删这个用户的解析历史/,
-      '删除确认没有说明用户的解析历史会保留')
+    assert.match(adminTemplate, /不删这个用户的解析历史/, '删除确认没有说明用户的解析历史会保留')
     assert.match(adminTemplate, /不可撤销/, '删除确认没有标不可撤销')
   })
 
@@ -1391,15 +1576,20 @@ describe('社区审核 · 静态契约', () => {
     assert.match(adminCode, /function communityFeedbackOf\(/, '没有独立的 communityFeedbackOf')
     const m = adminCode.match(/function communityFeedbackOf\(([\s\S]*?)\n\}/)
     assert.ok(m, '抽不出 communityFeedbackOf')
-    assert.ok(!/feedbackOf\(/.test(m[1]) && !/opsFeedbackOf\(/.test(m[1]),
-      'communityFeedbackOf 借用了用户的反馈槽 —— 两条反馈会互相顶掉')
+    assert.ok(
+      !/feedbackOf\(/.test(m[1]) && !/opsFeedbackOf\(/.test(m[1]),
+      'communityFeedbackOf 借用了用户的反馈槽 —— 两条反馈会互相顶掉',
+    )
   })
 
   test('草稿每次从库里的值起头，不是上次改到一半的', () => {
     const m = adminCode.match(/function toggleCommunityRow\(([\s\S]*?)\n\}/)
     assert.ok(m, '抽不出 toggleCommunityRow')
-    assert.match(m[1], /tagDrafts\[c\.id\] = Array\.isArray\(c\.tags\) \? c\.tags\.slice\(\) : \[\]/,
-      '草稿不是从当前行的 tags 重新播种 —— 取消一次再进来会看到上次的临时值')
+    assert.match(
+      m[1],
+      /tagDrafts\[c\.id\] = Array\.isArray\(c\.tags\) \? c\.tags\.slice\(\) : \[\]/,
+      '草稿不是从当前行的 tags 重新播种 —— 取消一次再进来会看到上次的临时值',
+    )
   })
 })
 
@@ -1409,7 +1599,7 @@ describe('社区审核 · toggleTag 真跑', () => {
   // 而 ReferenceError 与「断言变红」长得不一样 —— 别把「报错了」当成「测到了」。
   function makeSandbox(maxTags) {
     const tagDrafts = {}
-    const max = { value: maxTags }          // 顶替 computed(maxTags)
+    const max = { value: maxTags } // 顶替 computed(maxTags)
     const bind = (name, deps) => new Function(...deps, `return (${extractFn(adminCode, name)})`)
     const selectedTags = bind('selectedTags', ['tagDrafts'])(tagDrafts)
     const tagSelected = bind('tagSelected', ['tagDrafts', 'selectedTags'])(tagDrafts, selectedTags)
@@ -1482,8 +1672,11 @@ describe('社区审核 · vocabulary 的初始值不是写死的上限', () => {
   test('初始 maxTags 是 0（0 是「还没有上限」，非 0 就是第二个真值）', () => {
     const m = adminCode.match(/ref\(\{\s*maxTags\s*:\s*(-?\d+)/)
     assert.ok(m, '抽不出 vocabulary 的 ref 初始值')
-    assert.equal(Number(m[1]), 0,
-      `vocabulary 的初始 maxTags 是 ${m[1]}，不是 0 —— 非 0 的初值就是第二个真值：`
-      + '词表到达之前，界面会先按它放行一次')
+    assert.equal(
+      Number(m[1]),
+      0,
+      `vocabulary 的初始 maxTags 是 ${m[1]}，不是 0 —— 非 0 的初值就是第二个真值：` +
+        '词表到达之前，界面会先按它放行一次',
+    )
   })
 })

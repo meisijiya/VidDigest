@@ -30,13 +30,13 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 // vi.mock 必须留在本文件顶部：它靠「被提升到组件 import 之前」生效。
-vi.mock('../src/api/auth.js', () => ({
+vi.mock('../src/api/auth.ts', () => ({
   login: vi.fn(),
   register: vi.fn(),
 }))
 
 import AuthModal from '../src/components/AuthModal.vue'
-import { login, register } from '../src/api/auth.js'
+import { login, register } from '../src/api/auth.ts'
 
 const okUser = { id: 1, email: 'a@example.com' }
 
@@ -227,7 +227,11 @@ describe('AuthModal 挂载 · 提交', () => {
 
   test('提交期间按钮禁用，连点两次只发一次请求', async () => {
     let resolve
-    login.mockReturnValue(new Promise((r) => { resolve = r }))
+    login.mockReturnValue(
+      new Promise((r) => {
+        resolve = r
+      }),
+    )
     const w = await mountModal({ initialMode: 'login' })
     await fillAndSubmit()
     await nextTick()
@@ -273,8 +277,7 @@ describe('AuthModal 挂载 · 失败反馈', () => {
     // 插值对数组走 JSON.stringify，渲染出来是一段 JSON 块而不是 [object Object]。
     // 变异实测：把它写成 not.toContain('[object Object]') 的话，去掉兜底之后本条
     // 照样绿——判据在替身自己身上过。留下的这一条是真的能红：去掉兜底它就空。
-    login.mockRejectedValueOnce(
-      httpError([{ loc: ['body', 'email'], msg: 'value is not a valid email address' }], 422))
+    login.mockRejectedValueOnce(httpError([{ loc: ['body', 'email'], msg: 'value is not a valid email address' }], 422))
     const w = await mountModal({ initialMode: 'login' })
 
     const text = await submitAndRead()
@@ -323,8 +326,7 @@ describe('AuthModal 挂载 · 关闭', () => {
 
   test('切换登录/注册时按钮文案跟着换', async () => {
     const w = await mountModal({ initialMode: 'login' })
-    const switchBtn = [...body().querySelectorAll('button')]
-      .find((b) => b.textContent.includes('去注册'))
+    const switchBtn = [...body().querySelectorAll('button')].find((b) => b.textContent.includes('去注册'))
     expect(switchBtn, '没有切换到注册的入口').toBeTruthy()
 
     await switchBtn.click()

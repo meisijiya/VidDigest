@@ -5,12 +5,7 @@
 import { test, describe, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 
-import {
-  createSseParser,
-  summarizeVideo,
-  chatWithVideo,
-  fetchQuota,
-} from '../src/api/summarize.js'
+import { createSseParser, summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.ts'
 
 /** 造一个能响应 AbortSignal 的假流，行为对齐真实 fetch + ReadableStream。 */
 function fakeStream(chunks, { signal, close = true } = {}) {
@@ -36,9 +31,15 @@ beforeEach(() => {
   calls = { fetch: [] }
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
 })
 
@@ -46,8 +47,13 @@ beforeEach(() => {
 function recorder() {
   const log = { events: [], errors: [], cancelled: 0, done: 0 }
   let wake
-  const gotOne = new Promise((r) => { wake = r })
-  const push = (e) => { log.events.push(e); wake() }
+  const gotOne = new Promise((r) => {
+    wake = r
+  })
+  const push = (e) => {
+    log.events.push(e)
+    wake()
+  }
   return {
     log,
     /** 等第一个事件到达 —— 用于「流保持打开」的场景，不能靠 await done */
@@ -59,8 +65,12 @@ function recorder() {
       onQuota: (d) => push(['quota', d]),
       onAnswer: (t) => push(['answer', t]),
       onError: (e) => log.errors.push(e.message),
-      onCancel: () => { log.cancelled++ },
-      onDone: () => { log.done++ },
+      onCancel: () => {
+        log.cancelled++
+      },
+      onDone: () => {
+        log.done++
+      },
     },
   }
 }
@@ -83,7 +93,6 @@ const FULL_STREAM = [
   'data: [DONE]\n',
 ]
 
-
 describe('createSseParser', () => {
   test('事件名跨 chunk 边界保持', () => {
     const p = createSseParser()
@@ -94,7 +103,10 @@ describe('createSseParser', () => {
         if (ev) got.push([ev.event, ev.data])
       }
     }
-    assert.deepEqual(got, [['subtitle', { a: 1 }], ['mindmap', { b: 2 }]])
+    assert.deepEqual(got, [
+      ['subtitle', { a: 1 }],
+      ['mindmap', { b: 2 }],
+    ])
   })
 
   test('[DONE] 映射为 done 事件', () => {
@@ -119,14 +131,15 @@ describe('createSseParser', () => {
   })
 })
 
-
 describe('summarizeVideo', () => {
   test('正常流：事件全部路由，onDone 恰好一次', async () => {
     globalThis.fetch = async () => fakeStream(FULL_STREAM)
     const r = recorder()
     await summarizeVideo('u', 'zh', r.cb).done
-    assert.deepEqual(r.log.events.map((e) => e[0]),
-      ['subtitle', 'quota', 'summary', 'summary', 'mindmap'])
+    assert.deepEqual(
+      r.log.events.map((e) => e[0]),
+      ['subtitle', 'quota', 'summary', 'summary', 'mindmap'],
+    )
     assert.deepEqual(r.log.events[1][1], { remaining: 2, limit: 3, unlimited: false })
     assert.equal(r.log.done, 1)
     assert.deepEqual(r.log.errors, [])
@@ -141,7 +154,9 @@ describe('summarizeVideo', () => {
   })
 
   test('传输异常：onError 与 onDone 都触发', async () => {
-    globalThis.fetch = async () => { throw new Error('network down') }
+    globalThis.fetch = async () => {
+      throw new Error('network down')
+    }
     const r = recorder()
     await summarizeVideo('u', 'zh', r.cb).done
     assert.deepEqual(r.log.errors, ['network down'])
@@ -149,10 +164,11 @@ describe('summarizeVideo', () => {
   })
 
   test('用户主动取消：走 onCancel，不当错误，onDone 仍触发', LIMIT, async () => {
-    globalThis.fetch = async (url, opts) => fakeStream(['event: summary\n', 'data: "partial"\n'], { signal: opts.signal, close: false })
+    globalThis.fetch = async (url, opts) =>
+      fakeStream(['event: summary\n', 'data: "partial"\n'], { signal: opts.signal, close: false })
     const r = recorder()
     const stream = summarizeVideo('u', 'zh', r.cb)
-    await r.first()          // 流保持打开，done 不会 resolve —— 等首个事件而不是等 done
+    await r.first() // 流保持打开，done 不会 resolve —— 等首个事件而不是等 done
     stream.cancel()
     await stream.done
     assert.equal(r.log.cancelled, 1)
@@ -161,7 +177,8 @@ describe('summarizeVideo', () => {
   })
 
   test('重复 cancel 幂等', LIMIT, async () => {
-    globalThis.fetch = async (url, opts) => fakeStream(['event: summary\n', 'data: "a"\n'], { signal: opts.signal, close: false })
+    globalThis.fetch = async (url, opts) =>
+      fakeStream(['event: summary\n', 'data: "a"\n'], { signal: opts.signal, close: false })
     const r = recorder()
     const stream = summarizeVideo('u', 'zh', r.cb)
     await r.first()
@@ -190,16 +207,26 @@ describe('summarizeVideo', () => {
     const cut = Math.floor(payload.length / 2)
     const ch1 = Buffer.concat([prefix, payload.subarray(0, cut)])
     const ch2 = payload.subarray(cut)
-    globalThis.fetch = async () => new Response(new ReadableStream({
-      start(c) { c.enqueue(new Uint8Array(ch1)); c.enqueue(new Uint8Array(ch2)); c.close() },
-    }))
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new Uint8Array(ch1))
+            c.enqueue(new Uint8Array(ch2))
+            c.close()
+          },
+        }),
+      )
     const r = recorder()
     await summarizeVideo('u', 'zh', r.cb).done
     assert.equal(r.log.events[0][1].t, '中文标题')
   })
 
   test('鉴权头带上 token', async () => {
-    globalThis.fetch = async (url, opts) => { calls.fetch.push(opts); return fakeStream(FULL_STREAM) }
+    globalThis.fetch = async (url, opts) => {
+      calls.fetch.push(opts)
+      return fakeStream(FULL_STREAM)
+    }
     const r = recorder()
     await summarizeVideo('u', 'zh', r.cb).done
     assert.equal(calls.fetch[0].headers.Authorization, 'Bearer test-token')
@@ -207,11 +234,13 @@ describe('summarizeVideo', () => {
   })
 })
 
-
 describe('chatWithVideo', () => {
   test('请求体不再带字幕全文（工单 #8）', async () => {
     let body = null
-    globalThis.fetch = async (url, opts) => { body = JSON.parse(opts.body); return fakeStream(['event: done\n', 'data: [DONE]\n']) }
+    globalThis.fetch = async (url, opts) => {
+      body = JSON.parse(opts.body)
+      return fakeStream(['event: done\n', 'data: [DONE]\n'])
+    }
     const r = recorder()
     await chatWithVideo('u', 'q', r.cb).done
     assert.deepEqual(body, { url: 'u', question: 'q' })
@@ -221,22 +250,31 @@ describe('chatWithVideo', () => {
     globalThis.fetch = async () => fakeStream(['event: answer\n', 'data: "a"\n', 'data: "b"\n'])
     const r = recorder()
     await chatWithVideo('u', 'q', r.cb).done
-    assert.deepEqual(r.log.events, [['answer', 'a'], ['answer', 'b']])
+    assert.deepEqual(r.log.events, [
+      ['answer', 'a'],
+      ['answer', 'b'],
+    ])
     assert.equal(r.log.done, 1)
   })
 
   test('quota 事件在问答里也被路由', async () => {
-    globalThis.fetch = async () => fakeStream([
-      'event: quota\n', 'data: {"remaining":2,"limit":3,"unlimited":false}\n',
-      'event: answer\n', 'data: "x"\n', 'event: done\n', 'data: [DONE]\n',
-    ])
+    globalThis.fetch = async () =>
+      fakeStream([
+        'event: quota\n',
+        'data: {"remaining":2,"limit":3,"unlimited":false}\n',
+        'event: answer\n',
+        'data: "x"\n',
+        'event: done\n',
+        'data: [DONE]\n',
+      ])
     const r = recorder()
     await chatWithVideo('u', 'q', r.cb).done
     assert.deepEqual(r.log.events[0], ['quota', { remaining: 2, limit: 3, unlimited: false }])
   })
 
   test('取消生效', LIMIT, async () => {
-    globalThis.fetch = async (url, opts) => fakeStream(['event: answer\n', 'data: "a"\n'], { signal: opts.signal, close: false })
+    globalThis.fetch = async (url, opts) =>
+      fakeStream(['event: answer\n', 'data: "a"\n'], { signal: opts.signal, close: false })
     const r = recorder()
     const stream = chatWithVideo('u', 'q', r.cb)
     await r.first()
@@ -247,15 +285,16 @@ describe('chatWithVideo', () => {
   })
 })
 
-
 describe('fetchQuota', () => {
   test('返回后端额度并带鉴权头', async () => {
     const seen = {}
     globalThis.fetch = async (url, opts) => {
       seen.url = url
       seen.auth = opts.headers.Authorization
-      return new Response(JSON.stringify({ logged_in: true, unlimited: false, remaining: 2, limit: 3 }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify({ logged_in: true, unlimited: false, remaining: 2, limit: 3 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
     const q = await fetchQuota()
     assert.equal(seen.url, '/api/quota')

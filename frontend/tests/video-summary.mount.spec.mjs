@@ -44,36 +44,38 @@ import { mount, flushPromises } from '@vue/test-utils'
 
 // vi.mock 必须在顶部：它靠「被提升到组件 import 之前」生效。下沉到共用夹具就依赖导入
 // 顺序，失效是静默的——组件真去发 axios 请求，jsdom 没有 XHR，形态是「挂载即炸」。
-vi.mock('../src/api/summarize.js', () => ({
+vi.mock('../src/api/summarize.ts', () => ({
   summarizeVideo: vi.fn(),
   chatWithVideo: vi.fn(),
   fetchQuota: vi.fn(),
 }))
-vi.mock('../src/api/history.js', () => ({
+vi.mock('../src/api/history.ts', () => ({
   fetchChatSession: vi.fn(),
   saveHistory: vi.fn(),
 }))
 // 真实现读 localStorage；这里钉成固定值，让「凭据有没有跟着走」在任何环境下同形。
-vi.mock('../src/lib/byok.js', () => ({
+vi.mock('../src/lib/byok.ts', () => ({
   getRequestCredential: vi.fn(() => ({ provider: 'openai' })),
 }))
 
 import VideoSummary from '../src/components/VideoSummary.vue'
-import { summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.js'
-import { fetchChatSession, saveHistory } from '../src/api/history.js'
+import { summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.ts'
+import { fetchChatSession, saveHistory } from '../src/api/history.ts'
 
 // ── 造数据 ─────────────────────────────────────────────────
 
 const VIDEO_URL = 'https://youtu.be/dQw4w9WgXcQ'
 
 /**
- * `api/summarize.js` 的 `streamSse` 返回 `{ done, cancel }`：`done` 是结束的 Promise，
+ * `api/summarize.ts` 的 `streamSse` 返回 `{ done, cancel }`：`done` 是结束的 Promise，
  * `cancel` 是用户主动停止。这里照抄那个契约——事件什么时候发由测试自己点，
  * 而不是像既有 text 测试那样 `enqueue` 一次性灌完。
  */
 function makeStream() {
   let finish
-  const done = new Promise((res) => { finish = res })
+  const done = new Promise((res) => {
+    finish = res
+  })
   return {
     handle: { done, cancel: vi.fn() },
     finish: () => finish({ done: true, value: undefined }),
@@ -103,7 +105,11 @@ async function mountSummary(props = {}) {
     chatCb = cb
     return chatStream.handle
   })
-  fetchQuota.mockResolvedValue({ logged_in: true, parse: { remaining: 3, limit: 3 }, chat: { remaining: 10, limit: 10 } })
+  fetchQuota.mockResolvedValue({
+    logged_in: true,
+    parse: { remaining: 3, limit: 3 },
+    chat: { remaining: 10, limit: 10 },
+  })
   fetchChatSession.mockResolvedValue([])
 
   const w = mount(VideoSummary, {
@@ -311,14 +317,15 @@ describe('VideoSummary 挂载 · 开关的契约默认值', () => {
 
   test('对照：传 hasCommunityResult: true 时确实自动发起（immediate 在跑）', async () => {
     await mountSummary({ hasCommunityResult: true })
-    expect(summarizeVideo, '对照不成立 —— watch 的 immediate 没在跑，下面那条「不传就不发起」就成了恒真')
-      .toHaveBeenCalled()
+    expect(
+      summarizeVideo,
+      '对照不成立 —— watch 的 immediate 没在跑，下面那条「不传就不发起」就成了恒真',
+    ).toHaveBeenCalled()
   })
 
   test('对照：regenerateRequested 单独为真也自动发起（|| 的另一半）', async () => {
     await mountSummary({ regenerateRequested: true })
-    expect(summarizeVideo, 'regenerateRequested 这一支没生效 —— || 的后半段没人守')
-      .toHaveBeenCalled()
+    expect(summarizeVideo, 'regenerateRequested 这一支没生效 —— || 的后半段没人守').toHaveBeenCalled()
   })
 })
 
@@ -340,12 +347,16 @@ describe('VideoSummary 挂载 · 开关的契约默认值', () => {
  * 只测后两条的话，「服务端说这次用了自己的 key 时界面要跟着说」这条完全没人守 ——
  * 而它恰恰是三条里**唯一不由前端推断**的那条。
  *
- * 此前本文件把 `lib/byok.js` mock 掉了，但 byok 提示读的是 **prop** 不是那个模块，
+ * 此前本文件把 `lib/byok.ts` mock 掉了，但 byok 提示读的是 **prop** 不是那个模块，
  * 所以这里不需要动 mock。
  */
 describe('VideoSummary 挂载 · byok 额度提示', () => {
   const byokProp = (over = {}) => ({
-    mode: 'byok', hasKey: true, baseUrl: '', model: '', ...over,
+    mode: 'byok',
+    hasKey: true,
+    baseUrl: '',
+    model: '',
+    ...over,
   })
 
   test('不传 byok prop 时三条分支都不渲染', async () => {
@@ -362,18 +373,17 @@ describe('VideoSummary 挂载 · byok 额度提示', () => {
     // 这句话是 #26 修复之后仍然成立的那一版：mode 是 byok 但没 key 时，
     // getRequestCredential() 在第一个 guard（!state.apiKey）就返回 null。
     // 万一将来把 mode 的判断挪到 api 层、而这一句没跟着改，用户就被骗了。
-    expect(w.html(), '没告诉用户实际会走平台额度 —— 他会以为在用自己的 key')
-      .toContain('仍会走平台额度')
+    expect(w.html(), '没告诉用户实际会走平台额度 —— 他会以为在用自己的 key').toContain('仍会走平台额度')
     const btn = w.findAll('button').find((b) => b.text().includes('去填写'))
     expect(btn, '没有「去填写」入口 —— 用户只能自己去顶栏找那个图标').toBeTruthy()
     await btn.trigger('click')
-    expect(w.emitted('open-byok'), '点了「去填写」却没有 emit open-byok —— 弹窗不会开')
-      .toBeTruthy()
+    expect(w.emitted('open-byok'), '点了「去填写」却没有 emit open-byok —— 弹窗不会开').toBeTruthy()
   })
 
   test('选了自带且已填：显示当前模型名', async () => {
     const w = await mountSummary({
-      hasCommunityResult: true, byok: byokProp({ model: 'deepseek-chat' }),
+      hasCommunityResult: true,
+      byok: byokProp({ model: 'deepseek-chat' }),
     })
     expect(w.html()).toContain('当前使用你自己的 API Key')
     expect(w.html(), '没显示当前模型名 —— 用户确认不了自己在用哪个').toContain('deepseek-chat')
@@ -387,7 +397,10 @@ describe('VideoSummary 挂载 · byok 额度提示', () => {
 
     // 先给一条正常额度，让「余额」有个可见的基线
     summarizeCb.onQuota({
-      remaining: 2, limit: 3, parse: { remaining: 1, limit: 3 }, chat: { remaining: 9, limit: 10 },
+      remaining: 2,
+      limit: 3,
+      parse: { remaining: 1, limit: 3 },
+      chat: { remaining: 9, limit: 10 },
     })
     await flushPromises()
     expect(w.html()).toContain('解析 1 / 3')
@@ -400,7 +413,10 @@ describe('VideoSummary 挂载 · byok 额度提示', () => {
 
     // 后续再来的正常额度仍然照常更新
     summarizeCb.onQuota({
-      remaining: 1, limit: 3, parse: { remaining: 0, limit: 3 }, chat: { remaining: 9, limit: 10 },
+      remaining: 1,
+      limit: 3,
+      parse: { remaining: 0, limit: 3 },
+      chat: { remaining: 9, limit: 10 },
     })
     await flushPromises()
     expect(w.html(), 'byok 之后余额再也不更新了').toContain('解析 已用完（0 / 3）')
@@ -419,13 +435,15 @@ describe('VideoSummary 挂载 · byok 额度提示', () => {
     await flushPromises()
 
     expect(w.html()).toContain('本次追问用了你自己的 API Key')
-    expect(w.html(), '说成了「本次解析」—— 用户以为刚才那次解析用了自己的 key')
-      .not.toContain('本次解析用了你自己的 API Key')
+    expect(w.html(), '说成了「本次解析」—— 用户以为刚才那次解析用了自己的 key').not.toContain(
+      '本次解析用了你自己的 API Key',
+    )
   })
 
   test('三条互斥：服务端回报为真时不该同时还挂着「还没填」那句', async () => {
     const w = await mountSummary({
-      hasCommunityResult: true, byok: byokProp({ hasKey: false }),
+      hasCommunityResult: true,
+      byok: byokProp({ hasKey: false }),
     })
     summarizeCb.onQuota({ byok: true })
     await flushPromises()

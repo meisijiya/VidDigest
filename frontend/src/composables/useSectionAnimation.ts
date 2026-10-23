@@ -1,12 +1,13 @@
 import { ref, onMounted, onUnmounted } from 'vue'
+import type { Ref } from 'vue'
 
 /**
  * 侦测元素是否进入视口，自动添加 visible class 触发 CSS 动画
  * 用法：<div ref="elRef" class="section-enter" v-useSectionAnimation />
  */
-export function useSectionAnimation() {
-  const elRef = ref(null)
-  let observer = null
+export function useSectionAnimation(): Ref<HTMLElement | null> {
+  const elRef = ref<HTMLElement | null>(null)
+  let observer: IntersectionObserver | null = null
 
   onMounted(() => {
     if (!elRef.value) return
@@ -17,7 +18,7 @@ export function useSectionAnimation() {
           observer?.unobserve(entry.target)
         }
       },
-      { threshold: 0.1 }
+      { threshold: 0.1 },
     )
     observer.observe(elRef.value)
   })

@@ -18,105 +18,17 @@
       @open-community="openCommunity"
       @open-admin="openAdmin"
     />
-    <ByokDialog
-      :visible="byokDialogOpen"
-      :loggedIn="!!currentUser"
-      @close="byokDialogOpen = false"
-    />
+    <ByokDialog :visible="byokDialogOpen" :loggedIn="!!currentUser" @close="byokDialogOpen = false" />
     <main class="flex-1 pt-16">
-      <template v-if="currentPage === 'home'">
-      <HeroSection
-        @parse="handleParse"
-        :loading="loading"
-        :compact="!!videoData"
-        :showSlogan="!videoData || demoMode"
-      />
-
-      <!-- 视频结果区域 -->
-      <Transition name="slide-up">
-        <section v-if="videoData" class="py-6 sm:py-10">
-          <div class="max-w-7xl mx-auto px-4 sm:px-6">
-            <!-- 缓存复用提示 + 重新解析 -->
-            <div v-if="fromCache"
-              class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs rounded-xl px-4 py-2.5 bg-cyan-50 border border-cyan-100 text-cyan-300">
-              <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-              </svg>
-              <span>社区里已有这一份总结，直接复用，不用重复解析也不扣次数</span>
-              <button @click="reparse"
-                :disabled="reparseLoading || canRegenerate !== true"
-                :title="canRegenerate === true ? '用新的提示词重新生成并覆盖这一份' : '只有首次解析这个视频的人才能重新解析'"
-                class="ml-auto px-3 py-1 rounded-lg bg-panel border border-cyan-200 text-cyan-300 font-medium
-                       hover:bg-cyan-500 hover:text-on-solid hover:border-cyan-500 disabled:opacity-50
-                       disabled:hover:bg-panel disabled:hover:text-cyan-300 disabled:hover:border-cyan-200
-                       transition-all duration-200 active:scale-95 flex items-center gap-1.5">
-                <svg :class="['w-3.5 h-3.5', reparseLoading && 'animate-spin']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
-                </svg>
-                {{ reparseButtonText }}
-              </button>
-            </div>
-            <div class="flex flex-col lg:flex-row gap-6 lg:gap-8">
-              <div class="w-full lg:w-2/5 lg:max-w-[420px] lg:flex-shrink-0">
-                <VideoResult
-                  :video="videoData"
-                  :sourceUrl="currentUrl"
-                  :downloading="downloading"
-                  @download="handleDownload"
-                />
-              </div>
-              <div class="flex-1 min-w-0">
-                <VideoSummary
-                  :videoUrl="currentUrl"
-                  :videoTitle="videoData.title"
-                  :videoData="videoData"
-                  :initialHistory="historyDetail"
-                  :key="summaryKey"
-                  :user="currentUser"
-                  :hasCommunityResult="fromCache"
-                  :regenerateRequested="regenerateRequested"
-                  :byok="byok"
-                  @ownership="onOwnership"
-                  @regenerating="reparseLoading = $event"
-                  @open-byok="byokDialogOpen = true"
-                />
-              </div>
-            </div>
-          </div>
-        </section>
-      </Transition>
-
-      <!-- 营销区域（仅在无视频数据时展示） -->
-      <template v-if="!videoData || demoMode">
-        <FeatureSection />
-        <HowToSection />
-        <ComparisonSection />
-        <PricingSection
-          v-if="membershipEnabled"
-          @open-vip="handleOpenVip"
-          @need-login="showAuthModal('login')"
-        />
-        <PlatformSection />
-      </template>
-      </template>
-
-      <!-- 社区页：列表与标签筛选对访客开放，搜索与详情需登录 -->
-      <CommunityPage v-else-if="currentPage === 'community'"
-        @back="currentPage = 'home'"
-        @need-login="showAuthModal('login')"
-        @open-video="openCommunityVideo"
-      />
-
-      <!-- 管理后台：轻路由（ADR 0010，同一个 Vue 应用内）。
-           必须排在 HistoryPage **之前**，因为下面那条链是
-           v-if / v-else-if / v-else——admin 插在最后会让 HistoryPage
-           永远抢不到分支，整条链塌掉。 -->
-      <AdminPage v-else-if="currentPage === 'admin'"
-        @back="goHome"
-      />
-
-      <!-- 解析历史页 -->
-      <HistoryPage v-else-if="currentPage === 'history'" @back="goHome" @open-record="handleOpenRecord" @error="showErrorFromPage" />
+      <!--
+        页面由路由决定（ADR 0018）。<router-view> 按当前路由渲染对应组件，
+        App.vue 不再自己挑「显示哪一页」——以前那份页键和 URL 各存一份，
+        靠 pushState 手工同步，漏一处就是「地址栏变了、页面没变」。
+        首页要喂的状态多，用 v-bind 单独喂；其余三页自带状态，事件统一转交。
+      -->
+      <router-view v-slot="{ Component }">
+        <component :is="Component" v-bind="route.meta.page === 'home' ? homeViewProps : {}" v-on="viewListeners" />
+      </router-view>
     </main>
 
     <AppFooter @go-home="goHome" />
@@ -136,89 +48,61 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { parseVideo, downloadViaServer } from './api/video.js'
-import { getSavedUser, fetchMe, logout as logoutApi, isLoggedIn } from './api/auth.js'
-import { fetchQuota } from './api/summarize.js'
-import { createCheckoutSession } from './api/payment.js'
-import { saveHistory } from './api/history.js'
-import { publishCommunityCard, fetchCommunityByUrl } from './api/community.js'
-import { getPublicState, subscribe as subscribeByok } from './lib/byok.js'
+import { useRoute, useRouter } from 'vue-router'
+import { parseVideo, downloadViaServer, type ParsedVideo } from './api/video.ts'
+import { isLoggedIn, type SessionUser } from './api/auth.ts'
+import { fetchQuota } from './api/summarize.ts'
+import { createCheckoutSession } from './api/payment.ts'
+import { saveHistory, type HistoryDetail } from './api/history.ts'
+import { publishCommunityCard, fetchCommunityByUrl, type CommunityCard } from './api/community.ts'
+import { getPublicState, subscribe as subscribeByok, type ByokPublicState } from './lib/byok.ts'
+import type { QuotaPayload } from './lib/quota.ts'
+import { useSessionStore } from './stores/session.ts'
+import type { PageKey } from './router/index.ts'
 
 import AppHeader from './components/AppHeader.vue'
-import HeroSection from './components/HeroSection.vue'
-import VideoResult from './components/VideoResult.vue'
-import VideoSummary from './components/VideoSummary.vue'
-import FeatureSection from './components/FeatureSection.vue'
-import HowToSection from './components/HowToSection.vue'
-import ComparisonSection from './components/ComparisonSection.vue'
-import PricingSection from './components/PricingSection.vue'
-import { MEMBERSHIP_ENABLED as membershipEnabled } from './config/features.js'
-import PlatformSection from './components/PlatformSection.vue'
-import HistoryPage from './components/HistoryPage.vue'
-import CommunityPage from './components/CommunityPage.vue'
-import AdminPage from './components/AdminPage.vue'
 import AuthModal from './components/AuthModal.vue'
 import AppFooter from './components/AppFooter.vue'
 import ByokDialog from './components/ByokDialog.vue'
 import ErrorModal from './components/ErrorModal.vue'
-import { classifyError } from './lib/errors.js'
+import { MEMBERSHIP_ENABLED as membershipEnabled } from './config/features.ts'
+import { classifyError } from './lib/errors.ts'
 
-const currentUser = ref(getSavedUser())
+const route = useRoute()
+const router = useRouter()
+const session = useSessionStore()
+
 const authModalVisible = ref(false)
-const authModalMode = ref('login')
+const authModalMode = ref<'login' | 'register'>('login')
 
 /**
- * 管理员判据（ADR 0010）。
+ * 登录态与管理员判据都在 session store 里（ADR 0010）。
  *
- * 两级：
- *  1. 先用 localStorage 里那份登录用户渲染——它决定「管理」入口这一帧
- *     显不显示，纯粹为了不闪一下。**它不是安全边界**：localStorage 里的
- *     值任何人都能改，服务端也能随时撤权。
- *  2. 挂载后调 /api/auth/me 回查一次（服务端是唯一权威，ADR 0010 里
- *     角色不进 JWT、每次请求回查数据库，所以提权与撤权即时生效）。
- *
- * 手动敲 /admin 的非管理员照样能进到这里：入口隐藏只做体验，
- * 真的边界是 AdminPage 里那次请求的 403。
+ * store 分两级：先用 localStorage 里的种子渲染那一帧（不闪一下），
+ * 挂载后回查 /api/auth/me，以服务端为准（撤权即时生效）。
+ * 前端这一层只做体验，真正的边界是 AdminPage 里那次请求的 403。
  */
-const isAdmin = ref(!!(currentUser.value && currentUser.value.is_admin))
+const currentUser = computed(() => session.user)
+const isAdmin = computed(() => session.isAdmin)
 
 /**
- * 轻路由：URL 与 currentPage 双向同步，**不引 vue-router**（ADR 0017）。
+ * 当前页由路由决定（ADR 0018）。
  *
- * 只认 /admin 一个真实路径：主页、历史、社区都留在 '/'，
- * 因为这三个页签之间来回跳时 URL 变化对用户没有信息量，
- * 往历史栈里塞满 '/' 只会让浏览器「后退」变得没法用。
+ * URL 是唯一真值：以前自己维护一份 currentPage，再靠 pushState 与
+ * popstate 手动同步——后退时页码对不上，刷新时 /history 与 /community
+ * 又掉回首页。现在交给 vue-router，页面从 route.meta.page 派生。
  */
-const PATHS = { home: '/', history: '/', community: '/', admin: '/admin' }
+const currentPage = computed<PageKey>(() => route.meta.page ?? 'home')
 
-function pageFromPath(pathname) {
-  return String(pathname || '').replace(/\/+$/, '') === '/admin' ? 'admin' : 'home'
-}
-
-function pushPage(page) {
-  const path = PATHS[page] || '/'
-  if (window.location.pathname === path) return
-  window.history.pushState({}, '', path)
-}
-
-/** 浏览器前进/后退：只认路径，不动解析态（后退回历史页不该把结果清掉） */
-function syncPageFromUrl() {
-  const next = pageFromPath(window.location.pathname)
-  if (next === currentPage.value) return
-  currentPage.value = next
-  window.scrollTo({ top: 0 })
-}
-
-const currentPage = ref(pageFromPath(typeof window === 'undefined' ? '/' : window.location.pathname))
 const loading = ref(false)
 const downloading = ref(false)
-const videoData = ref(null)
+const videoData = ref<ParsedVideo | null>(null)
 const currentUrl = ref('')
 const summaryKey = ref(0)
 const demoMode = ref(true)
-const historyDetail = ref(null)
+const historyDetail = ref<HistoryDetail | null>(null)
 const fromCache = ref(false)
 const reparseLoading = ref(false)
 /**
@@ -227,7 +111,7 @@ const reparseLoading = ref(false)
  * 在那之前把按钮直接判成「不可点」是安全的；判成 false 则会在事件到达前
  * 闪一句「这是别人的」，而它可能正是自己的。
  */
-const canRegenerate = ref(null)
+const canRegenerate = ref<boolean | null>(null)
 /** 一次性信号：下一次 VideoSummary 挂载时按「重新解析」发起，而不是复用。 */
 const regenerateRequested = ref(false)
 
@@ -242,14 +126,21 @@ const regenerateRequested = ref(false)
  * `onUnmounted(() => subscribe(fn))` 会在页面卸载那一刻才订阅——
  * 顶栏于是永远停在「使用平台 Key」，而弹窗里明明已经选好了。
  */
-const byok = ref(getPublicState())
-const stopByokSubscription = subscribeByok((next) => { byok.value = next })
+const byok = ref<ByokPublicState>(getPublicState())
+const stopByokSubscription = subscribeByok((next) => {
+  byok.value = next
+})
 onUnmounted(stopByokSubscription)
 const byokDialogOpen = ref(false)
-const errorModal = ref({ visible: false, title: '', message: '', hint: '' })
+const errorModal = ref<{ visible: boolean; title: string; message: string; hint: string }>({
+  visible: false,
+  title: '',
+  message: '',
+  hint: '',
+})
 
 /** 顶栏额度面板的数据源。悬停时才拉，避免每次渲染都打一次接口。 */
-const quotaInfo = ref(null)
+const quotaInfo = ref<QuotaPayload | null>(null)
 const quotaLoading = ref(false)
 
 async function refreshQuota() {
@@ -265,13 +156,13 @@ async function refreshQuota() {
 }
 
 /** 统一错误出口：所有失败都走这里，不再散落 alert() */
-function showError(err, action = 'parse') {
+function showError(err: unknown, action: 'parse' | 'download' | 'payment' = 'parse') {
   const { title, message, hint } = classifyError(err, action)
   errorModal.value = { visible: true, title, message, hint }
 }
 
 /** 子组件已经组织好文案的错误，直接进同一个弹窗 */
-function showErrorFromPage(payload) {
+function showErrorFromPage(payload: { title?: string; message?: string; hint?: string } | null) {
   errorModal.value = {
     visible: true,
     title: payload?.title || '出错了',
@@ -288,8 +179,7 @@ function showErrorFromPage(payload) {
  * 「回起始页」的含义是回到输入框，所以这里把解析态一并清掉。
  */
 function goHome() {
-  currentPage.value = 'home'
-  pushPage('home')
+  router.push('/')
   videoData.value = null
   currentUrl.value = ''
   historyDetail.value = null
@@ -298,11 +188,20 @@ function goHome() {
   window.scrollTo({ top: 0 })
 }
 
-/** 去历史页时同样清掉解析态：否则历史列表上方会压着上一个视频的结果 */
+/**
+ * 社区页的「返回首页」：**不清**解析态。
+ *
+ * 社区和首页是并列入口，从社区点进某个视频详情时结果区还得在
+ * （openCommunityVideo 自己会处理）。历史页与管理后台的「返回」不同，
+ * 那两处走 goHome（回到输入框）。
+ */
+function goHomeKeepingResult() {
+  router.push('/')
+}
+
+/** 去历史页：只切页，不动解析态（历史列表自己渲染，历史记录在下面） */
 function openHistory() {
-  currentPage.value = 'history'
-  pushPage('history')
-  window.scrollTo({ top: 0 })
+  router.push('/history')
 }
 
 /**
@@ -311,9 +210,7 @@ function openHistory() {
  * 与 openHistory 的差别是有意的。
  */
 function openCommunity() {
-  currentPage.value = 'community'
-  pushPage('community')
-  window.scrollTo({ top: 0 })
+  router.push('/community')
 }
 
 /**
@@ -325,13 +222,11 @@ function openCommunity() {
  * 管理，但手输地址能进」，反而更难解释。
  */
 function openAdmin() {
-  currentPage.value = 'admin'
-  pushPage('admin')
-  window.scrollTo({ top: 0 })
+  router.push('/admin')
 }
 
 /** URL 规范化：剥离跟踪参数，提取平台视频 ID 作为历史/缓存的 key，提升命中率 */
-function canonicalUrl(raw) {
+function canonicalUrl(raw: string): string {
   let url = (raw || '').trim()
   try {
     const u = new URL(url)
@@ -356,11 +251,13 @@ function canonicalUrl(raw) {
     }
     const qs = keep.toString()
     return `${u.origin}${u.pathname}${qs ? '?' + qs : ''}`
-  } catch { return url }
+  } catch {
+    return url
+  }
 }
 
 /** 解析完成（或缓存命中）后落库：无论是否 AI 解析都进入历史记录 */
-function persistParseRecord(url, data) {
+function persistParseRecord(url: string, data: ParsedVideo | null) {
   if (!isLoggedIn()) return
   saveHistory({
     url,
@@ -368,6 +265,9 @@ function persistParseRecord(url, data) {
     video_data: data || null,
   })
 }
+
+/** 本地校验的两种结果：要么不合法（带文案），要么给出规范化的链接。 */
+type UrlCheck = { ok: false; title: string; message: string; hint: string } | { ok: true; url: string }
 
 /**
  * 请求发出之前的本地校验。
@@ -379,26 +279,33 @@ function persistParseRecord(url, data) {
  * 刻意**不**做过度校验（比如要求必须是已知平台）：本仓定位是
  * 支持 1800+ 平台的白名单判不准，在这里拦掉合法链接比不拦更糟。
  */
-function validateUrlInput(raw) {
+function validateUrlInput(raw: string): UrlCheck {
   const text = (raw || '').trim()
   if (!text) {
-    return { ok: false, title: '还没填链接', message: '请先粘贴一个视频链接。',
-      hint: 'B 站请用 bilibili.com/video/BV... 这样的完整地址。' }
+    return {
+      ok: false,
+      title: '还没填链接',
+      message: '请先粘贴一个视频链接。',
+      hint: 'B 站请用 bilibili.com/video/BV... 这样的完整地址。',
+    }
   }
   // 从分享文本里抽第一个 http(s) 链接——和后端 clean_url 同一套思路。
-  const m = text.match(/https?:\/\/[^\s）\)"'＞，。、；：！？》>\]]+/)
+  const m = text.match(/https?:\/\/[^\s）)"'＞，。、；：！？》>\]]+/)
   if (!m) {
-    return { ok: false, title: '这不是一个链接', message: text.slice(0, 80),
-      hint: '没有找到 http:// 或 https:// 开头的地址。'
-          + '如果你是整段复制了分享文案，请把其中的链接复制出来再试。' }
+    return {
+      ok: false,
+      title: '这不是一个链接',
+      message: text.slice(0, 80),
+      hint: '没有找到 http:// 或 https:// 开头的地址。' + '如果你是整段复制了分享文案，请把其中的链接复制出来再试。',
+    }
   }
   return { ok: true, url: m[0] }
 }
 
-async function handleParse(url) {
+async function handleParse(url: string) {
   const check = validateUrlInput(url)
   if (!check.ok) {
-    errorModal.value = { visible: true, ...check }
+    errorModal.value = { visible: true, title: check.title, message: check.message, hint: check.hint }
     return
   }
   loading.value = true
@@ -466,7 +373,7 @@ async function handleParse(url) {
  * 原来 `.catch(() => {})` 把那也一起吞了，于是「服务端为什么不填」
  * 在控制台里一个字都没有。这条路失败不该打断主流程，但必须看得见。
  */
-function publishCard(url, data) {
+function publishCard(url: string, data: ParsedVideo | null) {
   if (!isLoggedIn()) return
   publishCommunityCard({
     url,
@@ -485,14 +392,14 @@ function publishCard(url, data) {
  * 未登录时那条请求会返回 SSE 的 need_login 错误事件。这里先拦一道，
  * 访客点卡片立刻得到登录框，而不是先白跑一次请求再看到报错。
  */
-function openCommunityVideo(item) {
+function openCommunityVideo(item: CommunityCard) {
   if (!isLoggedIn()) {
     showAuthModal('login')
     return
   }
   // 必须切回首页，否则社区页仍然盖在上面：请求发出去了、解析也成功了，
   // 用户看到的却还是社区列表——症状就是「点了卡片没反应」。
-  currentPage.value = 'home'
+  router.push('/')
   handleParse(item.video_url)
 }
 
@@ -518,7 +425,7 @@ function reparse() {
 }
 
 /** VideoSummary 报来的写权限。服务端说了算，不在前端猜。 */
-function onOwnership(data) {
+function onOwnership(data: { can_regenerate?: boolean } | null) {
   canRegenerate.value = !!data?.can_regenerate
 }
 
@@ -535,10 +442,12 @@ const reparseButtonText = computed(() => {
 })
 
 /** 从历史页点击记录：回填视频源，并带上个人问答历史 */
-async function handleOpenRecord(detail) {
-  currentPage.value = 'home'
+async function handleOpenRecord(detail: HistoryDetail) {
+  router.push('/')
   currentUrl.value = detail.video_url || ''
-  videoData.value = detail.video_data || null
+  // 历史里的 video_data 就是当初 /api/parse 的响应体；表里存的是 JSON，
+  // TS 只能按 Record<string, unknown> 描述它，这里按 ParsedVideo 用。
+  videoData.value = (detail.video_data as ParsedVideo | null) || null
   // 只为了个人问答历史（VideoSummary 只读 chat_history 一个字段）。
   // 总结 / 思维导图 / 字幕一律由 /api/summarize 从社区视频表出，
   // 不再从个人记录回填——那正是让同一链接呈现两份总结的根因。
@@ -571,7 +480,7 @@ async function handleOpenRecord(detail) {
   window.scrollTo({ top: 0 })
 }
 
-async function handleDownload(formatId) {
+async function handleDownload(formatId: string) {
   downloading.value = true
   try {
     const response = await downloadViaServer(currentUrl.value, formatId)
@@ -595,7 +504,7 @@ async function handleDownload(formatId) {
   }
 }
 
-function showAuthModal(mode) {
+function showAuthModal(mode: 'login' | 'register') {
   authModalMode.value = mode
   authModalVisible.value = true
 }
@@ -603,35 +512,30 @@ function showAuthModal(mode) {
 /**
  * 登录 / 注册成功后统一走这里（AuthModal 的 @success）。
  *
- * 管理员入口的可见性必须在这里重新算一次：isAdmin 只在 setup 时按 localStorage
- * 求值一次（:185），而 SPA 内登录**不刷新页面**，那份 localStorage 里原本是
- * 空的——于是登录成管理员之后入口一直不出现，要按 F5 才有（工单 #33）。
+ * 管理员入口的可见性必须在这里重新算一次：那一帧的 isAdmin 只按
+ * localStorage 种子求值，而 SPA 内登录**不刷新页面**，那份 localStorage
+ * 里原本是空的——于是登录成管理员之后入口一直不出现，要按 F5 才有（工单 #33）。
  *
- * 走 refreshAdminFlag() 回查 /api/auth/me，而不是直接读 `user.is_admin`：
+ * 走 store.refresh(false) 回查 /api/auth/me，而不是直接读 `user.is_admin`：
  *   1. 登录与注册共用这一个 handler，而**注册响应里没有 is_admin**
  *      （backend/api_auth.py:77 手写字典），直接读会让注册路径拿不到管理员态；
  *   2. localStorage 与响应体都不是安全边界，服务端才是权威（ADR 0010），
  *      撤权要即时生效。
- * 它是 async，入口因此晚一拍出现——这是有意的取舍，见 refreshAdminFlag 的注释。
+ * 它是 async，入口因此晚一拍出现——这是有意的取舍，见 store 里 refresh 的注释。
  */
-function handleAuthSuccess(user) {
-  currentUser.value = user
-  refreshAdminFlag()
+function handleAuthSuccess(user: SessionUser) {
+  session.applyUser(user)
+  void session.refresh(false)
 }
 
 /**
  * 登出。isAdmin 必须**同步**清掉：AppHeader 的入口是裸的 v-if="isAdmin"
  *（AppHeader.vue:59），没有并联 user，所以只清 currentUser 的话登出后入口
- * 还亮着，要 F5 才消失（工单 #33）。
+ * 还亮着，要 F5 才消失（工单 #33）。store.signOut 同时推进代次，
+ * 让**在途**的 /api/auth/me 回查失效。
  */
 function handleLogout() {
-  // 推进代次：让**在途**的 /api/auth/me 回查失效。那一发是登出前发出的，
-  // 带着**旧 token**（auth.js 的拦截器在**请求时**读 token），仍会成功返回；
-  // 不作废它，它 resolve 后就会把下面这次同步重置覆盖掉——登出之后入口重新亮起。
-  adminFlagGen++
-  logoutApi()
-  currentUser.value = null
-  isAdmin.value = false
+  session.signOut()
 }
 
 async function handleOpenVip() {
@@ -657,83 +561,85 @@ function checkPaymentResult() {
       // 漏网点：将来谁在这里塞提权逻辑，就会再踩一次「写 currentUser 顺手
       // 忘了写 isAdmin」的坑。走同一条受代次守卫的路径收口（syncUser=true：
       // VIP 状态的更新途径就是这一发，不能丢）。
-      setTimeout(() => { refreshSession(true) }, 1000)
+      setTimeout(() => {
+        void session.refresh(true)
+      }, 1000)
     }
   }
 }
 
 /**
- * 管理员判据回查的**代次号**。
+ * 首页视图（HomeView）的入参。
  *
- * /api/auth/me 是一次异步往返，而它到达服务端时**带着发出那一刻的 token**。
- * 于是「登录后立刻登出」这种序列里，登出前发的那一发会带着**有效的旧
- * token** 成功返回；若无条件落地，它就把 handleLogout 的同步重置覆盖掉，
- * 登出之后管理入口重新亮起（工单 #33 复审）。
- *
- * ⚠️ 靠 `catch` 兜底防不住：竞态那一路走的是 `try` 的**成功**分支。
- * 只能让「过期的结果」自己作废——发请求时取号，回来时比对。
+ * 路由负责「渲染哪个视图」，视图负责「把这一屏渲染成什么样」；
+ * 解析态仍然留在 shell 里，通过 props 往下传——它是一次解析会话的
+ * 中间态，不是全局状态，放进 store 反而更难追踪。
  */
-let adminFlagGen = 0
+const homeViewProps = computed(() => ({
+  loading: loading.value,
+  videoData: videoData.value,
+  demoMode: demoMode.value,
+  fromCache: fromCache.value,
+  reparseLoading: reparseLoading.value,
+  canRegenerate: canRegenerate.value,
+  reparseButtonText: reparseButtonText.value,
+  currentUrl: currentUrl.value,
+  downloading: downloading.value,
+  historyDetail: historyDetail.value,
+  summaryKey: summaryKey.value,
+  user: currentUser.value,
+  regenerateRequested: regenerateRequested.value,
+  byok: byok.value,
+  membershipEnabled,
+}))
 
 /**
- * 会话回查：`/api/auth/me` 一次，同时落 `currentUser` 与 `isAdmin`。
+ * 各视图的事件接线。
  *
- * `syncUser` 决定要不要顺带刷新 `currentUser`：
- *   - 挂载 / 登录回查（`refreshAdminFlag`）传 false —— 那一路的 currentUser
- *     已经有权威来源（localStorage 种子 / 登录响应），不需要覆盖；
- *   - 付款成功回跳（`checkPaymentResult`）传 true —— 那边**唯一**的更新途径
- *     就是这一次回查（VIP 状态变了），过去也是这么做的。
- *
- * 只在已登录时打这一发：游客本来就不可能有管理入口，而无谓的 401
- * 会在控制台里留一条噪音。失败一律按「不是管理员」处理——宁可让入口
- * 晚一点出现，也不要在服务端已撤权时还亮着它。
- *
- * ⚠️ 代次守卫（`gen !== adminFlagGen`）把在途结果挡在落地之外：只要期间
- * 发生过登出或又一次回查，这一发就整份作废。两个方向都靠它。
+ * 按页给：每个视图只认自己声明过的事件。多挂一个既没有意义，
+ * 也会让「这个事件到底归谁」在代码里说不清。
  */
-async function refreshSession(syncUser) {
-  const gen = ++adminFlagGen
-  if (!isLoggedIn()) {
-    isAdmin.value = false
-    return
-  }
-  try {
-    const fresh = await fetchMe()
-    if (gen !== adminFlagGen) return
-    isAdmin.value = !!fresh?.is_admin
-    if (syncUser && fresh) currentUser.value = fresh
-  } catch {
-    if (gen === adminFlagGen) isAdmin.value = false
+function listenersFor(page: PageKey): Record<string, (...args: never[]) => void> {
+  switch (page) {
+    case 'history':
+      return {
+        back: goHome,
+        'open-record': handleOpenRecord,
+        error: showErrorFromPage,
+      }
+    case 'community':
+      return {
+        back: goHomeKeepingResult,
+        'need-login': () => showAuthModal('login'),
+        'open-video': openCommunityVideo,
+      }
+    case 'admin':
+      return { back: goHome }
+    default:
+      return {
+        parse: handleParse,
+        download: handleDownload,
+        reparse,
+        ownership: onOwnership,
+        regenerating: (value: boolean) => {
+          reparseLoading.value = value
+        },
+        'open-byok': () => {
+          byokDialogOpen.value = true
+        },
+        'open-vip': handleOpenVip,
+        'need-login': () => showAuthModal('login'),
+      }
   }
 }
 
-/**
- * 管理员判据回查（挂载与登录成功后各调一次）。
- *
- * `syncUser=false`：这一路的 `currentUser` 已经有权威来源——localStorage
- * 种子与登录响应——不需要用 `/api/auth/me` 覆盖它；覆盖会静默丢掉两者有、
- * `/me` 没有的字段。付款回跳那一路相反，要传 `true`，理由见 `refreshSession`。
- *
- * 这个名字曾经还有一个理由：`admin-ui.test.mjs` 有一条文本断在
- * `async function refreshAdminFlag()` 这个字面量上。那条断言已随工单 #33
- * 收尾删除——它把整个函数掏空（保留签名）都照样全绿，判别力≈0，且反过来
- * dictate 了实现形态。真实的行为判据在
- * `frontend/tests/app-admin-entry.mount.spec.mjs`。
- */
-async function refreshAdminFlag() {
-  await refreshSession(false)
-}
+const viewListeners = computed(() => listenersFor(currentPage.value))
 
 onMounted(() => {
   checkPaymentResult()
-  refreshAdminFlag()
-  // 轻路由的另一半：浏览器前进/后退。**必须**解绑，
-  // 组件重建一次就多挂一个监听，之后每次后退都会重复切页。
-  window.addEventListener('popstate', syncPageFromUrl)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('popstate', syncPageFromUrl)
+  // 挂载后回查一次 /api/auth/me：localStorage 只是种子，服务端才是权威
+  // （ADR 0010：管理员角色不进 JWT，每次请求回查数据库，撤权即时生效）。
+  void session.refresh(false)
 })
 </script>
 

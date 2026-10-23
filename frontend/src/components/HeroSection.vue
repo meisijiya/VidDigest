@@ -1,24 +1,34 @@
 <template>
-  <section :class="[
-    'flex flex-col items-center justify-center transition-all duration-700 ease-out relative overflow-hidden',
-    compact ? 'px-4 py-8' : 'px-4 min-h-[70vh] pt-24 pb-16'
-  ]">
+  <section
+    :class="[
+      'flex flex-col items-center justify-center transition-all duration-700 ease-out relative overflow-hidden',
+      compact ? 'px-4 py-8' : 'px-4 min-h-[70vh] pt-24 pb-16',
+    ]"
+  >
     <!-- 背景装饰：漂浮像素方块（平涂低透明度，依次点亮/下坠） -->
     <div class="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
       <span class="absolute top-[18%] left-[12%] w-3 h-3 rounded-[3px] bg-blue/25 animate-pixel-blink"></span>
       <span class="absolute top-[30%] left-[20%] w-2 h-2 rounded-[2px] bg-blue/25 animate-pixel-blink delay-2"></span>
       <span class="absolute top-[16%] right-[16%] w-3 h-3 rounded-[3px] bg-amber/25 animate-pixel-blink delay-3"></span>
       <span class="absolute top-[42%] right-[10%] w-2 h-2 rounded-[2px] bg-cyan/30 animate-pixel-blink delay-1"></span>
-      <span class="absolute bottom-[28%] left-[8%] w-2.5 h-2.5 rounded-[2px] bg-cyan/25 animate-pixel-blink delay-4"></span>
-      <span class="absolute bottom-[36%] right-[22%] w-2 h-2 rounded-[2px] bg-blue/25 animate-pixel-blink delay-5"></span>
+      <span
+        class="absolute bottom-[28%] left-[8%] w-2.5 h-2.5 rounded-[2px] bg-cyan/25 animate-pixel-blink delay-4"
+      ></span>
+      <span
+        class="absolute bottom-[36%] right-[22%] w-2 h-2 rounded-[2px] bg-blue/25 animate-pixel-blink delay-5"
+      ></span>
       <!-- 大号像素箭头母题（右侧，极淡） -->
-      <svg class="absolute -right-6 top-1/2 -translate-y-1/2 w-64 h-64 opacity-[0.05] hidden lg:block" viewBox="0 0 64 64" fill="none">
-        <rect x="14" y="14" width="12" height="12" rx="2" fill="var(--color-blue-500)"/>
-        <rect x="26" y="14" width="12" height="12" rx="2" fill="var(--color-blue-300)"/>
-        <rect x="38" y="14" width="12" height="12" rx="2" fill="var(--color-amber-500)"/>
-        <rect x="26" y="26" width="12" height="12" rx="2" fill="var(--color-amber-400)"/>
-        <rect x="38" y="26" width="12" height="12" rx="2" fill="var(--color-cyan-500)"/>
-        <rect x="38" y="38" width="12" height="12" rx="2" fill="var(--color-blue-700)"/>
+      <svg
+        class="absolute -right-6 top-1/2 -translate-y-1/2 w-64 h-64 opacity-[0.05] hidden lg:block"
+        viewBox="0 0 64 64"
+        fill="none"
+      >
+        <rect x="14" y="14" width="12" height="12" rx="2" fill="var(--color-blue-500)" />
+        <rect x="26" y="14" width="12" height="12" rx="2" fill="var(--color-blue-300)" />
+        <rect x="38" y="14" width="12" height="12" rx="2" fill="var(--color-amber-500)" />
+        <rect x="26" y="26" width="12" height="12" rx="2" fill="var(--color-amber-400)" />
+        <rect x="38" y="26" width="12" height="12" rx="2" fill="var(--color-cyan-500)" />
+        <rect x="38" y="38" width="12" height="12" rx="2" fill="var(--color-blue-700)" />
       </svg>
     </div>
 
@@ -26,7 +36,9 @@
       <!-- 标语 -->
       <Transition name="slogan">
         <div v-if="showSlogan" class="text-center mb-10">
-          <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-panel border border-line text-cyan-400 text-xs font-pixel mb-6 animate-fade-in">
+          <div
+            class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-panel border border-line text-cyan-400 text-xs font-pixel mb-6 animate-fade-in"
+          >
             <span class="w-1.5 h-1.5 rounded-[1px] bg-cyan-500 animate-pulse"></span>
             支持 1800+ 平台
           </div>
@@ -41,16 +53,22 @@
       </Transition>
 
       <!-- 搜索框 -->
-      <div :class="[
-        'w-full max-w-2xl transition-all duration-500',
-        showSlogan ? '' : 'mt-2'
-      ]">
+      <div :class="['w-full max-w-2xl transition-all duration-500', showSlogan ? '' : 'mt-2']">
         <div class="relative group">
-          <div class="relative flex items-center bg-panel rounded-2xl border border-line
-                      shadow-lg shadow-black/30
-                      focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-50 transition-all duration-300">
-            <svg class="ml-5 w-5 h-5 text-gray-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          <div
+            class="relative flex items-center bg-panel rounded-2xl border border-line shadow-lg shadow-black/30 focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-50 transition-all duration-300"
+          >
+            <svg
+              class="ml-5 w-5 h-5 text-gray-400 flex-shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
             <input
               v-model="url"
@@ -62,9 +80,7 @@
             <button
               @click="handleParse"
               :disabled="loading"
-              class="mr-2 px-6 py-2.5 rounded-xl bg-blue text-on-primary text-sm font-medium
-                     hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
-                     transition-all duration-200 active:scale-95 whitespace-nowrap"
+              class="mr-2 px-6 py-2.5 rounded-xl bg-blue text-on-primary text-sm font-medium hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 active:scale-95 whitespace-nowrap"
             >
               <span class="flex items-center gap-2">
                 <!-- 加载中：像素方块下坠动画 -->
@@ -73,8 +89,19 @@
                   <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-1"></span>
                   <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-2"></span>
                 </span>
-                <svg v-else class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>
+                <svg
+                  v-else
+                  class="w-4 h-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  <line x1="8" y1="11" x2="14" y2="11" />
                 </svg>
                 {{ loading ? '解析中...' : '解析' }}
               </span>
@@ -99,32 +126,40 @@
                而那条实线全程可见，正是要去掉的那个形态。
                只给凸起生成（凹没有顶线）。 -->
           <linearGradient
-            v-for="s in wallSteps.filter(w => w.line)" :key="`line-${s.id}`"
+            v-for="s in wallSteps.filter((w) => w.line)"
+            :key="`line-${s.id}`"
             :id="`wall-line-${s.id}`"
             gradientUnits="userSpaceOnUse"
-            :x1="s.x" :x2="s.x + 120" y1="0" y2="0">
-            <stop offset="0%" :stop-color="s.line" stop-opacity="0"/>
-            <stop offset="25%" :stop-color="s.line" stop-opacity="1"/>
-            <stop offset="75%" :stop-color="s.line" stop-opacity="1"/>
-            <stop offset="100%" :stop-color="s.line" stop-opacity="0"/>
+            :x1="s.x"
+            :x2="s.x + 120"
+            y1="0"
+            y2="0"
+          >
+            <stop offset="0%" :stop-color="s.line" stop-opacity="0" />
+            <stop offset="25%" :stop-color="s.line" stop-opacity="1" />
+            <stop offset="75%" :stop-color="s.line" stop-opacity="1" />
+            <stop offset="100%" :stop-color="s.line" stop-opacity="0" />
           </linearGradient>
         </defs>
 
         <g class="wall-drift">
-          <g v-for="s in wallSteps" :key="s.id"
-             class="wall-step"
-             :style="{ animationDelay: s.delay + 's' }">
+          <g v-for="s in wallSteps" :key="s.id" class="wall-step" :style="{ animationDelay: s.delay + 's' }">
             <!-- 向下多伸 20 个单位，落在 viewBox 之外被 svg 裁掉：
                  底边因此始终是齐的，凸起浮起来时底下不会露出缝。 -->
-            <rect :x="s.x" :y="s.y" width="120" :height="100 - s.y" fill="var(--color-panel)"/>
+            <rect :x="s.x" :y="s.y" width="120" :height="100 - s.y" fill="var(--color-panel)" />
             <!-- 顶线：只有凸起有。整条线就是上面那个渐变，没有额外的实心底，
                  必须和块同处一个 <g>，分开写线一浮动就脱节。
                  相位与凸起的起伏共用 s.delay：这段浮到最高的刻，正好亮到最盛。 -->
             <template v-if="s.line">
-              <rect :x="s.x" :y="s.y" width="120" height="3"
-                    :fill="`url(#wall-line-${s.id})`"
-                    class="wall-line"
-                    :style="{ animationDelay: s.delay + 's' }"/>
+              <rect
+                :x="s.x"
+                :y="s.y"
+                width="120"
+                height="3"
+                :fill="`url(#wall-line-${s.id})`"
+                class="wall-line"
+                :style="{ animationDelay: s.delay + 's' }"
+              />
             </template>
           </g>
         </g>
@@ -133,10 +168,10 @@
   </section>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 
-const props = defineProps({
+defineProps({
   loading: Boolean,
   compact: Boolean,
   showSlogan: Boolean,
@@ -173,24 +208,26 @@ const url = ref('')
  *                 两层 <g> 各自独立循环，对齐后接缝才看不出来。
  */
 const WALL_WIDTH = 1440
+/* eslint-disable @typescript-eslint/no-unused-vars -- CSS 里的 12s / 2.4s 是这两个常量的镜像值，tests/nav-wall.test.mjs 的「CSS 周期 = WALL_DRIFT_SEC」守卫就靠它们；删掉守卫就失效了。 */
 const WALL_DRIFT_SEC = 12
 const WALL_BOB_SEC = 2.4
+/* eslint-enable @typescript-eslint/no-unused-vars */
 const WALL_STEP_DELAY = 0.2
 
 // 凸起（垛口）画顶线，凹不画。凹的 y 一律大于凸，最高凸 34 < 最浅凹 52。
 const wallBase = [
-  { x: 0,    y: 28, line: '#2fa1da' },   // 凸 blue-500 主色
-  { x: 120,  y: 54 },                    // 凹
-  { x: 240,  y: 32, line: '#1b5a79' },   // 凸 blue-300 同族压深
-  { x: 360,  y: 56 },                    // 凹
-  { x: 480,  y: 26, line: '#f49a34' },   // 凸 amber-500 唯一暖色
-  { x: 600,  y: 52 },                    // 凹
-  { x: 720,  y: 34, line: '#60ebc6' },   // 凸 cyan-500 信息色
-  { x: 840,  y: 56 },                    // 凹
-  { x: 960,  y: 30, line: '#67abcd' },   // 凸 blue-700 同族提亮
-  { x: 1080, y: 54 },                    // 凹
-  { x: 1200, y: 28, line: '#e17d0c' },   // 凸 amber-400 暖色压深
-  { x: 1320, y: 56 },                    // 凹
+  { x: 0, y: 28, line: '#2fa1da' }, // 凸 blue-500 主色
+  { x: 120, y: 54 }, // 凹
+  { x: 240, y: 32, line: '#1b5a79' }, // 凸 blue-300 同族压深
+  { x: 360, y: 56 }, // 凹
+  { x: 480, y: 26, line: '#f49a34' }, // 凸 amber-500 唯一暖色
+  { x: 600, y: 52 }, // 凹
+  { x: 720, y: 34, line: '#60ebc6' }, // 凸 cyan-500 信息色
+  { x: 840, y: 56 }, // 凹
+  { x: 960, y: 30, line: '#67abcd' }, // 凸 blue-700 同族提亮
+  { x: 1080, y: 54 }, // 凹
+  { x: 1200, y: 28, line: '#e17d0c' }, // 凸 amber-400 暖色压深
+  { x: 1320, y: 56 }, // 凹
 ]
 
 /**
@@ -207,12 +244,15 @@ const wallBase = [
 const wallSteps = [
   ...wallBase.map((s, i) => ({ ...s, id: `a${i}`, delay: i * WALL_STEP_DELAY })),
   ...wallBase.map((s, i) => ({
-    ...s, id: `b${i}`, delay: i * WALL_STEP_DELAY, x: s.x - WALL_WIDTH,
+    ...s,
+    id: `b${i}`,
+    delay: i * WALL_STEP_DELAY,
+    x: s.x - WALL_WIDTH,
   })),
 ]
 
-function extractUrl(text) {
-  const match = text.match(/https?:\/\/[^\s）\)"\'＞，。、；：！？》>\]]+/)
+function extractUrl(text: string) {
+  const match = text.match(/https?:\/\/[^\s）)"'＞，。、；：！？》>\]]+/)
   return match ? match[0] : text
 }
 
@@ -226,10 +266,12 @@ function handleParse() {
 </script>
 
 <style scoped>
-.slogan-enter-active, .slogan-leave-active {
+.slogan-enter-active,
+.slogan-leave-active {
   transition: all 0.5s ease-out;
 }
-.slogan-enter-from, .slogan-leave-to {
+.slogan-enter-from,
+.slogan-leave-to {
   opacity: 0;
   transform: translateY(-16px);
 }
@@ -241,8 +283,12 @@ function handleParse() {
   animation: wall-drift 12s linear infinite;
 }
 @keyframes wall-drift {
-  from { transform: translateX(0); }
-  to   { transform: translateX(1440px); }
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(1440px);
+  }
 }
 
 /* ── 城墙：凸起上下浮（凸起「上下动」）──────────────────
@@ -252,8 +298,13 @@ function handleParse() {
   animation: wall-bob 2.4s ease-in-out infinite;
 }
 @keyframes wall-bob {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-5px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
 }
 
 /* ── 城墙：顶线渐变显现 ─────────────────────────────────
@@ -265,7 +316,12 @@ function handleParse() {
   animation: wall-line 2.4s ease-in-out infinite;
 }
 @keyframes wall-line {
-  0%, 100% { opacity: 0.25; }
-  50%      { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 </style>

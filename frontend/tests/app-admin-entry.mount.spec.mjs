@@ -27,6 +27,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import { createPinia } from 'pinia'
+import { createRouter, createMemoryHistory } from 'vue-router'
 
 // vi.mock 必须留在本文件顶部：它靠「被提升到 App.vue 的 import 之前」生效。
 // 下沉到共用夹具后失效是**静默的**——组件真去发 axios 请求，jsdom 没 XHR，
@@ -37,7 +39,7 @@ import { nextTick } from 'vue'
 // 它们读写的正是 localStorage，而 `refreshAdminFlag()` 的第一道守卫
 // `if (!isLoggedIn())` 就靠它。mock 掉的话这条路径会短路成
 // 「永远不是管理员」，测的就不是产品行为了。
-vi.mock('../src/api/auth.js', async (importOriginal) => {
+vi.mock('../src/api/auth.ts', async (importOriginal) => {
   const actual = await importOriginal()
   return {
     ...actual,
@@ -48,21 +50,26 @@ vi.mock('../src/api/auth.js', async (importOriginal) => {
 })
 
 // ByokDialog 的 `onMounted(loadCatalog)` 会打一次 `/api/models`。
-vi.mock('../src/api/models.js', () => ({ fetchPublicModelCatalog: vi.fn() }))
+vi.mock('../src/api/models.ts', () => ({ fetchPublicModelCatalog: vi.fn() }))
 
 import App from '../src/App.vue'
-import { fetchMe, login } from '../src/api/auth.js'
-import { fetchPublicModelCatalog } from '../src/api/models.js'
+import { fetchMe, login } from '../src/api/auth.ts'
+import { fetchPublicModelCatalog } from '../src/api/models.ts'
+import { routes } from '../src/router/index.ts'
 
 // jsdom 没有 IntersectionObserver。这是**探针环境缺口，不是产品缺陷**：
 // 四个营销区块（Feature/HowTo/Comparison/Platform）在 onMounted 里建观察器。
 // 放在模块顶层而不是 describe 体里——模块加载失败是响的，describe 体抛异常是哑的。
 class IntersectionObserverStub {
-  constructor(cb) { this.cb = cb }
+  constructor(cb) {
+    this.cb = cb
+  }
   observe() {}
   unobserve() {}
   disconnect() {}
-  takeRecords() { return [] }
+  takeRecords() {
+    return []
+  }
 }
 globalThis.IntersectionObserver = IntersectionObserverStub
 
@@ -78,15 +85,22 @@ async function settle() {
 }
 
 async function mountApp() {
-  const wrapper = mount(App, { attachTo: document.body })
+  // App.vue 现在用 session store 与 vue-router（ADR 0018）——
+  // 不装这两个插件，挂载即炸，**测不到任何产品行为**。
+  const router = createRouter({ history: createMemoryHistory(), routes })
+  const pinia = createPinia()
+  const wrapper = mount(App, {
+    attachTo: document.body,
+    global: { plugins: [pinia, router] },
+  })
+  await router.isReady()
   await settle()
   return wrapper
 }
 
 /** 打开登录框、填表、提交——走的是真实的 AuthModal 表单，不是直接 emit。 */
 async function loginThroughModal(user) {
-  const headerLogin = [...document.body.querySelectorAll('header button')]
-    .find((b) => b.textContent.trim() === '登录')
+  const headerLogin = [...document.body.querySelectorAll('header button')].find((b) => b.textContent.trim() === '登录')
   headerLogin.click()
   await settle()
 
@@ -202,8 +216,7 @@ describe('工单 #33 判据 2 · 登出后入口消失', () => {
     // 对照组：登出前入口必须在，否则「登出后不见了」可能只是它从来没出现过。
     expect(adminEntry(), '对照：登出前入口必须在').toBeTruthy()
 
-    const logoutBtn = [...document.body.querySelectorAll('header button')]
-      .find((b) => b.textContent.trim() === '退出')
+    const logoutBtn = [...document.body.querySelectorAll('header button')].find((b) => b.textContent.trim() === '退出')
     logoutBtn.click()
     await settle()
 
@@ -218,7 +231,7 @@ describe('工单 #33 复审 · 登出后在途回查不得把入口重新点亮'
   it('挂起 /api/auth/me：登录后立刻登出，让在途请求回来，入口不重新出现', async () => {
     // 这一条是**本次修复自己引入的**竞态，方向与判据 2 相反。
     //
-    // `auth.js` 的拦截器在**请求时**读 token，所以登出前发出的那发
+    // `auth.ts` 的拦截器在**请求时**读 token，所以登出前发出的那发
     // /api/auth/me 带着**有效的旧 token** 到达服务端并成功返回。它 resolve
     // 之后若无条件写 isAdmin，就把 handleLogout 的同步重置覆盖掉——
     // **登出之后、token 已经是 null 的情况下，管理后台入口重新亮了。**
@@ -237,9 +250,12 @@ describe('工单 #33 复审 · 登出后在途回查不得把入口重新点亮'
     // 一次亏。这里把 promise 真的挂起，由本用例在断言之后手动放行，
     // 于是「在途窗口」在任何机器上都必然存在。
     let releaseFetchMe
-    fetchMe.mockImplementation(() => new Promise((resolve) => {
-      releaseFetchMe = () => resolve(admin)
-    }))
+    fetchMe.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseFetchMe = () => resolve(admin)
+        }),
+    )
 
     const w = await mountApp()
     // 起点必须是**登出态**：否则 `refreshAdminFlag` 第一道 `if (!isLoggedIn())`
@@ -253,8 +269,7 @@ describe('工单 #33 复审 · 登出后在途回查不得把入口重新点亮'
     expect(adminEntry(), '回查还在途，入口不该出现').toBeNull()
 
     // 登出，落在请求在途的窗口里。
-    const logoutBtn = [...document.body.querySelectorAll('header button')]
-      .find((b) => b.textContent.trim() === '退出')
+    const logoutBtn = [...document.body.querySelectorAll('header button')].find((b) => b.textContent.trim() === '退出')
     logoutBtn.click()
     await settle()
     expect(adminEntry(), '登出后入口本该消失').toBeNull()
@@ -309,7 +324,7 @@ describe('工单 #33 收尾 · ① 付款成功回跳刷新会话', () => {
     // 收口成了 `setTimeout(() => refreshSession(true))`，而改动前零测试覆盖
     // （`grep -rn "checkPaymentResult|payment" tests/` 当时 0 命中）。
     //
-    // 可观察的载体只能是**顶栏邮箱**：`features.js` 的 MEMBERSHIP_ENABLED === false，
+    // 可观察的载体只能是**顶栏邮箱**：`features.ts` 的 MEMBERSHIP_ENABLED === false，
     // VIP 徽章恒不渲染，`is_vip` 字段本身看不到。能证明的是承载它的
     // `currentUser` 被整体替换了 —— 也就是付款那一发传了 syncUser=true。
     //
@@ -331,8 +346,7 @@ describe('工单 #33 收尾 · ① 付款成功回跳刷新会话', () => {
 
     // 挂载本身也发一次回查（refreshAdminFlag → refreshSession(false)）。
     expect(fetchMe).toHaveBeenCalledTimes(1)
-    expect(w.text(), '挂载那一发传了 syncUser=true，种子被静默覆盖了')
-      .toContain('before-payment@example.com')
+    expect(w.text(), '挂载那一发传了 syncUser=true，种子被静默覆盖了').toContain('before-payment@example.com')
 
     await advance(1000)
 
@@ -386,7 +400,10 @@ describe('工单 #33 收尾 · ② 在途**失败**的旧回查不得抹掉更�
     let calls = 0
     fetchMe.mockImplementation(() => {
       calls += 1
-      if (calls === 1) return new Promise((_, reject) => { rejectFirst = reject })
+      if (calls === 1)
+        return new Promise((_, reject) => {
+          rejectFirst = reject
+        })
       return Promise.resolve(admin)
     })
     login.mockImplementation(async () => {
@@ -400,8 +417,7 @@ describe('工单 #33 收尾 · ② 在途**失败**的旧回查不得抹掉更�
     expect(adminEntry(), '对照：入口应当在（首帧按 localStorage 种子渲染）').toBeTruthy()
 
     // 登出，落在请求在途的窗口里。
-    const logoutBtn = [...document.body.querySelectorAll('header button')]
-      .find((b) => b.textContent.trim() === '退出')
+    const logoutBtn = [...document.body.querySelectorAll('header button')].find((b) => b.textContent.trim() === '退出')
     logoutBtn.click()
     await settle()
     expect(adminEntry(), '登出后入口本该消失 —— 前提不成立').toBeNull()
@@ -441,7 +457,12 @@ describe('工单 #33 收尾 · ③ 更旧的在途成功结果不得覆盖更新
     let releaseMountFetch
     fetchMe
       // 第 1 发（挂载）挂起：它带着的是**撤权之前**的 is_admin。
-      .mockImplementationOnce(() => new Promise((resolve) => { releaseMountFetch = () => resolve(stale) }))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseMountFetch = () => resolve(stale)
+          }),
+      )
       // 第 2 发（付款回跳，syncUser=true）立即回来：服务端此刻已撤权。
       .mockResolvedValue({ id: 5, email: 'stale-admin@example.com', is_admin: false })
 
@@ -476,9 +497,12 @@ describe('工单 #33 收尾 · 管理员判据的两级：localStorage 首帧 + 
     localStorage.setItem('auth_user', JSON.stringify(seeded))
 
     let releaseFetchMe
-    fetchMe.mockImplementation(() => new Promise((resolve) => {
-      releaseFetchMe = () => resolve({ ...seeded, is_admin: false })
-    }))
+    fetchMe.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseFetchMe = () => resolve({ ...seeded, is_admin: false })
+        }),
+    )
 
     const w = await mountApp()
 

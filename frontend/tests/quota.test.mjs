@@ -12,7 +12,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { describeQuota, quotaBadgeClass } from '../src/lib/quota.js'
+import { describeQuota, quotaBadgeClass } from '../src/lib/quota.ts'
 
 // ⚠️ **顶层 eager 读**，不是 describe 体里（工单 #49）。
 //
@@ -25,10 +25,10 @@ import { describeQuota, quotaBadgeClass } from '../src/lib/quota.js'
 //
 // 工单 #19 修过 community-tags / theme / ui-fixes 三处同款，这处当时漏了。
 // 归一化行尾：仓库已统一为 LF，这一步只是防止将来混入 CRLF 时切函数体切空。
-const videoSummarySource = readFileSync(
-  new URL('../src/components/VideoSummary.vue', import.meta.url),
-  'utf8',
-).replace(/\r\n/g, '\n')
+const videoSummarySource = readFileSync(new URL('../src/components/VideoSummary.vue', import.meta.url), 'utf8').replace(
+  /\r\n/g,
+  '\n',
+)
 
 describe('describeQuota', () => {
   test('未登录时不显示任何数字', () => {
@@ -105,7 +105,7 @@ describe('describeQuota', () => {
  * 「加第三种额度」在前端是什么形状（工单 #38 的后端收口带出来的）。
  *
  * 后端已把额度种类收成一个常量（`database.QUOTA_KINDS`），但**前端没有**：
- * `describeQuota` / `quotaBadgeClass` 在 src/lib/quota.js:41-42、:77 三处
+ * `describeQuota` / `quotaBadgeClass` 在 src/lib/quota.ts:41-42、:77 三处
  * 硬写 `quotaOf(q, 'parse')` 与 `quotaOf(q, 'chat')`。所以后端加了第三种
  * 额度之后：
  *
@@ -114,7 +114,7 @@ describe('describeQuota', () => {
  *
  * 这就是后端那张工单正文写错的地方：它称漏一个键会让前端走
  * `fallbackQuota` 兜底、显示旧口径数字。实测不成立——降级条件是
- * `!parse && !chat`（**两个都缺**才降级，`src/lib/quota.js:44`），少一个键
+ * `!parse && !chat`（**两个都缺**才降级，`src/lib/quota.ts:44`），少一个键
  * 只是安静地少渲染；而第三种额度的形状下，前端从头到尾不看它。
  *
  * 这组用例把「多出来的键无害」与「缺失的一半不触发兜底」两件事**真正跑出来**，
@@ -131,24 +131,28 @@ describe('第三种额度在前端的形状', () => {
   test('payload 多出第三种额度时文案逐字不变（前端不读它）', () => {
     const before = describeQuota(base)
     const after = describeQuota({ ...base, export: { remaining: 4, limit: 8 } })
-    assert.equal(after, before,
-      '前端硬写 parse/chat 两个 kind（src/lib/quota.js:41-42），第三种不会被渲染——'
-      + '这是已知边界，本条钉住它，别让它悄悄变成 undefined/NaN 或崩溃')
+    assert.equal(
+      after,
+      before,
+      '前端硬写 parse/chat 两个 kind（src/lib/quota.ts:41-42），第三种不会被渲染——' +
+        '这是已知边界，本条钉住它，别让它悄悄变成 undefined/NaN 或崩溃',
+    )
   })
 
   test('payload 多出第三种额度时徽章色不变', () => {
     assert.equal(
       quotaBadgeClass({ ...base, export: { remaining: 4, limit: 8 } }),
       quotaBadgeClass(base),
-      '徽章色只看 parse/chat 两个槽位（src/lib/quota.js:77）',
+      '徽章色只看 parse/chat 两个槽位（src/lib/quota.ts:77）',
     )
   })
 
   test('只缺 chat 时不触发兜底，输出与只缺 chat 的旧形状一致', () => {
-    // 降级条件是 `!parse && !chat`（src/lib/quota.js:44）——两个都缺才降级。
+    // 降级条件是 `!parse && !chat`（src/lib/quota.ts:44）——两个都缺才降级。
     // 这条把工单正文那条「少一个键就走 fallback」的错误判据钉成反面。
     const missingChat = describeQuota({
-      logged_in: true, unlimited: false,
+      logged_in: true,
+      unlimited: false,
       parse: { remaining: 2, limit: 3 },
     })
     assert.doesNotMatch(missingChat, /undefined/)
@@ -158,7 +162,10 @@ describe('第三种额度在前端的形状', () => {
 
   test('两个都缺才降级到旧形状（兼容期回退仍然有效）', () => {
     const text = describeQuota({
-      logged_in: true, unlimited: false, remaining: 2, limit: 3,
+      logged_in: true,
+      unlimited: false,
+      remaining: 2,
+      limit: 3,
     })
     assert.match(text, /2\s*\/\s*3/, '两个槽位都缺时才用顶层 remaining/limit 兜底')
   })
@@ -172,24 +179,30 @@ describe('quotaBadgeClass', () => {
 
   test('VIP 走琥珀色', () => {
     const cls = quotaBadgeClass({
-      logged_in: true, unlimited: true,
-      parse: { remaining: -1, limit: 3 }, chat: { remaining: -1, limit: 10 },
+      logged_in: true,
+      unlimited: true,
+      parse: { remaining: -1, limit: 3 },
+      chat: { remaining: -1, limit: 10 },
     })
     assert.match(cls, /amber/)
   })
 
   test('任一额度用完即走红色', () => {
     const cls = quotaBadgeClass({
-      logged_in: true, unlimited: false,
-      parse: { remaining: 0, limit: 3 }, chat: { remaining: 4, limit: 10 },
+      logged_in: true,
+      unlimited: false,
+      parse: { remaining: 0, limit: 3 },
+      chat: { remaining: 4, limit: 10 },
     })
     assert.match(cls, /red/)
   })
 
   test('都充足走蓝色', () => {
     const cls = quotaBadgeClass({
-      logged_in: true, unlimited: false,
-      parse: { remaining: 2, limit: 3 }, chat: { remaining: 8, limit: 10 },
+      logged_in: true,
+      unlimited: false,
+      parse: { remaining: 2, limit: 3 },
+      chat: { remaining: 8, limit: 10 },
     })
     assert.match(cls, /blue/)
   })
@@ -222,7 +235,7 @@ describe('VideoSummary 组件接线', () => {
   const source = videoSummarySource
 
   test('applyQuotaEvent 原样保留事件的 parse 与 chat', () => {
-    const start = source.indexOf('function applyQuotaEvent(d)')
+    const start = source.indexOf('function applyQuotaEvent(')
     assert.notEqual(start, -1, '找不到 applyQuotaEvent')
     // 用紧跟其后的顶层 "}\n" 收尾——切窄了会切到内层对象字面量的括号，
     // 那样下面两条断言就成了空断言。

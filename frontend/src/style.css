@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 @plugin "@tailwindcss/typography";
 
 /* ══════════════════════════════════════════════════════════════
@@ -149,13 +149,13 @@
   --color-cyan: #60ebc6;
   --color-amber: #f49a34;
 
-  --font-pixel: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", Consolas, monospace;
+  --font-pixel: ui-monospace, 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', Consolas, monospace;
 }
 
 /* ── 明亮主题：同名变量换值，色相不变只翻明度 ─────────────────
    实测对比度（WCAG，正文需 ≥4.5）：正文/背景 9.35，主色/背景 6.37，
    强调色/背景 8.39。色相全部避开 240°–300°。 */
-[data-theme="light"] {
+[data-theme='light'] {
   /* 中性：反向映射同暗色（数值越小越深）。100 = panel-2，
      因为 hover 底与缩略图占位都需要一个「看得见的浅灰」，
      早先的 #ffffff 让 hover 与占位块在白底上完全消失。
@@ -183,7 +183,6 @@
   --color-slate-700: #3a434d;
   --color-slate-800: #2e363f;
   --color-slate-900: #1f262d;
-
 
   /* blue · 表面带 50-200 = 浅染底，文字带 300+ = 可读字色 */
   --color-blue-50: #f4f7f8;
@@ -306,15 +305,15 @@
   --c-skel-a: #161f27;
   --c-skel-b: #1e262f;
   --c-primary-light: #67abcd;
-  --c-particle: 1;      /* 亮色下氛围层整体降透明度 */
+  --c-particle: 1; /* 亮色下氛围层整体降透明度 */
 }
-[data-theme="light"] {
+[data-theme='light'] {
   --c-bg: #f8f9f9;
   --c-grid-line: rgba(25, 31, 36, 0.055);
   --c-fg: #191f24;
   --c-glass-bg: rgba(255, 255, 255, 0.86);
   --c-glass-border: rgba(60, 74, 84, 0.14);
-  --c-glass-shadow: 0 8px 32px rgba(25, 31, 36, 0.10);
+  --c-glass-shadow: 0 8px 32px rgba(25, 31, 36, 0.1);
   --c-hover-line: #1f7ead;
   --c-hover-shadow: 0 12px 40px rgba(25, 31, 36, 0.12);
   --c-scroll: #d8dde1;
@@ -329,55 +328,123 @@
 
 /* ── Keyframe Animations ──────────────────────────────── */
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 @keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(24px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 @keyframes fadeInDown {
-  from { opacity: 0; transform: translateY(-16px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 @keyframes scaleIn {
-  from { opacity: 0; transform: scale(0.92); }
-  to   { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 @keyframes shimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
 }
 @keyframes slideDown {
-  from { opacity: 0; transform: translateY(-8px) scaleY(0.96); }
-  to   { opacity: 1; transform: translateY(0) scaleY(1); }
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scaleY(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
 }
 /* 像素母题：方块依次点亮（加载/点缀动画） */
 @keyframes pixelBlink {
-  0%, 100% { opacity: 0.25; }
-  50%      { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 /* 像素母题：方块下坠（下载语义） */
 @keyframes pixelDrop {
-  0%   { transform: translateY(-6px); opacity: 0; }
-  35%  { opacity: 1; }
-  70%  { transform: translateY(0); opacity: 1; }
-  100% { transform: translateY(0); opacity: 0.35; }
+  0% {
+    transform: translateY(-6px);
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  70% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
 }
 
 /* ── Utility Classes ──────────────────────────────────── */
-.animate-fade-in     { animation: fadeIn 0.5s ease-out both; }
-.animate-fade-in-up  { animation: fadeInUp 0.6s ease-out both; }
-.animate-scale-in    { animation: scaleIn 0.4s ease-out both; }
-.animate-pixel-blink { animation: pixelBlink 1.6s ease-in-out infinite; }
-.animate-pixel-drop  { animation: pixelDrop 1.4s ease-in-out infinite; }
+.animate-fade-in {
+  animation: fadeIn 0.5s ease-out both;
+}
+.animate-fade-in-up {
+  animation: fadeInUp 0.6s ease-out both;
+}
+.animate-scale-in {
+  animation: scaleIn 0.4s ease-out both;
+}
+.animate-pixel-blink {
+  animation: pixelBlink 1.6s ease-in-out infinite;
+}
+.animate-pixel-drop {
+  animation: pixelDrop 1.4s ease-in-out infinite;
+}
 
 /* Staggered delay helpers */
-.delay-1 { animation-delay: 0.1s; }
-.delay-2 { animation-delay: 0.2s; }
-.delay-3 { animation-delay: 0.3s; }
-.delay-4 { animation-delay: 0.4s; }
-.delay-5 { animation-delay: 0.5s; }
+.delay-1 {
+  animation-delay: 0.1s;
+}
+.delay-2 {
+  animation-delay: 0.2s;
+}
+.delay-3 {
+  animation-delay: 0.3s;
+}
+.delay-4 {
+  animation-delay: 0.4s;
+}
+.delay-5 {
+  animation-delay: 0.5s;
+}
 
 /* 半透明面板（两套主题共用，靠 --c-glass-* 变量分叉） */
 .glass {
@@ -390,7 +457,10 @@
 
 /* Card hover lift */
 .card-hover {
-  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    border-color 0.25s ease;
 }
 .card-hover:hover {
   transform: translateY(-4px);
@@ -399,13 +469,17 @@
 }
 
 /* 像素等宽标签 */
-.font-pixel { font-family: var(--font-pixel); }
+.font-pixel {
+  font-family: var(--font-pixel);
+}
 
 /* Smooth section entrance - applied via JS */
 .section-enter {
   opacity: 0;
   transform: translateY(30px);
-  transition: opacity 0.7s ease-out, transform 0.7s ease-out;
+  transition:
+    opacity 0.7s ease-out,
+    transform 0.7s ease-out;
 }
 .section-enter.visible {
   opacity: 1;
@@ -413,13 +487,25 @@
 }
 
 /* Custom scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--c-scroll); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--c-scroll-hi); }
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--c-scroll);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-scroll-hi);
+}
 
 /* Selection */
-::selection { background: var(--c-sel-bg); color: var(--c-sel-fg); }
+::selection {
+  background: var(--c-sel-bg);
+  color: var(--c-sel-fg);
+}
 
 /* ── 石墨底 + 细网格线（平涂线条，非彩色渐变） ──
    网格线与底色都走变量：亮色主题下自动换成深色细线，不需要另写一份 body。 */
@@ -430,7 +516,9 @@ body {
     repeating-linear-gradient(90deg, var(--c-grid-line) 0 1px, transparent 1px 56px);
   background-attachment: fixed;
   color: var(--c-fg);
-  transition: background-color .25s ease, color .25s ease;
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease;
 }
 
 /* ── typography 插件适配 ────────────────────────────────
@@ -522,8 +610,12 @@ body {
   line-height: 1.8;
   color: var(--color-gray-600);
 }
-.summary-content strong { color: var(--color-gray-800); }
-.summary-content a { color: var(--color-info); }
+.summary-content strong {
+  color: var(--color-gray-800);
+}
+.summary-content a {
+  color: var(--color-info);
+}
 .summary-content code {
   font-family: var(--font-pixel);
   background: var(--color-gray-100);

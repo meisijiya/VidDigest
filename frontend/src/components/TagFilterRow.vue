@@ -35,8 +35,7 @@
          渐隐是必要的——没有它，最后一个被裁的标签看起来就像渲染坏了。 -->
     <div
       v-if="showToggle && !expanded"
-      class="pointer-events-none absolute inset-y-0 right-0 w-12 flex items-center justify-end
-             bg-gradient-to-l from-panel to-transparent"
+      class="pointer-events-none absolute inset-y-0 right-0 w-12 flex items-center justify-end bg-gradient-to-l from-panel to-transparent"
       aria-hidden="true"
     ></div>
 
@@ -45,23 +44,29 @@
       type="button"
       @click="expanded = !expanded"
       :aria-expanded="expanded"
-      class="mt-1 px-1.5 py-0.5 text-[11px] font-pixel text-gray-400
-             hover:text-gray-700 transition-colors"
+      class="mt-1 px-1.5 py-0.5 text-[11px] font-pixel text-gray-400 hover:text-gray-700 transition-colors"
     >
       {{ expanded ? '收起标签' : `展开其余 ${hiddenCount} 个标签` }}
     </button>
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { countHiddenChips, needsExpand, shouldShowToggle, toggleTag } from '../lib/tag-filter.js'
+import type { PropType } from 'vue'
+import { countHiddenChips, needsExpand, shouldShowToggle, toggleTag } from '../lib/tag-filter.ts'
+
+/** 一枚标签 chip 的数据。`count` 是服务端给的，不是当前页汇总出来的。 */
+interface TagChip {
+  tag: string
+  count?: number
+}
 
 const props = defineProps({
   /** [{ tag, count }] —— 由服务端给，不从当前页汇总。 */
-  tags: { type: Array, default: () => [] },
+  tags: { type: Array as PropType<TagChip[]>, default: () => [] },
   /** 已选中的标签名数组。 */
-  selected: { type: Array, default: () => [] },
+  selected: { type: Array as PropType<string[]>, default: () => [] },
   /** true = 多选；false = 单选（点新的就顶掉旧的）。 */
   multiple: { type: Boolean, default: true },
   showCount: { type: Boolean, default: false },
@@ -70,8 +75,8 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:selected'])
 
-const rowEl = ref(null)
-const rootEl = ref(null)
+const rowEl = ref<HTMLElement | null>(null)
+const rootEl = ref<HTMLElement | null>(null)
 const expanded = ref(false)
 const overflowing = ref(false)
 
@@ -81,9 +86,7 @@ const overflowing = ref(false)
  * 「展开其余 5 个标签」——按钮能点开，但数字在骗人。
  */
 const hiddenCount = ref(0)
-const showToggle = computed(() => shouldShowToggle(
-  props.tags.length, overflowing.value, expanded.value,
-))
+const showToggle = computed(() => shouldShowToggle(props.tags.length, overflowing.value, expanded.value))
 
 function measure() {
   const el = rowEl.value
@@ -112,12 +115,10 @@ function measure() {
   hiddenCount.value = countHiddenChips(chipRights, limit)
 }
 
-function chipClass(active) {
+function chipClass(active: boolean) {
   return [
     'shrink-0 px-3 py-1.5 rounded-lg text-xs font-pixel transition-colors border',
-    active
-      ? 'bg-blue text-on-primary border-blue'
-      : 'bg-panel text-gray-500 border-line hover:border-gray-300',
+    active ? 'bg-blue text-on-primary border-blue' : 'bg-panel text-gray-500 border-line hover:border-gray-300',
   ]
 }
 
@@ -126,7 +127,7 @@ function chipClass(active) {
  * 一次 update:selected —— 组件里**不要再存一份副本**，否则测试 import 的
  * 那个函数和真正上线的那份就会各走各的，测绿了也证明不了界面行为。
  */
-function toggle(tag) {
+function toggle(tag: string) {
   emit('update:selected', toggleTag(props.selected, tag, props.multiple))
 }
 
@@ -134,7 +135,7 @@ function clearAll() {
   emit('update:selected', [])
 }
 
-let ro = null
+let ro: ResizeObserver | null = null
 onMounted(async () => {
   await nextTick()
   measure()
@@ -151,10 +152,14 @@ onBeforeUnmount(() => {
 })
 
 // 标签集变了要重量一次：切筛选后行宽变了，展开键的显隐可能跟着变。
-watch(() => props.tags, async () => {
-  await nextTick()
-  measure()
-}, { deep: true })
+watch(
+  () => props.tags,
+  async () => {
+    await nextTick()
+    measure()
+  },
+  { deep: true },
+)
 watch(expanded, async () => {
   await nextTick()
   measure()

@@ -14,7 +14,7 @@ import { test, describe, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { summarizeVideo } from '../src/api/summarize.js'
+import { summarizeVideo } from '../src/api/summarize.ts'
 
 /** 假流：行为对齐真实 fetch + ReadableStream（与 sse.test.mjs 同构） */
 function fakeStream(chunks) {
@@ -31,9 +31,15 @@ function fakeStream(chunks) {
 beforeEach(() => {
   globalThis.localStorage = {
     _v: { auth_token: 'test-token' },
-    getItem(k) { return this._v[k] ?? null },
-    setItem(k, v) { this._v[k] = String(v) },
-    removeItem(k) { delete this._v[k] },
+    getItem(k) {
+      return this._v[k] ?? null
+    },
+    setItem(k, v) {
+      this._v[k] = String(v)
+    },
+    removeItem(k) {
+      delete this._v[k]
+    },
   }
 })
 
@@ -76,13 +82,10 @@ const FULL_STREAM = [
   'data: [DONE]\n',
 ]
 
-
 describe('summarizeVideo · tags 事件路由', () => {
   test('tags 事件路由到 onTags 回调', async () => {
-    globalThis.fetch = async () => fakeStream([
-      'event: tags\n', `data: ${JSON.stringify(TAGS)}\n`,
-      'event: done\n', 'data: [DONE]\n',
-    ])
+    globalThis.fetch = async () =>
+      fakeStream(['event: tags\n', `data: ${JSON.stringify(TAGS)}\n`, 'event: done\n', 'data: [DONE]\n'])
     const r = recorder()
     await summarizeVideo('u', 'zh', r.cb).done
     assert.deepEqual(r.log[0], ['tags', TAGS], 'tags 必须落到 onTags，而不是被丢掉')
@@ -91,15 +94,18 @@ describe('summarizeVideo · tags 事件路由', () => {
   test('事件名与 data 落在不同 chunk 时仍认得出 tags', async () => {
     // SSE 的 event:/data: 常被拆到不同网络分片；认错就会把标签当成无名负载丢掉
     const enc = new TextEncoder()
-    globalThis.fetch = async () => new Response(new ReadableStream({
-      start(c) {
-        c.enqueue(enc.encode('event: ta'))
-        c.enqueue(enc.encode('gs\n'))
-        c.enqueue(enc.encode(`data: ${JSON.stringify(TAGS)}\n`))
-        c.enqueue(enc.encode('event: done\ndata: [DONE]\n'))
-        c.close()
-      },
-    }))
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(enc.encode('event: ta'))
+            c.enqueue(enc.encode('gs\n'))
+            c.enqueue(enc.encode(`data: ${JSON.stringify(TAGS)}\n`))
+            c.enqueue(enc.encode('event: done\ndata: [DONE]\n'))
+            c.close()
+          },
+        }),
+      )
     const r = recorder()
     await summarizeVideo('u', 'zh', r.cb).done
     assert.deepEqual(r.log[0], ['tags', TAGS])
@@ -108,16 +114,17 @@ describe('summarizeVideo · tags 事件路由', () => {
   test('标签数组原样到达：数量、顺序、内容一字不改', async () => {
     // 故意用「非词表声明顺序」的载荷：前端若自行排序 / 去重 / 截断，这里就会红
     const payload = ['其他', '编程', '人工智能']
-    globalThis.fetch = async () => fakeStream([
-      'event: tags\n', `data: ${JSON.stringify(payload)}\n`,
-      'event: done\n', 'data: [DONE]\n',
-    ])
+    globalThis.fetch = async () =>
+      fakeStream(['event: tags\n', `data: ${JSON.stringify(payload)}\n`, 'event: done\n', 'data: [DONE]\n'])
     const r = recorder()
     await summarizeVideo('u', 'zh', r.cb).done
     const tagEvents = r.log.filter((e) => e[0] === 'tags')
     assert.equal(tagEvents.length, 1, 'tags 事件应只触发一次')
     assert.deepEqual(tagEvents[0][1], payload, '前端不得对后端已规范化的标签二次加工')
-    assert.ok(tagEvents[0][1].every((t) => typeof t === 'string'), '标签应保持字符串形态')
+    assert.ok(
+      tagEvents[0][1].every((t) => typeof t === 'string'),
+      '标签应保持字符串形态',
+    )
   })
 
   test('回归：六个既有事件与 tags 混流时各自落到正确回调', async () => {
@@ -136,17 +143,14 @@ describe('summarizeVideo · tags 事件路由', () => {
   })
 
   test('回归：error 事件仍落到 onError，而不是被当成 tags 吞掉', async () => {
-    globalThis.fetch = async () => fakeStream([
-      'event: error\n', 'data: {"message":"boom"}\n',
-      'event: done\n', 'data: [DONE]\n',
-    ])
+    globalThis.fetch = async () =>
+      fakeStream(['event: error\n', 'data: {"message":"boom"}\n', 'event: done\n', 'data: [DONE]\n'])
     const r = recorder()
     await summarizeVideo('u', 'zh', r.cb).done
     assert.deepEqual(r.log[0], ['error', 'boom'])
     assert.equal(r.log.filter((e) => e[0] === 'tags').length, 0)
   })
 })
-
 
 /**
  * 路由表静态检查：工单 #5 只允许「加一条」。
@@ -164,15 +168,12 @@ describe('summarizeVideo · tags 事件路由', () => {
  * 模块顶层读失败是**响**的（模块加载即失败，退出码非 0），所以搬到这里。
  * 代价是源码改名会让整份文件一起死——但那种红本来就该有。
  */
-const apiSource = readFileSync(
-  new URL('../src/api/summarize.js', import.meta.url),
-  'utf8',
-).replace(/\r\n/g, '\n')
+const apiSource = readFileSync(new URL('../src/api/summarize.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
-const summaryVueSource = readFileSync(
-  new URL('../src/components/VideoSummary.vue', import.meta.url),
-  'utf8',
-).replace(/\r\n/g, '\n')
+const summaryVueSource = readFileSync(new URL('../src/components/VideoSummary.vue', import.meta.url), 'utf8').replace(
+  /\r\n/g,
+  '\n',
+)
 
 describe('路由表', () => {
   /** 读出 `const X = { k: 'v', ... }` 的键值对 */
@@ -183,11 +184,15 @@ describe('路由表', () => {
     assert.ok(end > start, `${name} 没读到收尾大括号`)
     const body = apiSource.slice(apiSource.indexOf('{', start) + 1, end)
     return Object.fromEntries(
-      body.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
-        // 去掉行尾逗号与引号，否则值会读成 "onAnswer',"
-        const [k, v] = l.split(':').map((s) => s.trim().replace(/,$/, '').replace(/^'|'$/g, ''))
-        return [k, v]
-      }),
+      body
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          // 去掉行尾逗号与引号，否则值会读成 "onAnswer',"
+          const [k, v] = l.split(':').map((s) => s.trim().replace(/,$/, '').replace(/^'|'$/g, ''))
+          return [k, v]
+        }),
     )
   }
 
@@ -214,7 +219,6 @@ describe('路由表', () => {
   })
 })
 
-
 /**
  * 组件接线守卫（静态检查，不是渲染测试）。
  *
@@ -224,14 +228,14 @@ describe('路由表', () => {
  */
 describe('VideoSummary 标签渲染接线', () => {
   /** 标签条模板块：从容器标签本身到 Tab 内容区之前 */
-  const divAt = summaryVueSource.indexOf('<div v-if="videoTags.length"')
+  const divAt = summaryVueSource.search(/<div[^>]*v-if="videoTags\.length"/)
   const blockEnd = summaryVueSource.indexOf('<!-- Tab 内容 -->', divAt)
   const block = summaryVueSource.slice(divAt, blockEnd)
 
   test('模板渲染出标签：v-for 遍历 + 插值 + 像素字体', () => {
     assert.notEqual(divAt, -1, '模板没有标签渲染出口（videoTags 从未被容器守卫消费）')
-    assert.match(block, /<div v-if="videoTags\.length"/, '空数组守卫应挂在标签条容器上')
-    assert.match(block, /<span v-for="tag in videoTags"/, '缺少 v-for="tag in videoTags"')
+    assert.match(block, /<div[^>]*v-if="videoTags\.length"/, '空数组守卫应挂在标签条容器上')
+    assert.match(block, /<span[^>]*v-for="tag in videoTags"/, '缺少 v-for="tag in videoTags"')
     assert.match(block, /#\{\{ tag \}\}/, '标签文本没有被渲染出来')
     assert.match(block, /font-pixel/, '标签没有沿用本仓像素等宽字体')
   })
@@ -242,7 +246,11 @@ describe('VideoSummary 标签渲染接线', () => {
     const run = new Function('videoTags', `return (${expr[1]})`)
     assert.ok(!run([]), '空数组时容器必须消失，不能留一条空壳行')
     assert.ok(run(TAGS), '有标签时容器必须出现')
-    assert.doesNotMatch(block, /v-if="[^"]*"[^>]*\sv-for/, 'v-if 不应与 v-for 同元素（Vue 里 v-for 拿不到 v-if 的 tag）')
+    assert.doesNotMatch(
+      block,
+      /v-if="[^"]*"[^>]*\sv-for/,
+      'v-if 不应与 v-for 同元素（Vue 里 v-for 拿不到 v-if 的 tag）',
+    )
   })
 
   test('标签条渲染在 Tab 内容区之外（常驻行，不随 Tab 切换消失）', () => {
@@ -258,20 +266,25 @@ describe('VideoSummary 标签渲染接线', () => {
       `videoTags 只允许被整体赋值，出现意料之外的写法：${JSON.stringify(assigned)}`,
     )
     assert.doesNotMatch(
-      summaryVueSource, /videoTags\.value\.(push|splice|sort|reverse|filter|map|slice|flat)\b/,
+      summaryVueSource,
+      /videoTags\.value\.(push|splice|sort|reverse|filter|map|slice|flat)\b/,
       '不得对后端已规范化的标签数组做二次加工',
     )
   })
 
   test('换视频与重新解析都会清空标签，不残留上一个视频的标签', () => {
-    const wAt = summaryVueSource.indexOf('watch(() => props.videoUrl')
-    const watcher = summaryVueSource.slice(wAt, summaryVueSource.indexOf('\n})', wAt))
+    const wAt = summaryVueSource.search(/watch\(\s*\(\)\s*=>\s*props\.videoUrl/)
+    const watcher = summaryVueSource.slice(wAt, summaryVueSource.indexOf('\n)', wAt))
     const sAt = summaryVueSource.indexOf('function startSummarize(')
     assert.notEqual(sAt, -1, '没找到 startSummarize')
-    const startFn = summaryVueSource.slice(sAt, summaryVueSource.indexOf('\n}\n', sAt) + 2)
+    const nextFn = summaryVueSource.indexOf('\nfunction ', sAt + 10)
+    const startFn = summaryVueSource.slice(sAt, nextFn === -1 ? summaryVueSource.length : nextFn)
     assert.match(watcher, /videoTags\.value = \[\]/, '换视频未清空标签')
     assert.match(startFn, /videoTags\.value = \[\]/, '重新解析未清空标签')
-    assert.match(startFn, /onTags:\s*\(data\)\s*=>\s*\{\s*videoTags\.value = data\s*\}/,
-      'startSummarize 的总结流没有接上 onTags')
+    assert.match(
+      startFn,
+      /onTags:\s*\(data\)\s*=>\s*\{\s*videoTags\.value = data\s*\}/,
+      'startSummarize 的总结流没有接上 onTags',
+    )
   })
 })

@@ -3,11 +3,18 @@
     <Transition name="modal">
       <div v-if="visible" class="fixed inset-0 z-[100] flex items-center justify-center" @click.self="$emit('close')">
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
-        <div class="relative bg-panel border border-line rounded-2xl shadow-2xl shadow-black/50 w-full max-w-md mx-4 p-8 animate-scale-in">
+        <div
+          class="relative bg-panel border border-line rounded-2xl shadow-2xl shadow-black/50 w-full max-w-md mx-4 p-8 animate-scale-in"
+        >
           <!-- 关闭按钮 -->
-          <button @click="$emit('close')"
-            class="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-all">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <button
+            @click="$emit('close')"
+            class="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-all"
+          >
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
           </button>
 
           <!-- 标题 -->
@@ -28,53 +35,93 @@
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1.5">邮箱</label>
               <div class="relative">
-                <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-                <input v-model="email" type="email" required placeholder="name@example.com"
-                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-line bg-ink/60 text-sm text-gray-800
-                         focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                         outline-none transition-all duration-200 placeholder:text-gray-400" />
+                <svg
+                  class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                  <polyline points="22,6 12,13 2,6" />
+                </svg>
+                <input
+                  v-model="email"
+                  type="email"
+                  required
+                  placeholder="name@example.com"
+                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-line bg-ink/60 text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all duration-200 placeholder:text-gray-400"
+                />
               </div>
             </div>
 
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1.5">密码</label>
               <div class="relative">
-                <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                <input v-model="password" type="password" required minlength="6" placeholder="至少 6 位密码"
-                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-line bg-ink/60 text-sm text-gray-800
-                         focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                         outline-none transition-all duration-200 placeholder:text-gray-400" />
+                <svg
+                  class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                <input
+                  v-model="password"
+                  type="password"
+                  required
+                  minlength="6"
+                  placeholder="至少 6 位密码"
+                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-line bg-ink/60 text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all duration-200 placeholder:text-gray-400"
+                />
               </div>
             </div>
 
             <!-- 错误提示 -->
             <Transition name="error">
-              <p v-if="error"
-                class="flex items-center gap-2 text-sm text-red-500 bg-red-50 border border-red-500/20 rounded-lg px-4 py-2.5">
-                <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <p
+                v-if="error"
+                class="flex items-center gap-2 text-sm text-red-500 bg-red-50 border border-red-500/20 rounded-lg px-4 py-2.5"
+              >
+                <svg
+                  class="w-4 h-4 flex-shrink-0"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
                 {{ error }}
               </p>
             </Transition>
 
-            <button type="submit" :disabled="loading"
-              class="w-full py-3 rounded-xl bg-blue text-on-primary font-medium text-sm
-                     hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed
-                     transition-all duration-200 active:scale-[0.98]">
+            <button
+              type="submit"
+              :disabled="loading"
+              class="w-full py-3 rounded-xl bg-blue text-on-primary font-medium text-sm hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 active:scale-[0.98]"
+            >
               <span class="flex items-center justify-center gap-2">
                 <span v-if="loading" class="flex items-end gap-[3px] h-4" aria-hidden="true">
                   <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop"></span>
                   <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-1"></span>
                   <span class="w-1.5 h-1.5 rounded-[1px] bg-white animate-pixel-drop delay-2"></span>
                 </span>
-                {{ loading ? '处理中...' : (mode === 'login' ? '登录' : '注册') }}
+                {{ loading ? '处理中...' : mode === 'login' ? '登录' : '注册' }}
               </span>
             </button>
           </form>
 
           <div class="text-sm text-gray-500 text-center mt-6">
             {{ mode === 'login' ? '还没有账号？' : '已有账号？' }}
-            <button @click="mode = mode === 'login' ? 'register' : 'login'"
-              class="text-blue-400 hover:text-blue-700 font-medium transition-colors">
+            <button
+              @click="mode = mode === 'login' ? 'register' : 'login'"
+              class="text-blue-400 hover:text-blue-700 font-medium transition-colors"
+            >
               {{ mode === 'login' ? '去注册' : '去登录' }}
             </button>
           </div>
@@ -84,9 +131,9 @@
   </Teleport>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, watch } from 'vue'
-import { login, register } from '../api/auth.js'
+import { login, register } from '../api/auth.ts'
 import PixelLogo from './PixelLogo.vue'
 
 const props = defineProps({
@@ -101,26 +148,31 @@ const password = ref('')
 const loading = ref(false)
 const error = ref('')
 
-watch(() => props.visible, (v) => {
-  if (v) {
-    mode.value = props.initialMode
-    email.value = ''
-    password.value = ''
-    error.value = ''
-  }
-})
+watch(
+  () => props.visible,
+  (v) => {
+    if (v) {
+      mode.value = props.initialMode
+      email.value = ''
+      password.value = ''
+      error.value = ''
+    }
+  },
+)
 
 async function handleSubmit() {
   loading.value = true
   error.value = ''
   try {
-    const user = mode.value === 'login'
-      ? await login(email.value, password.value)
-      : await register(email.value, password.value)
+    const user =
+      mode.value === 'login' ? await login(email.value, password.value) : await register(email.value, password.value)
     emit('success', user)
     emit('close')
   } catch (err) {
-    error.value = err.response?.data?.detail || '操作失败'
+    // 后端把失败原因放在 detail 里（登录失败 / 邮箱已注册 / 配额超限…）。
+    // 这里只取这一段，取不到就回落成一句通用提示。
+    const e = err as { response?: { data?: { detail?: string } } }
+    error.value = e.response?.data?.detail || '操作失败'
   } finally {
     loading.value = false
   }
@@ -134,13 +186,31 @@ async function handleSubmit() {
 .modal-leave-active {
   transition: all 0.2s ease-in;
 }
-.modal-enter-from { opacity: 0; }
-.modal-enter-from > div:last-child { transform: scale(0.95); }
-.modal-leave-to { opacity: 0; }
-.modal-leave-to > div:last-child { transform: scale(0.95); }
+.modal-enter-from {
+  opacity: 0;
+}
+.modal-enter-from > div:last-child {
+  transform: scale(0.95);
+}
+.modal-leave-to {
+  opacity: 0;
+}
+.modal-leave-to > div:last-child {
+  transform: scale(0.95);
+}
 
-.error-enter-active { transition: all 0.3s ease-out; }
-.error-leave-active { transition: all 0.2s ease-in; }
-.error-enter-from { opacity: 0; transform: translateY(-8px); }
-.error-leave-to { opacity: 0; transform: translateY(-8px); }
+.error-enter-active {
+  transition: all 0.3s ease-out;
+}
+.error-leave-active {
+  transition: all 0.2s ease-in;
+}
+.error-enter-from {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+.error-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
 </style>

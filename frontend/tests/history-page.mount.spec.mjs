@@ -19,7 +19,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 
 // vi.mock 必须在顶部：它靠「被提升到组件 import 之前」生效。下沉到共用夹具就依赖
 // 导入顺序，失效是静默的——组件真去发 axios 请求，jsdom 没有 XHR，形态是「挂载即炸」。
-vi.mock('../src/api/history.js', () => ({
+vi.mock('../src/api/history.ts', () => ({
   fetchHistories: vi.fn(),
   fetchHistoryFacets: vi.fn(),
   deleteHistory: vi.fn(),
@@ -30,9 +30,13 @@ vi.mock('../src/api/history.js', () => ({
 
 import HistoryPage from '../src/components/HistoryPage.vue'
 import {
-  clearHistories, deleteHistory, fetchHistories, fetchHistoryDetail,
-  fetchHistoryFacets, setHistoryFavorite,
-} from '../src/api/history.js'
+  clearHistories,
+  deleteHistory,
+  fetchHistories,
+  fetchHistoryDetail,
+  fetchHistoryFacets,
+  setHistoryFavorite,
+} from '../src/api/history.ts'
 
 // ── 造数据 ─────────────────────────────────────────────────
 
@@ -55,7 +59,7 @@ const row = (over = {}) => ({
   ...over,
 })
 
-/** 列表是完整信封（`api/history.js` 不做转换，原样透传）。 */
+/** 列表是完整信封（`api/history.ts` 不做转换，原样透传）。 */
 const env = (over = {}) => ({
   items: [],
   total: 0,
@@ -65,7 +69,10 @@ const env = (over = {}) => ({
   ...over,
 })
 
-const FACETS = [{ tag: '科普', count: 2 }, { tag: '教程', count: 1 }]
+const FACETS = [
+  { tag: '科普', count: 2 },
+  { tag: '教程', count: 1 },
+]
 
 async function mountPage(envelope = env()) {
   fetchHistories.mockResolvedValue(envelope)
@@ -105,7 +112,10 @@ beforeEach(() => {
   // 调用它只在虚拟控制台打一行「Not implemented」并返回 undefined——于是
   // `!item.is_favorite && !confirm(...)` 恒真，`removeItem` 第一行就 return，
   // 删除请求压根没发出去。症状是「点删除没有发出请求」，看着像组件坏了。
-  vi.stubGlobal('confirm', vi.fn(() => true))
+  vi.stubGlobal(
+    'confirm',
+    vi.fn(() => true),
+  )
 })
 
 afterEach(() => {
@@ -132,10 +142,8 @@ describe('行内按钮不顺手打开详情', () => {
     await recordArea(w).trigger('click')
     await flushPromises()
 
-    expect(fetchHistoryDetail, '前提不成立：点卡片没去取详情，后面几条「没调用」就成了恒真')
-      .toHaveBeenCalledWith(11)
-    expect(w.emitted('open-record'), '点卡片没有抛出 open-record —— 后面的反向判据会跟着一起假')
-      .toBeTruthy()
+    expect(fetchHistoryDetail, '前提不成立：点卡片没去取详情，后面几条「没调用」就成了恒真').toHaveBeenCalledWith(11)
+    expect(w.emitted('open-record'), '点卡片没有抛出 open-record —— 后面的反向判据会跟着一起假').toBeTruthy()
   })
 
   test('点收藏星标：只发收藏请求，不去取详情', async () => {
@@ -155,8 +163,7 @@ describe('行内按钮不顺手打开详情', () => {
     await flushPromises()
 
     expect(deleteHistory, '点删除没有发出请求').toHaveBeenCalled()
-    expect(fetchHistoryDetail, '点删除顺手打开了详情 —— 用户以为删成功了其实跳走了')
-      .not.toHaveBeenCalled()
+    expect(fetchHistoryDetail, '点删除顺手打开了详情 —— 用户以为删成功了其实跳走了').not.toHaveBeenCalled()
     expect(w.emitted('open-record')).toBeFalsy()
   })
 
@@ -164,9 +171,14 @@ describe('行内按钮不顺手打开详情', () => {
     // 收藏项要服务端拒绝才会出现这一行，所以先把 is_favorite 摆上、
     // 再让服务端返回 refused。不这么造状态的话，判据就挂在「按钮存不存在」上，
     // 而按钮压根没渲染，trigger 会抛错而不是变红——报错方向指向测试自己。
-    const w = await mountPage(env({
-      items: [row({ is_favorite: true })], total: 1, page: 1, total_pages: 1,
-    }))
+    const w = await mountPage(
+      env({
+        items: [row({ is_favorite: true })],
+        total: 1,
+        page: 1,
+        total_pages: 1,
+      }),
+    )
     deleteHistory.mockResolvedValue({ refused: true })
     await delBtn(w).trigger('click')
     await flushPromises()
@@ -177,8 +189,7 @@ describe('行内按钮不顺手打开详情', () => {
     await btnNamed(w, '确认删除').trigger('click')
     await flushPromises()
 
-    expect(fetchHistoryDetail, '点「确认删除」顺手打开了详情 —— 记录被删了页面却跳走了')
-      .not.toHaveBeenCalled()
+    expect(fetchHistoryDetail, '点「确认删除」顺手打开了详情 —— 记录被删了页面却跳走了').not.toHaveBeenCalled()
     expect(w.emitted('open-record')).toBeFalsy()
   })
 })
@@ -198,13 +209,13 @@ describe('收藏项的删除有第二道确认', () => {
     await delBtn(w).trigger('click')
     await flushPromises()
 
-    expect(w.text(), '服务端拒了却什么都不显示 —— 用户只会以为删除按钮坏了')
-      .toContain('这是你收藏的记录，删掉就找不回来了。')
+    expect(w.text(), '服务端拒了却什么都不显示 —— 用户只会以为删除按钮坏了').toContain(
+      '这是你收藏的记录，删掉就找不回来了。',
+    )
     expect(btnNamed(w, '确认删除')).toBeTruthy()
     expect(btnNamed(w, '取消')).toBeTruthy()
     // 第一次**不该**带 force：带了就没有第二道确认这回事了
-    expect(deleteHistory.mock.calls[0][1], '第一次就带了 force —— 第二道确认形同虚设')
-      .toBeUndefined()
+    expect(deleteHistory.mock.calls[0][1], '第一次就带了 force —— 第二道确认形同虚设').toBeUndefined()
     expect(rows(w).length, '被拒之后这一行不该消失').toBe(1)
   })
 
@@ -218,8 +229,7 @@ describe('收藏项的删除有第二道确认', () => {
     await btnNamed(w, '确认删除').trigger('click')
     await flushPromises()
 
-    expect(deleteHistory.mock.calls[1][1], '第二道确认没有带 force —— 服务端还会再拒一次')
-      .toEqual({ force: true })
+    expect(deleteHistory.mock.calls[1][1], '第二道确认没有带 force —— 服务端还会再拒一次').toEqual({ force: true })
     expect(rows(w).length, '删掉了却还留在列表里').toBe(0)
     expect(w.text()).not.toContain('这是你收藏的记录')
   })
@@ -265,8 +275,9 @@ describe('封面走代理', () => {
 
   test('站外地址被套上代理，原地址完整保留在查询串里', async () => {
     const w = await mountPage(withRow({ cover_url: 'https://img.example/c.jpg' }))
-    expect(rows(w)[0].find('img').attributes('src'))
-      .toBe(`/api/proxy/thumbnail?url=${encodeURIComponent('https://img.example/c.jpg')}`)
+    expect(rows(w)[0].find('img').attributes('src')).toBe(
+      `/api/proxy/thumbnail?url=${encodeURIComponent('https://img.example/c.jpg')}`,
+    )
   })
 
   test('站内相对路径原样直取，不被塞进代理查询串', async () => {
@@ -278,8 +289,7 @@ describe('封面走代理', () => {
 
   test('没有封面时走占位块而不是一个坏图', async () => {
     const w = await mountPage(withRow({ cover_url: '' }))
-    expect(rows(w)[0].find('img').exists(), '没有封面却渲染出一个 <img> —— 界面上是一块碎图')
-      .toBe(false)
+    expect(rows(w)[0].find('img').exists(), '没有封面却渲染出一个 <img> —— 界面上是一块碎图').toBe(false)
   })
 })
 
@@ -296,8 +306,7 @@ describe('故障与空在界面上分开', () => {
 
     expect(w.text()).toContain('历史记录加载失败')
     expect(w.text()).toContain('boom')
-    expect(w.text(), '一次 500 被渲染成「暂无解析历史」——用户会以为是自己解析错了')
-      .not.toContain('暂无解析历史')
+    expect(w.text(), '一次 500 被渲染成「暂无解析历史」——用户会以为是自己解析错了').not.toContain('暂无解析历史')
   })
 
   test('故障态带一个可点的重试，点完真的会重新取', async () => {
@@ -348,8 +357,7 @@ describe('标签清单加载失败', () => {
     const w = mount(HistoryPage)
     await flushPromises()
 
-    expect(w.text(), '标签挂了却什么都不说 —— 它与「历史里还没有标签」长得一模一样')
-      .toContain('标签筛选没加载出来')
+    expect(w.text(), '标签挂了却什么都不说 —— 它与「历史里还没有标签」长得一模一样').toContain('标签筛选没加载出来')
     expect(w.text()).toContain('boom')
     // 标签只是筛选器。它挂了不该把内容一起吃掉 —— 那是另一种故障。
     expect(w.text(), '标签挂了把整个列表也吃掉了，用户看不到任何记录').toContain('甲视频')

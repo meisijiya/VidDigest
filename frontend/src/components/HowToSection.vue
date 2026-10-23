@@ -2,7 +2,9 @@
   <section ref="sectionRef" class="py-20 sm:py-24 bg-panel/40 border-y border-line relative overflow-hidden">
     <div class="max-w-5xl mx-auto px-4 sm:px-6">
       <div class="text-center mb-16">
-        <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100/50 text-blue-400 text-xs font-pixel mb-4">
+        <span
+          class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100/50 text-blue-400 text-xs font-pixel mb-4"
+        >
           <span class="w-1.5 h-1.5 rounded-[1px] bg-blue-500"></span>
           How It Works
         </span>
@@ -12,32 +14,41 @@
 
       <div class="relative grid md:grid-cols-3 gap-8">
         <!-- 连接线：像素虚线 -->
-        <div class="hidden md:flex absolute top-16 left-[calc(16.67%+2rem)] right-[calc(16.67%+2rem)] gap-2 items-center" aria-hidden="true">
+        <div
+          class="hidden md:flex absolute top-16 left-[calc(16.67%+2rem)] right-[calc(16.67%+2rem)] gap-2 items-center"
+          aria-hidden="true"
+        >
           <span v-for="n in 40" :key="n" class="w-1.5 h-[3px] rounded-[1px] bg-gray-300 flex-shrink-0"></span>
         </div>
 
-        <div v-for="(step, i) in steps" :key="i"
+        <div
+          v-for="(step, i) in steps"
+          :key="i"
           :class="[
             'relative flex flex-col items-center text-center transition-all duration-700 ease-out',
             'opacity-0 translate-y-8',
-            visible ? 'opacity-100 translate-y-0' : ''
+            visible ? 'opacity-100 translate-y-0' : '',
           ]"
           :style="{ transitionDelay: `${i * 200}ms` }"
         >
           <!-- 步骤编号：像素方块 -->
           <div class="relative mb-6">
-            <div class="w-14 h-14 rounded-2xl border flex items-center justify-center text-xl font-bold font-pixel"
-              :class="step.numClass">
+            <div
+              class="w-14 h-14 rounded-2xl border flex items-center justify-center text-xl font-bold font-pixel"
+              :class="step.numClass"
+            >
               {{ i + 1 }}
             </div>
           </div>
 
           <!-- 内容 -->
           <div class="bg-panel rounded-2xl p-6 border border-line w-full card-hover">
-            <div :class="[
-              'w-10 h-10 rounded-xl border border-line flex items-center justify-center mx-auto mb-4',
-              step.iconBg
-            ]">
+            <div
+              :class="[
+                'w-10 h-10 rounded-xl border border-line flex items-center justify-center mx-auto mb-4',
+                step.iconBg,
+              ]"
+            >
               <component :is="step.icon" class="w-5 h-5" :class="step.iconColor" />
             </div>
             <h3 class="font-semibold text-gray-900 mb-2">{{ step.title }}</h3>
@@ -49,23 +60,44 @@
   </section>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { useSectionAnimation } from '../composables/useSectionAnimation.js'
+import { useSectionAnimation } from '../composables/useSectionAnimation.ts'
 
 import IconSearch from './icons/IconSearch.vue'
 import IconPackage from './icons/IconPackage.vue'
 import IconZap from './icons/IconZap.vue'
 
 const steps = [
-  { icon: IconSearch, title: '粘贴链接', desc: '复制你想下载的视频链接，粘贴到搜索框，点击解析', iconBg: 'bg-blue-50', iconColor: 'text-blue-400', numClass: 'bg-blue-50 border-blue-200 text-blue-400' },
-  { icon: IconPackage, title: '解析下载', desc: '一键解析视频信息，选择清晰度，快速下载到本地', iconBg: 'bg-amber-50', iconColor: 'text-amber-400', numClass: 'bg-amber-50 border-amber-200 text-amber-400' },
-  { icon: IconZap, title: 'AI 总结', desc: '自动生成视频摘要、思维导图，还可与 AI 对话提问', iconBg: 'bg-cyan-50', iconColor: 'text-cyan-400', numClass: 'bg-cyan-50 border-cyan-200 text-cyan-300' },
+  {
+    icon: IconSearch,
+    title: '粘贴链接',
+    desc: '复制你想下载的视频链接，粘贴到搜索框，点击解析',
+    iconBg: 'bg-blue-50',
+    iconColor: 'text-blue-400',
+    numClass: 'bg-blue-50 border-blue-200 text-blue-400',
+  },
+  {
+    icon: IconPackage,
+    title: '解析下载',
+    desc: '一键解析视频信息，选择清晰度，快速下载到本地',
+    iconBg: 'bg-amber-50',
+    iconColor: 'text-amber-400',
+    numClass: 'bg-amber-50 border-amber-200 text-amber-400',
+  },
+  {
+    icon: IconZap,
+    title: 'AI 总结',
+    desc: '自动生成视频摘要、思维导图，还可与 AI 对话提问',
+    iconBg: 'bg-cyan-50',
+    iconColor: 'text-cyan-400',
+    numClass: 'bg-cyan-50 border-cyan-200 text-cyan-300',
+  },
 ]
 
 const sectionRef = useSectionAnimation()
 const visible = ref(false)
-let observer = null
+let observer: IntersectionObserver | null = null
 
 onMounted(() => {
   if (!sectionRef.value) return
@@ -76,7 +108,7 @@ onMounted(() => {
         observer?.disconnect()
       }
     },
-    { threshold: 0.1 }
+    { threshold: 0.1 },
   )
   observer.observe(sectionRef.value)
 })
