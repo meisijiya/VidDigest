@@ -22,6 +22,7 @@ import json
 import logging
 import logging.handlers
 import os
+import sys
 import time
 
 LOG_DIR_ENV = "VIDDIGEST_LOG_DIR"
@@ -60,6 +61,31 @@ class JsonLineFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+class CurrentStderrHandler(logging.StreamHandler):
+    """每次写都取当前的 sys.stderr。
+
+    绑死在构造那一刻的 stream 会在宿主换掉或关掉 stderr 之后炸：
+    典型场景是测试框架在用例结束时关掉捕获用的 stderr，
+    之后任何一条日志都报「ValueError: I/O operation on closed file」，
+    而这条报错本身又会污染「日志里没有异常」这类断言——
+    基础设施的问题变成了被测代码的红。
+
+    代价是「日志写到哪个流」在构造时不可知；这里要的正是这个可变性。
+    """
+
+    def __init__(self):
+        super().__init__(stream=sys.stderr)
+
+    @property
+    def stream(self):
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, value):
+        # StreamHandler.__init__ 会往 self.stream 赋值；这里不保留它。
+        pass
+
+
 def resolve_level(level=None):
     """把级别名解析成 logging 的数值；认不出来就退回 INFO。"""
     raw = level or os.environ.get(LOG_LEVEL_ENV) or DEFAULT_LEVEL
@@ -93,8 +119,21 @@ def setup_logging(level=None):
         log_file, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8"
     )
     file_handler.setFormatter(formatter)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
+
+    # 控制台只出警告及以上。理由不是「少打点日志」，是协议面干净：
+    # stdout/stderr 是应用与宿主之间的通道，正常请求期间往那里写任何东西，
+    # 都会被「凭据与异常文本不得进入标准输出/错误」这条断言打中
+    # （见 backend/tests/test_byok_chat.py 的三件套）。
+    # 第三方库的 INFO 噪音因此只落在文件里。
+    console_handler = CurrentStderrHandler()
+    console_handler.setLevel(logging.WARNING)
+    console_handler.setFormatter(formatter)
+
+    # 服务器自己要说的话留在控制台：启动横幅、访问日志。
+    # 没有这条，容器起没起只能靠猜——而「起没起」正是运维最先要回答的问题。
+    server_console_handler = CurrentStderrHandler()
+    server_console_handler.setLevel(logging.INFO)
+    server_console_handler.setFormatter(formatter)
 
     root = logging.getLogger()
     root.setLevel(resolve_level(level))
@@ -102,7 +141,7 @@ def setup_logging(level=None):
     for handler in list(root.handlers):
         if getattr(handler, "_viddigest", False):
             root.removeHandler(handler)
-    for handler in (file_handler, stream_handler):
+    for handler in (file_handler, console_handler):
         handler._viddigest = True
         root.addHandler(handler)
 
@@ -116,6 +155,6 @@ def setup_logging(level=None):
         for handler in list(logger.handlers):
             logger.removeHandler(handler)
         logger.addHandler(file_handler)
-        logger.addHandler(stream_handler)
+        logger.addHandler(server_console_handler)
 
     return log_file
