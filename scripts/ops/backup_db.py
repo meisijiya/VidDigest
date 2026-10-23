@@ -12,6 +12,10 @@
 备份，比没有备份更危险——它会让人以为可以恢复。所以校验不过就当失败，
 退出码非零。
 
+**为什么文件名精确到微秒**：一秒钟里跑两次备份是常事（定时任务与手动触发
+撞在一起）。秒级时间戳会让后一份**盖掉**前一份——看着像备份了两份，实际
+只剩一份，而且不报错。
+
 用法：
     python scripts/ops/backup_db.py
     python scripts/ops/backup_db.py --keep 14
@@ -63,6 +67,26 @@ def integrity_ok(path):
         conn.close()
 
 
+def new_backup_path(out_dir):
+    """给这次备份挑一个**不会撞名**的文件名。
+
+    为什么：时间戳原本精确到秒，而「一秒钟里跑两次备份」是常事——定时任务
+    与手动触发撞在一起、备份脚本连着跑两遍。两个同名文件里**后一个把前一个
+    盖掉了**：看着像备份了两份，实际只剩一份，而且没有任何报错。
+
+    做法：先到微秒；万一还撞（极小概率，或测试把时间冻住了），就加序号
+    -2、-3……直到不撞为止。微秒让「按文件名排序 = 按时间排序」仍然成立，
+    `prune()` 的保留策略照旧按名字排。
+    """
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    path = os.path.join(out_dir, "%s%s%s" % (PREFIX, stamp, SUFFIX))
+    seq = 2
+    while os.path.exists(path):
+        path = os.path.join(out_dir, "%s%s-%d%s" % (PREFIX, stamp, seq, SUFFIX))
+        seq += 1
+    return path
+
+
 def prune(out_dir, keep):
     """只保留最新的 keep 份，返回被删掉的文件名。"""
     if keep <= 0:
@@ -90,8 +114,7 @@ def main(argv=None):
         return 2
 
     os.makedirs(args.out_dir, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_path = os.path.join(args.out_dir, "%s%s%s" % (PREFIX, stamp, SUFFIX))
+    out_path = new_backup_path(args.out_dir)
 
     try:
         backup_once(args.db, out_path)

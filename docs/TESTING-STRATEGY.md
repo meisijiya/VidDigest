@@ -48,7 +48,7 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 ### 0.3 变异装置不在 `init.sh` 里，但都在 CI 矩阵里
 
-仓库里跟踪着 16 个变异装置（以 `glob **/mutation*` 的实际结果为准）：`scripts/` 下 10 个、`backend/tests/` 下 3 个、`frontend/tests/` 下 3 个。
+仓库里跟踪着 18 个变异装置（以 `glob **/mutation*` 的实际结果为准）：`scripts/` 下 10 个、`backend/tests/` 下 5 个、`frontend/tests/` 下 3 个。
 
 `init.sh` 里的 pytest 与两套前端 runner 都**不收集** `tests/` 目录下这几个文件——目录位置不决定收集行为，文件名模式才决定：
 
@@ -57,6 +57,8 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 | `backend/tests/mutation_check.py` | ❌ 不匹配 `test_*.py`，pytest 默认不收集 | ✅ 后端变异矩阵 |
 | `backend/tests/mutation_check_quota.py` | ❌ 同上 | ✅ 后端变异矩阵 |
 | `backend/tests/mutation_prompt.py` | ❌ 同上 | ✅ 后端变异矩阵 |
+| `backend/tests/mutation_legacy_users.py` | ❌ 同上 | ✅ 后端变异矩阵 |
+| `backend/tests/mutation_backup_naming.py` | ❌ 同上 | ✅ 后端变异矩阵 |
 | `frontend/tests/mutation_wiring.mjs` | ❌ 不匹配 `*.test.mjs`，`npm test` 不收集 | ✅ 前端变异矩阵 |
 | `frontend/tests/mutation-nav-wall.mjs` | ❌ 既不匹配 `*.test.mjs`，也不匹配 `*.spec.mjs` | ✅ 前端变异矩阵 |
 | `frontend/tests/mutation-ui-fixes.mjs` | ❌ 同上 | ✅ 前端变异矩阵 |

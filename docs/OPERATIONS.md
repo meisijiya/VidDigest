@@ -1050,15 +1050,16 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 
 ## 14. 持续集成
 
-### 14.1 三个 job 定义，展开 17 个实例
+### 14.1 四个 job 定义，展开 20 个实例
 
 `.github/workflows/ci.yml` 只做一件事：在干净的 Linux 机器上把门禁跑一遍。
-它有 **3 个 job 定义**（门禁、后端变异矩阵、前端变异矩阵），在 GitHub 上**展开成 17 个实例**（两个变异矩阵按脚本数各展开）。
+它有 **4 个 job 定义**（门禁、生产构建、后端变异矩阵、前端变异矩阵），在 GitHub 上**展开成 20 个实例**（两个变异矩阵按脚本数各展开）。
 
 | job | 跑什么 | 为什么这么切 |
 | --- | --- | --- |
 | `gate` | `bash scripts/bootstrap.sh` → `bash ./init.sh` | 门禁的真相在 `init.sh` 里，工作流不复述它。装环境也走 `bootstrap.sh`，本地与 CI 走同一条路，否则「本地绿、CI 红」只能靠猜 |
-| `mutation-backend` | 13 个后端变异脚本，每个一个 job | 变异脚本会故意改坏源码再还原，同一个工作区里串行跑会互相踩；分开跑互不污染 |
+| `build` | `npm ci && npm run build` → `docker compose build` | 镜像与前端生产包此前只在文档里被描述过，从没在 CI 上真跑过一次；跑一次才知道那份文档是不是在骗人 |
+| `mutation-backend` | 15 个后端变异脚本，每个一个 job | 变异脚本会故意改坏源码再还原，同一个工作区里串行跑会互相踩；分开跑互不污染 |
 | `mutation-frontend` | 3 个前端变异脚本，每个一个 job | 同上 |
 
 触发条件：推 `master`、向 `master` 提 PR、手动触发。`fail-fast: false`——一个变异脚本红了，

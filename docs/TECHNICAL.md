@@ -36,12 +36,12 @@
 | REST 端点 | 40 | 路由装饰器计数（A1） |
 | 挂鉴权依赖的端点 | 29（`get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
-| 后端用例 | 1269 | `pytest --collect-only`（A4） |
+| 后端用例 | 1291 | `pytest --collect-only`（A4） |
 | 前端静态 / 契约断言 | 496 | `npm test`（A5） |
 | 前端挂载用例 | 192 | `npm run test:mount`（A6） |
-| 变异脚本 | 16（后端 13 + 前端 3） | 文件清单（A7） |
+| 变异脚本 | 18（后端 15 + 前端 3） | 文件清单（A7） |
 | 门禁 | 10 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
-| CI | 3 个 job 定义，展开 17 个实例 | `.github/workflows/ci.yml`（A9） |
+| CI | 4 个 job 定义，展开 20 个实例 | `.github/workflows/ci.yml`（A9） |
 | 业务表 | 6 张 + 1 个 FTS5 虚表 + 4 个触发器 | 建表语句（A10） |
 | 设计决策 | 19 篇 ADR（18 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
 | 受管理的 Markdown | 34 个 | `git ls-files '*.md'`（A12） |
@@ -249,7 +249,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 关卡 | 它证明什么 |
 | --- | --- | --- |
-| 1 | `backend: pytest` | 1269 条后端用例通过 |
+| 1 | `backend: pytest` | 1291 条后端用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
 | 4 | `frontend: npm test` | 496 条静态 / 契约断言通过 |
@@ -364,14 +364,14 @@ bash ./init.sh          # 退出码 0 = 已验证
 | # | 位置 | 现在的说法 | 真值 | 该谁改 |
 | --- | --- | --- | --- | --- |
 | 1 | `README.md`、`README.en.md` 的验证表 | 7 关 | `init.sh` 跑 10 关 | README（已在本工单对齐） |
-| 2 | `README.md`、`README.en.md` 的验证表 | 后端 1261 条 | 1269 条 | 同上 |
+| 2 | `README.md`、`README.en.md` 的验证表 | 后端 1261 条 | 1291 条 | 同上 |
 | 3 | `README.md`、`README.en.md` 的验证表 | 挂载 191 条 | 192 条 | 同上 |
 | 4 | `README.md` 的额度表 | 只有 3 次 / 日，且声明不设会员制 | 解析 3 + 追问 10 双计数器 | 同上 |
 | 5 | `README.en.md` 的 ADR 表 | 缺 0019；0017 与已作废方案并列；0010 摘要写「无账号生命周期」 | ADR 现状见 §9 | 同上 |
 | 6 | `GLOSSARY.md` 的「管理后台」条 | 保留了一段日期更正说明 | 词条正文已含 0012 / 0013 的边界 | GLOSSARY（已在本工单对齐） |
 | 7 | `docs/OPERATIONS.md` §5.1.1 | 保留了一段「以前是硬约束」的历史说明 | 当前理由：SQLite 写串行 | OPERATIONS（已在本工单对齐） |
-| 8 | `docs/OPERATIONS.md` §14.1 | 「三个 job」 | 3 个 job 定义，展开 17 个实例 | OPERATIONS（已在本工单对齐） |
-| 9 | `docs/TESTING-STRATEGY.md` §0.3 / §7 | 变异装置是人工按需运行 | 16 个在 CI 矩阵里跑，不在 `init.sh` 里跑 | TESTING-STRATEGY（已在本工单对齐） |
+| 8 | `docs/OPERATIONS.md` §14.1 | 「三个 job」 | 4 个 job 定义，展开 20 个实例 | OPERATIONS（已在本工单对齐） |
+| 9 | `docs/TESTING-STRATEGY.md` §0.3 / §7 | 变异装置是人工按需运行 | 18 个在 CI 矩阵里跑，不在 `init.sh` 里跑 | TESTING-STRATEGY（已在本工单对齐） |
 | 10 | `docs/API.md` | 40 条端点只有 6 条有字段级详情，无统一错误响应字典 | 端点清单以代码为准 | API 文档（未修，属缺口） |
 | 11 | `docs/README.md` 的结构树 | 缺 `scripts/`、`init.sh`、`docker-compose.yml`、`docs/*.md`、`frontend/tests/` | 真实目录结构 | 已在本工单对齐 |
 | 12 | `.github/workflows/ci.yml` 注释 | 「本地那七件事」 | 10 关 | 已在本工单对齐 |
@@ -434,12 +434,12 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A1 | 40 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
 | A2 | 29 | `get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3 | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/'` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -n 'EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1269 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A4 | 1291 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 496 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 192 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
-| A7 | 16 | `scripts/` 10 + `backend/tests/` 3 + `frontend/tests/` 3 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation-*.mjs` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
+| A7 | 18 | `scripts/` 10 + `backend/tests/` 5 + `frontend/tests/` 3 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation-*.mjs` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
 | A8 | 10 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
-| A9 | 3 个 job 定义 / 17 个实例 | 1 个门禁 job + 13 个后端变异实例 + 3 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
+| A9 | 4 个 job 定义 / 20 个实例 | 1 个门禁 job + 1 个生产构建 job + 15 个后端变异实例 + 3 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
 | A10 | 6 表 + 1 虚表 + 4 触发器 | 建表 / 建虚表 / 建触发器语句 | `grep -rnE 'CREATE (VIRTUAL )?TABLE\|CREATE TRIGGER' backend --include=*.py` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
 | A11 | 19 | `docs/adr/` 下的文件数（18 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
 | A12 | 34 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
@@ -450,7 +450,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A17 | 7 / 4 / 7 / 1 | 四个端点的事件集合大小 | `backend/tests/test_sse_event_contract.py` 的期望表 | `backend/tests/test_sse_event_contract.py` + `frontend/src/api/summarize.ts` | 随事件增减 |
 | A18 | 54 / 8 / 20 | 前端 `.vue` 数 / `api/` 客户端数 / 后端 `.py` 模块数 | `find frontend/src -name '*.vue' \| wc -l`；`ls frontend/src/api/*.ts \| wc -l`；`ls backend/*.py \| wc -l` | 整个仓库 | 随文件增删 |
 
-**两条口径说明**：①「10 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「3 个 job 定义，展开 17 个实例」与运维手册里的「三个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。
+**两条口径说明**：①「10 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「4 个 job 定义，展开 20 个实例」与运维手册里的「四个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。
 
 ---
 

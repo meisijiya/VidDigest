@@ -43,6 +43,32 @@ jobs:
       - name: 跑门禁
         run: bash ./init.sh
 
+  # 生产构建：前端生产包与两个镜像，必须有一台机器能真的把它们造出来。
+  # 此前它们只被 docs/OPERATIONS.md 描述过，从没在 CI 上跑过一次——
+  # 「镜像是怎么来的」这句话当时没有证据，只能靠人肉相信。
+  build:
+    name: 生产构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 前端生产构建
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: 编排文件自检
+        run: docker compose config -q
+
+      - name: 镜像构建
+        run: docker compose build
+
   # 变异验证：把每一种要抓的形态故意放回去，确认关卡会转红。
   # 每个脚本一个 job：互相独立、并行跑、互不污染（脚本自己按字节还原）。
   mutation-backend:
@@ -66,6 +92,8 @@ jobs:
           - backend/tests/mutation_check.py
           - backend/tests/mutation_check_quota.py
           - backend/tests/mutation_prompt.py
+          - backend/tests/mutation_backup_naming.py
+          - backend/tests/mutation_legacy_users.py
     steps:
       - uses: actions/checkout@v4
 

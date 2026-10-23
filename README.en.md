@@ -162,7 +162,7 @@ bash ./init.sh          # exit code 0 = verified
 
 | # | Check | What it proves |
 |---|-------|----------------|
-| 1 | `backend: pytest` | 1269 backend tests pass (pytest, standard-library sqlite fixtures) |
+| 1 | `backend: pytest` | 1291 backend tests pass (pytest, standard-library sqlite fixtures) |
 | 2 | `backend: compileall` | Every backend module compiles |
 | 3 | `secrets: content-level scan` | No credential-shaped string in tracked files **or in reachable git history** — `.gitignore` is filename-level and does not stop a pasted key |
 | 4 | `frontend: npm test` | 496 static / contract assertions (node:test) |
@@ -175,7 +175,7 @@ bash ./init.sh          # exit code 0 = verified
 
 Two properties make the gate trustworthy rather than decorative:
 
-- **Mutation testing.** 16 mutation scripts deliberately break one invariant at a time
+- **Mutation testing.** 18 mutation scripts deliberately break one invariant at a time
   (auth boundary, canonical URLs, database fixtures, payment webhooks, secret scanning,
   …) and assert that the gate turns red. A check that never turns red is not a check.
 - **The gate checks itself.** Checks 6 and 7 exist because the instructions, the ADRs,
