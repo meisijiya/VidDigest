@@ -1,0 +1,112 @@
+name: CI
+
+# 触发条件：推 master 与所有 PR 都跑。
+# 门禁的真相在 init.sh 里，这个工作流只做一件事：在干净的 Linux 机器上把它跑一遍。
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 门禁：本地那七件事，在 ubuntu 上原样跑一遍。
+  # 为什么用 bootstrap.sh 而不是手写安装步骤：本地和 CI 必须走同一条装环境的路，
+  # 否则「本地绿、CI 红」只能靠猜。
+  gate:
+    name: 门禁
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 装环境（建 venv、装后端依赖、npm ci）
+        run: bash scripts/bootstrap.sh
+
+      - name: 跑门禁
+        run: bash ./init.sh
+
+  # 变异验证：把每一种要抓的形态故意放回去，确认关卡会转红。
+  # 每个脚本一个 job：互相独立、并行跑、互不污染（脚本自己按字节还原）。
+  mutation-backend:
+    name: 变异验证 · ${{ matrix.script }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        script:
+          - scripts/mutation_auth_boundary.py
+          - scripts/mutation_clean_url.py
+          - scripts/mutation_db_fixture_gate.py
+          - scripts/mutation_download_paths.py
+          - scripts/mutation_payment_webhook.py
+          - scripts/mutation_platform_routing.py
+          - scripts/mutation_refs_gate.py
+          - scripts/mutation_secrets_gate.py
+          - scripts/mutation_summarizer_pure.py
+          - scripts/mutation_url_canonical.py
+          - backend/tests/mutation_check.py
+          - backend/tests/mutation_check_quota.py
+          - backend/tests/mutation_prompt.py
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 装环境
+        run: bash scripts/bootstrap.sh
+
+      - name: 跑变异脚本
+        run: backend/venv/bin/python ${{ matrix.script }}
+
+  mutation-frontend:
+    name: 变异验证 · ${{ matrix.script }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        script:
+          - tests/mutation-nav-wall.mjs
+          - tests/mutation-ui-fixes.mjs
+          - tests/mutation_wiring.mjs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 装前端依赖
+        run: cd frontend && npm ci
+
+      - name: 跑变异脚本
+        run: cd frontend && node ${{ matrix.script }}
