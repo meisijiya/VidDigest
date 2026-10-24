@@ -36,7 +36,7 @@
 | REST 端点 | 40 | 路由装饰器计数（A1） |
 | 挂鉴权依赖的端点 | 29（`get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
-| 后端用例 | 1291 | `pytest --collect-only`（A4） |
+| 后端用例 | 1293 | `pytest --collect-only`（A4） |
 | 前端静态 / 契约断言 | 496 | `npm test`（A5） |
 | 前端挂载用例 | 192 | `npm run test:mount`（A6） |
 | 变异脚本 | 18（后端 15 + 前端 3） | 文件清单（A7） |
@@ -250,7 +250,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 关卡 | 它证明什么 |
 | --- | --- | --- |
-| 1 | `backend: pytest` | 1291 条后端用例通过 |
+| 1 | `backend: pytest` | 1293 条后端用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
 | 4 | `frontend: npm test` | 496 条静态 / 契约断言通过 |
@@ -425,7 +425,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A1 | 40 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
 | A2 | 29 | `get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3 | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/'` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -n 'EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1291 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A4 | 1293 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 496 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 192 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
 | A7 | 18 | `scripts/` 10 + `backend/tests/` 5 + `frontend/tests/` 3 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation-*.mjs` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
