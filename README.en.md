@@ -211,7 +211,7 @@ bash ./init.sh          # exit code 0 = verified
 
 Two properties make the gate trustworthy rather than decorative:
 
-- **Mutation testing.** 22 mutation scripts deliberately break one invariant at a time
+- **Mutation testing.** 23 mutation scripts deliberately break one invariant at a time
   (auth boundary, canonical URLs, database fixtures, payment webhooks, secret scanning,
   …) and assert that the gate turns red. A check that never turns red is not a check.
 - **The gate checks itself.** Checks 6 and 7 exist because the instructions, the ADRs,

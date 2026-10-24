@@ -199,6 +199,7 @@ jobs:
           - backend/tests/mutation_ratelimit.py
           - backend/tests/mutation_concurrency_limit.py
           - backend/tests/mutation_download_artifacts.py
+          - backend/tests/mutation_invite_codes.py
     steps:
       - uses: actions/checkout@v4
 
