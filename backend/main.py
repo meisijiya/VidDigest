@@ -22,7 +22,7 @@ from downloader import VideoDownloader
 from douyin import AUDIO_FORMAT_ID, DouyinParser, is_douyin_url
 from database import init_db, seed_admin_emails_from_env
 from logging_setup import setup_logging
-from ratelimit import rate_limit
+from ratelimit import concurrency_limit, rate_limit
 
 # 全局单例
 downloader = VideoDownloader()
@@ -121,11 +121,16 @@ async def health():
 # ── 解析视频信息 ──────────────────────────────────────────
 
 @app.post("/api/parse")
-async def parse_video(req: ParseRequest, _rl: None = Depends(rate_limit("/api/parse"))):
+async def parse_video(req: ParseRequest, _rl: None = Depends(rate_limit("/api/parse")), _slot=Depends(concurrency_limit("/api/parse"))):
     """解析视频信息（自动识别抖音/其他平台）
 
     **限流**：这个端点不挂鉴权，谁都能打，而成本全在服务器这边（出网抓取）。
     每分钟同一个来源最多 20 次，超了回 429 并带 `Retry-After`。
+
+    **并发闸门**：同一来源同时在跑的任务超过上限（默认 2 个，可用
+    `VIDDIGEST_CONCURRENCY_PARSE` 调）就拒（429 + `Retry-After`）。
+    速率闸门管「来得频不频繁」，这道管「同时在跑太多」——一次慢解析就能占住
+    一个名额，所以它挡的是同时发起的一堆重活（ADR 0021）。
     """
     try:
         url = req.clean_url()
@@ -140,16 +145,24 @@ async def parse_video(req: ParseRequest, _rl: None = Depends(rate_limit("/api/pa
             "success": False,
             "error": f"解析失败: {str(e)}"
         })
+    finally:
+        # 名额必须在响应发出去之前还回去：客户端收到响应后可能立刻再发一次，
+        # 那时它上一个任务已经结束了，不该再被挡住。
+        _slot.release()
 
 
 # ── 服务端下载视频 ────────────────────────────────────────
 
 @app.post("/api/download")
-async def download_video(req: DownloadRequest, _rl: None = Depends(rate_limit("/api/download"))):
+async def download_video(req: DownloadRequest, _rl: None = Depends(rate_limit("/api/download")), _slot=Depends(concurrency_limit("/api/download"))):
     """服务端下载视频后提供文件下载（自动识别抖音/其他平台）
 
     **限流**：下载要落盘，是这几个公开端点里最重的一个，每分钟同一来源
     最多 10 次。
+
+    **并发闸门**：同一来源同时在跑的任务超过上限（默认 2 个，可用
+    `VIDDIGEST_CONCURRENCY_DOWNLOAD` 调）就拒（429 + `Retry-After`）。
+    下载最占资源（出网 + 落盘），这道闸门在这里最要紧（ADR 0021）。
     """
     try:
         url = req.clean_url()
@@ -182,6 +195,10 @@ async def download_video(req: DownloadRequest, _rl: None = Depends(rate_limit("/
             "success": False,
             "error": f"下载失败: {str(e)}"
         })
+    finally:
+        # 名额必须在响应发出去之前还回去：文件已经在盘上了，剩下只是回传，
+        # 那不该继续占着名额（客户端收到响应后可能立刻再发一次）。
+        _slot.release()
 
 
 # ── 获取视频直链 ──────────────────────────────────────────
@@ -191,6 +208,9 @@ async def get_direct_url(req: DownloadRequest, _rl: None = Depends(rate_limit("/
     """获取视频直链
 
     **限流**：出网取直链，轻量但仍是出网，每分钟同一来源最多 30 次。
+
+    **不挂并发闸门**：取直链是一次出网往返就返回，耗时与解析/下载不在一个
+    量级；并发闸门只挂在真正长时间占资源的解析与下载上（ADR 0021）。
     """
     try:
         url = req.clean_url()
@@ -293,6 +313,9 @@ async def proxy_thumbnail(url: str = Query(..., description="缩略图URL"), _rl
 
     **限流**：公开可读 + 出网抓取，所以仍按来源限速（每分钟同一来源 60 次）。
     公开不等于不限速——这两件事不冲突。
+
+    **不挂并发闸门**：只带一张缩略图回来，秒级往返；并发闸门留给解析与下载
+    （ADR 0021）。
 
     收紧了什么（工单 #46）：原实现对 ``url`` 零校验，于是任何人可让本服务
     GET 任意 URL 并把响应体原样吐回来——内网地址（含云环境的
