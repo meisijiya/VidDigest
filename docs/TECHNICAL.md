@@ -298,6 +298,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | ASR | 没有字幕轨道时的兜底 | 需单独配置；失败原因随结果回传（`FAIL_NO_TRACK` / `FAIL_FETCH_FAILED` / `FAIL_ASR_NOT_CONFIGURED`） |
 | SQLite | 唯一存储 | 写锁竞争 → `database is locked` |
 | Stripe | 会员支付 | 回调按事件幂等处理 |
+| 自家限流（`backend/ratelimit.py`） | 六个不挂鉴权的公开端点 | 超限返回 `429`，`Retry-After` 头写明等几秒；体是 `{"success": false, "error": ...}`；是**速率**闸门不是并发闸门（ADR 0020） |
 
 **额度口径**：解析含字幕提取与批量生成，追问只是一次模型调用，因此拆成两个计数器（ADR 0003）。共用内容（社区里已有的那一份）不扣额度。
 
