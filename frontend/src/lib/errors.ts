@@ -86,6 +86,10 @@ function looksLikeServerRateLimit(err: unknown): boolean {
  *
  * 判据：后端并发闸门回的消息里带「同时进行的任务太多」（见
  * `backend/ratelimit.py` 的 `concurrency_limit`），这是**自家**的措辞。
+ *
+ * 改文案要同步改后端：这段正则认的是**中文子串**，两边分头改就会把
+ * 「自家并发闸门」误报成「平台风控」（后端文案在
+ * `backend/ratelimit.py` 的 `concurrency_limit` 里）。
  */
 function looksLikeServerConcurrencyLimit(err: unknown): boolean {
   const m = messageOf(err).toLowerCase()
