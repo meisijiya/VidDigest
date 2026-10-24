@@ -1065,6 +1065,19 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 触发条件：推 `master`、向 `master` 提 PR、手动触发。`fail-fast: false`——一个变异脚本红了，
 其余的仍要跑完，否则不知道是这一条坏了还是一起坏了。
 
+### 14.1.1 改动怎么进 master
+
+master 受分支保护保护：force push 与删除分支被挡住，直推 master 要求「门禁」与「生产构建」
+两个检查在最新提交上通过。要改 master，走这条路：
+
+1. 从 master 切一条分支，改在上面
+2. 推这条分支，开 PR（模板在 `.github/pull_request_template.md`，要求贴命令与退出码）
+3. 等 PR 上的检查全绿
+4. 合入 master
+
+`变异验证 · …` 这些检查**不写进必过清单**：它们的检查名里带脚本路径，加一个脚本就得改一次
+必过清单，旧名字再也不会出现，PR 会被永久卡住。必过的是「门禁」与「生产构建」两个名字稳定的检查。
+
 ### 14.2 本地预演
 
 推上去之前先在容器里走一遍同一条路：
