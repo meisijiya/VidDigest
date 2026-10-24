@@ -123,6 +123,7 @@ jobs:
           - backend/tests/mutation_backup_naming.py
           - backend/tests/mutation_legacy_users.py
           - backend/tests/mutation_ratelimit.py
+          - backend/tests/mutation_concurrency_limit.py
     steps:
       - uses: actions/checkout@v4
 

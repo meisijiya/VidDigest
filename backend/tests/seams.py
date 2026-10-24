@@ -138,15 +138,20 @@ def close_all_thread_connections() -> None:
 
 # ── 接缝三：真实 HTTP 客户端 ───────────────────────────────
 
-def make_client(app) -> TestClient:
+def make_client(app, **client_kwargs) -> TestClient:
     """构造走真实依赖注入的 TestClient。
 
     这里**不**覆写 ``get_optional_user`` / ``get_current_user``：
     覆写掉它们就等于又回到「手写依赖返回值」，鉴权行为根本没被执行。
     是否登录由请求头决定——不带 Authorization 即未登录，
     带真实 JWT 即已登录。两者得到不同结果，才证明鉴权真的被执行了。
+
+    ``client_kwargs`` 原样透传给 ``TestClient``：比如
+    ``client=("203.0.113.5", 5000)`` 用来指定「直接对端」，
+    ``raise_server_exceptions=False`` 让服务端炸了表现为 500 响应
+    而不是把异常抛进测试里。
     """
-    return TestClient(app)
+    return TestClient(app, **client_kwargs)
 
 
 def auth_headers(token: str) -> dict:

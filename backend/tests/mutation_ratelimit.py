@@ -59,8 +59,8 @@ MUTATIONS = [
     (
         "M5 解析端点摘掉限流依赖",
         MAIN_FILE,
-        'async def parse_video(req: ParseRequest, _rl: None = Depends(rate_limit("/api/parse"))):',
-        "async def parse_video(req: ParseRequest):",
+        'async def parse_video(req: ParseRequest, _rl: None = Depends(rate_limit("/api/parse")), _slot=Depends(concurrency_limit("/api/parse"))):',
+        'async def parse_video(req: ParseRequest, _slot=Depends(concurrency_limit("/api/parse"))):',
     ),
     (
         "M6 环境变量改不动上限：换配置也没用",
