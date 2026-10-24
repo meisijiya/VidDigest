@@ -248,6 +248,9 @@ When both provider keys are present, Bailian wins — that is the order the back
 them in (`backend/summarizer.py`). With a user-supplied credential (BYOK), the platform
 key is not used at all.
 
+The template's `ALIYUN_BAILIAN_MODEL=qwen-turbo` is an **explicit choice**: leave it empty
+and the model comes from the `bailian.default_model` entry in the model catalog.
+
 ### The other required entry
 
 | Variable | Purpose | If missing |
@@ -256,7 +259,6 @@ key is not used at all.
 | `VIDDIGEST_ALLOWED_ORIGINS` | Explicit CORS allow-list, comma-separated; empty means no cross-origin access at all (the default) | Same-origin frontend access is unaffected |
 | `VIDDIGEST_ADMIN_EMAILS` | Comma-separated list of accounts seeded as admins | Nobody is an admin |
 | `VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT` | Daily free quotas, 3 / 10 by default, counted separately and reset at midnight (UTC) | The defaults are used; changing them changes the **default only**, it never resets what a user already spent |
-| `FRONTEND_URL` | Frontend origin used in redirects and CORS decisions | The default origin |
 
 Generate a JWT secret:
 
@@ -274,7 +276,7 @@ nothing.
 > but `.gitignore` is **filename-level** — it stops the file, not somebody pasting a
 > password into the docs. That is why this repo also runs a content-level scan
 > (`scripts/check_secrets.py`, gate check 4) over the worktree and every reachable git
-> history. The template `backend/.env.example` deliberately keeps **no concrete string**
+> history. The template `backend/.env.example` deliberately keeps **no concrete credential**
 > in it (not even a sample password) — generate the value instead.
 
 > Without an LLM key, parsing and downloading still work; the AI features do not.

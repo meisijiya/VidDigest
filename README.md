@@ -221,6 +221,8 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 两个 key 都在时**百炼优先**（`backend/summarizer.py` 里读环境变量的顺序）。用户自己带凭据（BYOK）时，平台 key 不参与。
 
+模板里的 `ALIYUN_BAILIAN_MODEL=qwen-turbo` 是**显式选择**：留空则走模型清单表里的 `bailian.default_model`。
+
 ### 其它必填项
 
 | 变量 | 用途 | 缺了会怎样 |
@@ -240,7 +242,7 @@ openssl rand -hex 32
 
 `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_ID_MONTHLY` 只保留配置位：项目不做会员制，填了也不会被用。
 
-> **真实值只进 `backend/.env`。** 它已被 `.gitignore` 挡住，但 `.gitignore` 是**文件名级**的 —— 它挡得住这个文件，挡不住「把口令抄进文档」。所以本仓还有一道内容级扫描（`scripts/check_secrets.py`，`init.sh` 第 4 关）扫工作树与全部可达 git 历史。模板 `backend/.env.example` 里刻意**不留任何具体字符串**（连示例口令都没有），要值就现生成。
+> **真实值只进 `backend/.env`。** 它已被 `.gitignore` 挡住，但 `.gitignore` 是**文件名级**的 —— 它挡得住这个文件，挡不住「把口令抄进文档」。所以本仓还有一道内容级扫描（`scripts/check_secrets.py`，`init.sh` 第 4 关）扫工作树与全部可达 git 历史。模板 `backend/.env.example` 里刻意**不留任何具体凭据字符串**（连示例口令都没有），要值就现生成。
 
 > 不配置 LLM API Key 时，视频下载功能仍可用，AI 功能不可用。
 
