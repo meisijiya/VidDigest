@@ -56,6 +56,9 @@ date: 2026-10-24
 - 上限是环境变量而不是代码常量——改配置不用改代码，也不用改完再发一版。
 - 前端把「服务器限流」与「平台风控」分开说（`frontend/src/lib/errors.ts`）：
   自家限流说成平台风控，用户就会去怪视频站、反复重试，反而触发得更狠。
+- 429 的错误体带机器可读的 `code`（`rate_limit`），中文 `error` 只给人看。
+  两端靠文案对齐是脆的：改一次文案，前端就把自家闸门说成平台风控。`code`
+  是协议，前端先认它，老后端没给 `code` 时才退回认文案。
 - 行为由 `backend/tests/test_ratelimit.py`（15 条）与
-  `backend/tests/mutation_ratelimit.py`（7 个变异）钉住；运维口径见
+  `backend/tests/mutation_ratelimit.py`（8 个变异）钉住；运维口径见
   `docs/OPERATIONS.md` 第 10.4 节。

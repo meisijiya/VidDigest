@@ -708,6 +708,8 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 
 六个不挂鉴权依赖的公开端点按来源 IP 限速：解析、下载、直链、缩略图、登录、注册。超限返回 `429`，并在 `Retry-After` 头里写明等几秒（ADR 0020）。
 
+**429 的错误体带机器可读的 `code`**：`{"detail": {"success": false, "code": "rate_limit", "error": "..."}}`。`code` 是**协议**，`error` 里的中文只给人看——前端按 `code` 分辨是哪道自家闸门，不靠认文案；文案怎么改都不影响分类。
+
 | 环境变量 | 默认 | 管什么 |
 | --- | --- | --- |
 | `VIDDIGEST_RATE_LIMIT_ENABLED` | `1` | 总开关，关掉后所有桶都不限流 |
@@ -742,7 +744,9 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 
 **这层的边界**（与速率闸门一致）：计数在进程内，重启即清零；多实例部署时每个实例各算各的。直链、缩略图、登录、注册**不挂**这道闸门——它们是秒级往返，速率闸门对它们已经够用。
 
-**真值文件**：`backend/ratelimit.py`；判据与用例见 `backend/tests/test_ratelimit.py`（15 条）、`backend/tests/mutation_ratelimit.py`（7 个变异）、`backend/tests/test_concurrency_limit.py` 与 `backend/tests/mutation_concurrency_limit.py`。
+**并发 429 的错误体**里 `code` 是 `concurrency_limit`（速率那道是 `rate_limit`）——前端据此把「同时在跑太多」与「来得太勤」分成两种提示，前者的用户动作是「结束前面那个任务」，不是「等一分钟」。
+
+**真值文件**：`backend/ratelimit.py`；判据与用例见 `backend/tests/test_ratelimit.py`（15 条）、`backend/tests/mutation_ratelimit.py`（8 个变异）、`backend/tests/test_concurrency_limit.py`（22 条）与 `backend/tests/mutation_concurrency_limit.py`（7 个变异）。
 
 ### 10.5 管理员播种
 

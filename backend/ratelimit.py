@@ -102,6 +102,19 @@ CONCURRENCY_BUCKETS = {
 #: 才是准的。
 CONCURRENCY_RETRY_AFTER_SECONDS = 30
 
+#: 429 响应体里的**机器可读**错误码。
+#:
+#: 为什么要有它：前端过去靠中文文案（「服务器限流」「同时进行的任务太多」）
+#: 认出「这是我们自己的闸门，不是视频站在封人」。文案一改前端就跟着坏，
+#: 两边分头改就会把自家闸门误报成平台风控——用户会去怪视频站，等错方向。
+#: 有了 `code`，协议落在字段上，文案退化成只给人看。
+#:
+#: 值域纪律：这里的取值不能和别的错误体里的 `code` 撞车（历史记录那边用的是
+#: "favorited"，见 `backend/api_history.py`）。撞车的症状是不报错、只是慢慢错，
+#: 所以取值列在这一处，改之前先对一眼。
+RATE_LIMIT_CODE = "rate_limit"
+CONCURRENCY_LIMIT_CODE = "concurrency_limit"
+
 
 class FixedWindowCounter:
     """固定窗口计数器：同一个键在一个窗口内最多记 limit 次。
@@ -360,6 +373,8 @@ def enforce(request: Request, bucket: str) -> None:
         status_code=429,
         detail={
             "success": False,
+            # 机器可读的错误码：前端按它分类，不再认中文文案。
+            "code": RATE_LIMIT_CODE,
             "error": f"请求过于频繁：服务器限流，请 {retry_after} 秒后再试",
         },
         headers={"Retry-After": str(retry_after)},
@@ -422,9 +437,10 @@ def concurrency_limit(bucket: str):
                 status_code=429,
                 detail={
                     "success": False,
-                    # 这段文案前端在按字面识别（`frontend/src/lib/errors.ts`
-                    # 的 `looksLikeServerConcurrencyLimit`）——改这里要同步改
-                    # 那里，两边分家就会把「自家并发闸门」误报成「平台风控」。
+                    # 机器可读的错误码：前端按它分类（`frontend/src/lib/errors.ts`
+                    # 的 `looksLikeServerConcurrencyLimit`）。下面的文案只给人看，
+                    # 改文案不会再让前端把自家闸门误报成「平台风控」。
+                    "code": CONCURRENCY_LIMIT_CODE,
                     "error": (
                         f"同时进行的任务太多：这个来源同时在跑的任务已超过 {limit} 个，"
                         "请等前面的任务结束再试"

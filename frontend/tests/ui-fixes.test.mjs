@@ -485,6 +485,66 @@ describe('错误分类器 · 每种失败都给出可执行的下一步', () => 
     assert.match(r.hint, /结束/, '没告诉用户该等前面的任务结束')
   })
 
+  // 下面四条钉的是「自家 429 的分类协议落在 detail.code 上，不是中文文案」
+  // （工单 #89 复审里的 F7）。文案是给人看的，改它不该影响分类；
+  // 反过来，code 在就说明是哪道闸门，文案说什么不算数。
+
+  test('自家并发闸门：按 code 认，文案换成完全无关的话也一样', () => {
+    const r = classifyError({
+      response: {
+        data: {
+          detail: {
+            code: 'concurrency_limit',
+            error: '服务端繁忙：这个来源的槽位已占满，请稍后再试',
+          },
+        },
+      },
+    })
+    assert.match(r.title, /同时/, '带 code 的并发 429 没被认成并发闸门')
+    assert.doesNotMatch(r.title, /平台/, '自家并发闸门被说成平台风控')
+  })
+
+  test('自家限流：按 code 认，不靠「服务器限流」四个字', () => {
+    const r = classifyError({
+      response: {
+        data: {
+          detail: { code: 'rate_limit', error: '请求过于频繁：请 42 秒后再试' },
+        },
+      },
+    })
+    assert.match(r.title, /频繁/, '带 code 的限流 429 没被认成自家限流')
+    assert.doesNotMatch(r.title, /平台/, '自家限流被说成平台风控')
+  })
+
+  test('code 优先于文案：code 说限流，文案说并发，要信 code', () => {
+    // 反向对照：文案不该能推翻协议，否则「谁说了算」就没钉死。
+    const r = classifyError({
+      response: {
+        data: {
+          detail: {
+            code: 'rate_limit',
+            error: '同时进行的任务太多：这个来源同时在跑的任务已超过 2 个',
+          },
+        },
+      },
+    })
+    assert.match(r.title, /频繁/, '文案推翻了 code 的判定')
+    assert.doesNotMatch(r.title, /同时/, '文案推翻了 code 的判定')
+  })
+
+  test('老后端没给 code 时仍认得出来（本地后端没重启的兼容路径）', () => {
+    const r = classifyError({
+      response: {
+        data: {
+          detail: {
+            error: '请求过于频繁：服务器限流，请 42 秒后再试',
+          },
+        },
+      },
+    })
+    assert.match(r.title, /频繁/, '老后端（响应体没有 code）的限流 429 认不出来了')
+  })
+
   test('拿不到响应 + 网络词 → 网络问题，让他检查网络', () => {
     const r = classifyError({ message: 'Network Error' })
     assert.match(r.title, /连不上/)

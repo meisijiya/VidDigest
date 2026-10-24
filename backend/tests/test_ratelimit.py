@@ -92,6 +92,10 @@ class TestThePublicEndpointsAreThrottled:
         assert "retry-after" in {k.lower() for k in second.headers}
         detail = second.json()["detail"]
         assert detail["success"] is False
+        assert detail.get("code") == "rate_limit", (
+            "429 的错误体里没有机器可读的 code —— 前端只能去认中文文案，"
+            "两边分头改就会把自家限流误报成平台风控"
+        )
         assert "服务器限流" in detail["error"]
 
     def test_the_download_endpoint_refuses_the_second_call(self, client, monkeypatch):

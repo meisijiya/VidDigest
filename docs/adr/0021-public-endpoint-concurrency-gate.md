@@ -85,6 +85,10 @@ date: 2026-10-24
   挂在响应自己的 `finally` 上同时成立。
 - 因此清理**不依赖 fastapi / starlette 的 background 注入语义**：框架升级不会让它
   静默失效。
-- 行为由 `backend/tests/test_concurrency_limit.py` 与
-  `backend/tests/mutation_concurrency_limit.py` 钉住；运维口径见
+- 行为由 `backend/tests/test_concurrency_limit.py`（22 条）与
+  `backend/tests/mutation_concurrency_limit.py`（7 个变异）钉住；运维口径见
   `docs/OPERATIONS.md` 第 10.4 节。
+- 并发 429 的错误体带机器可读的 `code`（`concurrency_limit`），与速率那道
+  的 `rate_limit` 分开：前端要能分辨「来得太勤」与「同时在跑太多」——两者的
+  用户动作不一样（等一会儿 vs 先结束前面那个任务）。文案只给人看，协议落在
+  `code` 上。

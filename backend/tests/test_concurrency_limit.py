@@ -13,6 +13,8 @@
 - 响应带 `Retry-After` 头；
 - 响应体里的 `detail.error` 说清是**同时在跑太多**（不是速率闸门那句
   「来得频繁」）；
+- 响应体里的 `detail.code` 是**机器可读**的错误码——前端按它分类，
+  不再靠中文文案认自家闸门；
 - 两个端点桶互不牵连（解析占满了不代表下载也满）；
 - 任务结束（含抛异常）后名额**立刻**还回来；
 - 超限的请求**立刻**被拒，不排队等；
@@ -219,6 +221,10 @@ def test_the_parse_endpoint_rejects_over_the_concurrency_limit(client, monkeypat
     assert second.status_code == 429
     detail = second.json()["detail"]
     assert detail["success"] is False
+    assert detail.get("code") == "concurrency_limit", (
+        "429 的错误体里没有机器可读的 code —— 前端只能去认中文文案，"
+        "两边分头改就会把自家并发闸门误报成平台风控"
+    )
     assert "retry-after" in {k.lower() for k in second.headers}
     assert int(second.headers["retry-after"]) > 0
 
