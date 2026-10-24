@@ -11,13 +11,15 @@
 
 这批测试守的正是那件事，所以另起一个脚本，而不是往上面两个里塞。
 
-## 四个变异分别对应四类真实事故
+## 五个变异分别对应五类真实事故
 
   · M1 迁移根本不补 ``is_admin`` —— 老库升级后管理后台一读就 no such column。
   · M2 覆盖列补成 ``DEFAULT 0`` —— 0 的语义是「一条都不能用」，NULL 才是
     「回落全局上限」。补成 0 等于把每一个老账号静默封死。
   · M3 额度拆分那四列不补 —— 老库升级后一算额度就 no such column。
   · M4 ``is_admin`` 补成 ``DEFAULT 1`` —— 老账号因为升级**集体变成管理员**。
+  · M5 额度计数列补成 ``DEFAULT 100`` —— 老账号一升级就像「今天已经用掉 100 次」。
+    今天被「日期不是今天就判额度满」那条捷径盖住，等捷径没了就是真 bug。
 """
 import os
 import re
@@ -73,6 +75,14 @@ MUTATIONS = [
             s,
             'ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0',
             'ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 1',
+        ),
+    ),
+    (
+        "M5 额度计数列补成 DEFAULT 100：老账号一升级就像今天已经用掉 100 次",
+        lambda s: mutate_bytes(
+            s,
+            '("daily_parse_count", "ALTER TABLE users ADD COLUMN daily_parse_count INTEGER DEFAULT 0"),',
+            '("daily_parse_count", "ALTER TABLE users ADD COLUMN daily_parse_count INTEGER DEFAULT 100"),',
         ),
     ),
 ]

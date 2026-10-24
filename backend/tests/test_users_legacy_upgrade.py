@@ -278,3 +278,26 @@ class TestUpgradeIsIdempotent:
         assert row["is_admin"] == 0
         assert row["parse_limit_override"] is None
         assert row["chat_limit_override"] is None
+
+
+class TestUpgradeGivesOldRowsZeroedCounters:
+    """补出来的计数器初值必须是 0。
+
+    为什么单独钉这一条：``ALTER TABLE ... DEFAULT 100`` 会让每一个老账号一上来
+    就「今天已经用掉 100 次」。今天看不出来——``check_quota_kind`` 看到日期
+    不是今天就直接判额度满，把这个初值盖住了；等哪天去掉那个日期捷径，它就是
+    一个真 bug，而且只在升级现场发生。
+    """
+
+    def test_the_new_counters_start_at_zero(self, legacy_db):
+        uid = _seed_legacy_users(legacy_db)
+        legacy_db.init_db()
+        row = _row(legacy_db, uid)
+        assert row["daily_parse_count"] == 0, (
+            f"老行补出来的 daily_parse_count 是 {row['daily_parse_count']!r}，不是 0 —— "
+            "存量账号一升级就像今天已经用掉这么多次"
+        )
+        assert row["daily_chat_count"] == 0
+        assert row["last_parse_date"] is None, (
+            "补出来的日期列不该有值：没有值才表示「今天还没用过」"
+        )

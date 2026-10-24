@@ -153,7 +153,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 检查 | 它证明什么 |
 |---|------|-----------|
-| 1 | `backend: pytest` | 后端 1291 条用例通过 |
+| 1 | `backend: pytest` | 后端 1293 条用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件**与可达 git 历史**里没有凭据形态的字符串（`.gitignore` 只挡文件名，挡不住被抄进文档的口令） |
 | 4 | `frontend: npm test` | 前端 496 条静态 / 契约断言通过（node:test） |

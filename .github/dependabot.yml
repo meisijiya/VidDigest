@@ -26,6 +26,13 @@ updates:
     labels:
       - dependencies
       - frontend
+    ignore:
+      # typescript-eslint 8.x 的 peer 依赖是 typescript >=4.8.4 <6.1.0。
+      # 放行 7.x 只会造出一个 npm ci 就 ERESOLVE 的 PR（实测 #73 全红，
+      # 每天重开一次，永远合不掉）。
+      - dependency-name: "typescript"
+        versions:
+          - ">=6.1.0"
     groups:
       frontend-deps:
         patterns:

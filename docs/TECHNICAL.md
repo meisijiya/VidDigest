@@ -36,7 +36,7 @@
 | REST 端点 | 40 | 路由装饰器计数（A1） |
 | 挂鉴权依赖的端点 | 29（`get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
-| 后端用例 | 1291 | `pytest --collect-only`（A4） |
+| 后端用例 | 1293 | `pytest --collect-only`（A4） |
 | 前端静态 / 契约断言 | 496 | `npm test`（A5） |
 | 前端挂载用例 | 192 | `npm run test:mount`（A6） |
 | 变异脚本 | 18（后端 15 + 前端 3） | 文件清单（A7） |
@@ -218,7 +218,8 @@
 ### 5.3 迁移
 
 - 用 `PRAGMA table_info` 探测缺列再补，幂等：老库缺列也能启动。
-- 已知缺口（未修）：这四条迁移没有各自的专属升级用例，且仓库无 tag / release，取不到真实的上一版本库作输入。
+- 老库升级路径有专属用例：`backend/tests/test_users_legacy_upgrade.py`——`users` 表的老结构**逐字取自提交 `afab2b6`**（建表语句不凭记忆写），断言补列之后老行的语义没变（老账号不是管理员、覆盖列是 NULL 而不是 0、计数器初值是 0）；`backend/tests/mutation_legacy_users.py` 用 5 个变异确认这些用例真能转红。
+- 仍然缺的一块：仓库无 tag / release，取不到真实的上一版本库作输入。老结构是从提交历史里逐字抄的，不等于从真实库导出。
 
 ### 5.4 额度与状态
 
@@ -249,7 +250,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 关卡 | 它证明什么 |
 | --- | --- | --- |
-| 1 | `backend: pytest` | 1291 条后端用例通过 |
+| 1 | `backend: pytest` | 1293 条后端用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
 | 4 | `frontend: npm test` | 496 条静态 / 契约断言通过 |
@@ -361,44 +362,34 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 ### 10.1 已核实的文档口径冲突
 
+当前仍然存在的冲突只有一条：
+
 | # | 位置 | 现在的说法 | 真值 | 该谁改 |
 | --- | --- | --- | --- | --- |
-| 1 | `README.md`、`README.en.md` 的验证表 | 7 关 | `init.sh` 跑 10 关 | README（已在本工单对齐） |
-| 2 | `README.md`、`README.en.md` 的验证表 | 后端 1261 条 | 1291 条 | 同上 |
-| 3 | `README.md`、`README.en.md` 的验证表 | 挂载 191 条 | 192 条 | 同上 |
-| 4 | `README.md` 的额度表 | 只有 3 次 / 日，且声明不设会员制 | 解析 3 + 追问 10 双计数器 | 同上 |
-| 5 | `README.en.md` 的 ADR 表 | 缺 0019；0017 与已作废方案并列；0010 摘要写「无账号生命周期」 | ADR 现状见 §9 | 同上 |
-| 6 | `GLOSSARY.md` 的「管理后台」条 | 保留了一段日期更正说明 | 词条正文已含 0012 / 0013 的边界 | GLOSSARY（已在本工单对齐） |
-| 7 | `docs/OPERATIONS.md` §5.1.1 | 保留了一段「以前是硬约束」的历史说明 | 当前理由：SQLite 写串行 | OPERATIONS（已在本工单对齐） |
-| 8 | `docs/OPERATIONS.md` §14.1 | 「三个 job」 | 4 个 job 定义，展开 20 个实例 | OPERATIONS（已在本工单对齐） |
-| 9 | `docs/TESTING-STRATEGY.md` §0.3 / §7 | 变异装置是人工按需运行 | 18 个在 CI 矩阵里跑，不在 `init.sh` 里跑 | TESTING-STRATEGY（已在本工单对齐） |
-| 10 | `docs/API.md` | 40 条端点只有 6 条有字段级详情，无统一错误响应字典 | 端点清单以代码为准 | API 文档（未修，属缺口） |
-| 11 | `docs/README.md` 的结构树 | 缺 `scripts/`、`init.sh`、`docker-compose.yml`、`docs/*.md`、`frontend/tests/` | 真实目录结构 | 已在本工单对齐 |
-| 12 | `.github/workflows/ci.yml` 注释 | 「本地那七件事」 | 10 关 | 已在本工单对齐 |
+| 1 | `docs/API.md` | 40 条端点只有 6 条有字段级详情，没有统一的错误响应字典 | 端点清单以代码为准 | API 文档（未修，属缺口） |
 
 ### 10.2 验收结论里的未修项
 
-收尾验收（验收测试工程师视角）判定为「**有条件可交付：功能面可交付，生产运维面不可交付**」。以下为本仓当前状态，未修：
+收尾验收（验收测试工程师视角）判定为「**有条件可交付：功能面可交付，生产运维面不可交付**」。经过第二次独立验收复核，以下是**当前仍未修**的部分——已经修掉的条目不再列在这里。
 
 | 级别 | 事项 | 现状 |
 | --- | --- | --- |
 | P0 | 公开端点零限流零闸门 | `/api/parse`、`/api/download`、`/api/direct-url` 与登录注册端点没有 429 / 并发闸门 / 退避；护栏只覆盖模型调用侧的每日额度 |
-| P0 | 老库升级缺可信输入 | 四条迁移没有各自的专属升级用例；仓库无 tag / release，取不到真实的上一版本库 |
-| P0 | 生产构建与镜像不在 CI 里构建 | CI 只跑门禁与变异矩阵，`vite build` 与 `docker build` 不在其中；`backend/requirements.txt` 全是下界、无锁无 hash |
 | P1 | 多实例与跨进程并发写无验证 | 只有同进程多线程用例；compose 单实例、单 worker |
 | P1 | 真实第三方 API 传输层故障无注入 | 超时、连接重置、429 带 `Retry-After`、5xx、流中途断开都无覆盖 |
-| P1 | 生产形态备份恢复无演练 | 运维手册里的手动备份用裸拷贝，与备份脚本的在线备份口径矛盾；备份文件名按秒命名，同秒两次会互相覆盖 |
+| P1 | 生产形态备份恢复无演练 | 备份脚本这一侧是闭合的（在线备份 + `integrity_check` + 防撞名 + 6 条用例 + 3 个变异）；仍缺两件：运维手册里的手动备份还是裸拷贝口径，以及一次真正的恢复演练 |
 | P1 | 跨端与无障碍无自动化 | 无视口断点断言，全仓没有 `prefers-reduced-motion` 降级，而像素动画有无限循环 |
-| P1 | master 无分支保护 | 保护规则不存在，PR 触发从未跑过；**需要仓库管理员权限写入，本仓的自动化改不了** |
 | P1 | 用户自带 Key 长期留在 localStorage | 切回平台模式不清除 |
+| P1 | 必过检查依赖外部包仓库与镜像源 | 「门禁」「生产构建」两个必过检查都要拉 npm 包与基础镜像，外部抖动会直接挡住合并 |
 | P2 | 变异装置未覆盖大体量模块 | 社区库、模型清单等模块没有被变异确认过（不等于没有测试） |
-| P2 | 敏感扫描只覆盖可达历史 | 被 force-push 掉的凭据仍可从对象库取回 |
-| P2 | 依赖不可复现、缺供应链护栏 | 无锁文件、无 dependabot、无 SBOM |
-| P2 | 容器运行态细节未在 Linux 环境验 | 非 root 用户对 bind mount 目录的可写性只在文档里 |
+| P2 | 敏感扫描只覆盖可达历史 | 被 force-push 掉的凭据仍可从对象库取回（force push 现在被保护规则挡住，但对象库里的旧对象还在） |
+| P2 | 后端依赖不可复现 | `backend/requirements.txt` 全是下界、无锁无 hash；前端有锁文件，后端没有；也没有 SBOM |
+| P2 | 容器运行态细节未在 Linux 环境验 | 非 root 用户（uid 10001）对 bind mount 目录的可写性只在文档里 |
 | P2 | 下载产物无生命周期管理 | 清理只在进程退出路径 |
 | P2 | 日志与凭据边界无机器断言 | 只有注释声明，没有自动化断言 |
 | P2 | SSE 真实断流、超时、重连无用例 | 前端测试用假流解析契约 |
 | P2 | OS 矩阵缺口 | CI 只有 ubuntu；Windows 仅本地，macOS 从未跑过 |
+| P2 | 保护规则与 CODEOWNERS 不在仓库内 | master 的保护设置只存在于 GitHub，仓库内没有任何机制会告警它漂移；`.github/CODEOWNERS` 目前只是声明（未开人工 approve：单人仓库里 PR 作者不能 approve 自己的 PR） |
 
 ### 10.3 明确不做
 
@@ -434,7 +425,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A1 | 40 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
 | A2 | 29 | `get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3 | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/'` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -n 'EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1291 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A4 | 1293 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 496 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 192 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
 | A7 | 18 | `scripts/` 10 + `backend/tests/` 5 + `frontend/tests/` 3 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation-*.mjs` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |

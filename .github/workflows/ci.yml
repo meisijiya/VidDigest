@@ -69,6 +69,34 @@ jobs:
       - name: 镜像构建
         run: docker compose build
 
+      - name: 镜像启动冒烟
+        # 只构建不冒烟，等于「镜像是怎么来的」仍然只有半句证据。
+        # 这里把两个镜像真起一次、打一次 /api/health、再收摊。
+        run: |
+          set -euo pipefail
+          # bind mount 的宿主目录默认以 root 属主创建，容器里的非 root 用户
+          # （uid 10001）写不进去 —— 先放开权限，否则冒烟会停在「起不来」这一步。
+          mkdir -p backend/data backend/logs
+          chmod 777 backend/data backend/logs
+          # 后端在 JWT_SECRET 缺失时拒绝启动；这里给一个一次性占位值，
+          # 只存在于这台 CI 机器上，不入库、不复用。
+          printf 'JWT_SECRET=ci-smoke-placeholder-not-a-real-secret\n' > backend/.env
+          docker compose up -d
+          ok=0
+          # 45 × 2s = 90 秒：后端健康检查 start_period 20s + interval 30s，
+          # nginx 要等后端 healthy 才起 —— 轮询窗口给足，别让冒烟红在「等太久」。
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "后端在 90 秒内没健康，冒烟失败。下面是容器日志："
+            docker compose logs
+            exit 1
+          fi
+          curl -fsS -o /dev/null -w 'health=%{http_code}\n' http://127.0.0.1:8080/api/health
+          docker compose down
+
   # 变异验证：把每一种要抓的形态故意放回去，确认关卡会转红。
   # 每个脚本一个 job：互相独立、并行跑、互不污染（脚本自己按字节还原）。
   mutation-backend:

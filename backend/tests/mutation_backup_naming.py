@@ -52,6 +52,14 @@ MUTATIONS = [
             "    seq = 2\n    while False:\n",
         ),
     ),
+    (
+        "M3 微秒去掉：只剩秒级，文件名分不出先后，保留策略跟着失准",
+        lambda s: mutate_bytes(
+            s,
+            '    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")\n',
+            '    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")\n',
+        ),
+    ),
 ]
 
 _COUNT_RE = re.compile(r"(\d+) (passed|failed|error)", re.IGNORECASE)

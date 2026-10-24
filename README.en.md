@@ -162,7 +162,7 @@ bash ./init.sh          # exit code 0 = verified
 
 | # | Check | What it proves |
 |---|-------|----------------|
-| 1 | `backend: pytest` | 1291 backend tests pass (pytest, standard-library sqlite fixtures) |
+| 1 | `backend: pytest` | 1293 backend tests pass (pytest, standard-library sqlite fixtures) |
 | 2 | `backend: compileall` | Every backend module compiles |
 | 3 | `secrets: content-level scan` | No credential-shaped string in tracked files **or in reachable git history** — `.gitignore` is filename-level and does not stop a pasted key |
 | 4 | `frontend: npm test` | 496 static / contract assertions (node:test) |
