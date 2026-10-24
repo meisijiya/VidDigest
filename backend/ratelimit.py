@@ -8,7 +8,10 @@
 
 怎么算「同一个人」：未登录请求按来源 IP 分桶。来源 IP 取自**直接对端**；
 只有当直接对端是回环或私网地址（说明这台机器前面确实有个反向代理，
-本仓的 nginx 就是这种）才采信 `X-Forwarded-For` 的第一个地址。
+本仓的 nginx 就是这种）才采信 `X-Forwarded-For`——取它的**最后一段**。
+为什么是末位：边缘代理（nginx）追加这个头时把自己看到的直接对端地址
+（`$remote_addr`）放在**末尾**，那才是权威地址；客户端自带的那些段可以
+随便伪造。取末位，前缀就失效了（ADR 0022）。
 公网直连时**不采信**该头：否则任何人改一个头就能绕开限流，
 限流器就成了摆设。
 
@@ -339,21 +342,35 @@ def _peer_ip(request: Request) -> str:
 def client_identity(request: Request) -> str:
     """这个请求算「谁」发出来的。
 
-    只有当直接对端可信时才采信 `X-Forwarded-For` 的第一个地址；
-    否则用直接对端地址——宁可把同一 NAT 后面的人算成一个人，
-    也不能让任何人改一个头就绕开限流。
+    直接对端可信（回环/私网，前面确实有反向代理）且请求带
+    `X-Forwarded-For` 时，身份取这个头的**最后一段**。
+
+    **为什么是末位而不是首位**：标准的边缘代理（nginx）用的是**追加**
+    语义（`$proxy_add_x_forwarded_for`）——客户端带来的值排在前面，
+    代理自己看到的直接对端地址 `$remote_addr` 追加在**最后**。于是末位
+    才是权威地址，客户端自报的那些段（可以随便伪造）失效。
+    取首位等于让攻击者自己挑限流桶的键：改一个头就换一个桶，
+    限流器就成了摆设（工单 #94、ADR 0022）。
+
+    配套的另一半在边缘代理那一侧：`X-Forwarded-For` 必须被**覆盖**
+    （`proxy_set_header X-Forwarded-For $remote_addr;`），不能追加。
+    两层都做，后端这边才拿得到「权威的那一段」。
+
+    没有这个头时用直接对端地址；直接对端是公网时**完全忽略**这个头——
+    宁可把同一 NAT 后面的人算成一个人，也不能让任何人改一个头就绕开限流。
     """
     peer = _peer_ip(request)
     if _is_trusted_peer(peer):
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
-            first = forwarded.split(",")[0].strip()
+            segments = [part.strip() for part in forwarded.split(",") if part.strip()]
+            candidate = segments[-1] if segments else ""
             try:
-                ip_address(first)
+                ip_address(candidate)
             except ValueError:
-                first = ""
-            if first:
-                return f"ip:{first}"
+                candidate = ""
+            if candidate:
+                return f"ip:{candidate}"
     return f"ip:{peer}"
 
 

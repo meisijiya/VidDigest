@@ -1,4 +1,4 @@
-"""变异脚本：证明「公开端点限流」那批测试真能杀掉缺陷（工单 #85）。
+"""变异脚本：证明「公开端点限流」那批测试真能杀掉缺陷（工单 #85、#94）。
 
 逐个破坏 → 跑指定测试 → 必须转红。绿灯不算证据。
 每个变异只改一个文件，跑完立即还原。
@@ -7,6 +7,10 @@
 
 限流是**没有症状**的防护：把 `429` 改成 `200`、把 `Retry-After` 去掉、
 把来源判据放松，功能测试全绿，而服务在真实流量下会被打穿。
+
+来源身份也是同一类：把「取 `X-Forwarded-For` 的末段」改回「取首段」，
+只用**单段**头的用例照样全绿（单段时首尾是同一个值），而客户端自报的
+伪造地址又成了限流桶的键——限流可被一个头完全绕过（工单 #94、ADR 0022）。
 
 这类缺陷只能靠「故意打坏 + 看它有没有变红」来证明守卫有效：
 测试写完不代表它在守，只代表它在**绿**。
@@ -27,6 +31,8 @@ PY = venv_python()
 RATELIMIT_FILE = REPO / "backend" / "ratelimit.py"
 MAIN_FILE = REPO / "backend" / "main.py"
 AUTH_FILE = REPO / "backend" / "api_auth.py"
+#: 边缘代理模板：来源身份的一半在这里（ADR 0022）。
+NGINX_FILE = REPO / "frontend" / "nginx.conf"
 TARGET = ["tests/test_ratelimit.py"]
 
 #: (说明, 目标文件, 模式串, 替换串)
@@ -82,9 +88,27 @@ MUTATIONS = [
         '            "code": RATE_LIMIT_CODE,\n',
         "",
     ),
+    (
+        "M9 来源身份改回取 X-Forwarded-For 的首段：客户端自报的地址又成了限流桶的键",
+        RATELIMIT_FILE,
+        '            candidate = segments[-1] if segments else ""\n',
+        '            candidate = segments[0] if segments else ""\n',
+    ),
+    (
+        "M10 边缘代理改回追加 X-Forwarded-For：后端取到的末段又是客户端伪造的值",
+        NGINX_FILE,
+        "proxy_set_header X-Forwarded-For $remote_addr;",
+        "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+    ),
 ]
 
 _COUNT_RE = re.compile(r"(\d+) (passed|failed|error)", re.IGNORECASE)
+
+#: 一次「像样的」转红长什么样：断言红了（AssertionError），或者
+#: pytest.raises 那个守卫没被触发（DID NOT RAISE）。这两种都说明
+#: **判据在守**。收集期的错误（语法错、导入错）不算——那说明的是
+#: 「我改坏了代码」。
+_ASSERTION_MARKERS = ("AssertionError", "DID NOT RAISE")
 
 
 def read_source(path: Path):
@@ -156,8 +180,9 @@ def parse_counts(out):
     lines = out.strip().splitlines()
     summary = lines[-1] if lines else out
     passed = sum(int(m.group(1)) for m in _COUNT_RE.finditer(summary) if m.group(2) == "passed")
-    failed = sum(int(m.group(1)) for m in _COUNT_RE.finditer(summary) if m.group(2) in ("failed", "error"))
-    return passed, failed, summary.strip()
+    failed = sum(int(m.group(1)) for m in _COUNT_RE.finditer(summary) if m.group(2) == "failed")
+    errors = sum(int(m.group(1)) for m in _COUNT_RE.finditer(summary) if m.group(2) == "error")
+    return passed, failed, errors, summary.strip()
 
 
 def main():
@@ -166,8 +191,8 @@ def main():
         print("FAIL: 基线不绿，无法评估变异")
         print(out[-2000:])
         return 9
-    p, f, summary = parse_counts(out)
-    if p + f == 0:
+    p, f, e, summary = parse_counts(out)
+    if p + f + e == 0:
         print("FAIL: 目标收集到 0 个测试，变异评估无意义")
         return 9
     print(f"基线 {TARGET[0]}: {summary}\n")
@@ -176,8 +201,11 @@ def main():
         RATELIMIT_FILE: read_source(RATELIMIT_FILE),
         MAIN_FILE: read_source(MAIN_FILE),
         AUTH_FILE: read_source(AUTH_FILE),
+        NGINX_FILE: read_source(NGINX_FILE),
     }
     survived, not_run = [], []
+    applied = {}
+    touched_elsewhere = set()
 
     try:
         for name, target_file, pattern, replacement in MUTATIONS:
@@ -188,29 +216,53 @@ def main():
                 not_run.append(name)
                 continue
             write_source(target_file, mutated)
+            applied[target_file] = mutated
             try:
                 _, out = run(TARGET)
             finally:
-                write_source(target_file, original)
+                if read_source(target_file) == mutated:
+                    write_source(target_file, original)
+                    applied.pop(target_file, None)
+                else:
+                    # 跑变异期间这个文件被别处改过了：还原会把别人的改动
+                    # 抹掉，所以不覆盖，只报一声。
+                    print(f"  [警告] {target_file.name} 在跑变异期间被别处改动，未覆盖还原")
+                    touched_elsewhere.add(target_file)
 
-            p, f, _ = parse_counts(out)
-            if p + f == 0:
+            p, f, e, _ = parse_counts(out)
+            if p + f + e == 0:
                 print(f"  [没跑] {name} —— 收集到 0 个测试，结果无效")
                 not_run.append(name)
-            elif f > 0:
-                print(f"  [杀死] {name}  ({f} 条转红)")
-            else:
+            elif f == 0:
                 print(f"  [存活] {name}  <-- 测试守不住")
                 survived.append(name)
+            elif e > 0:
+                # 收集期就炸了（语法错、导入错）：那证明的是「我改坏了
+                # 代码」，不是「判据在守」。
+                print(f"  [无效] {name}  <-- 收集期报错（{e} 个 error），不是判据转红")
+                not_run.append(name)
+            elif not any(marker in out for marker in _ASSERTION_MARKERS):
+                print(f"  [无效] {name}  <-- 红了但不像断言转红")
+                not_run.append(name)
+            else:
+                print(f"  [杀死] {name}  ({f} 条转红，伴随断言)")
     finally:
         for path, data in originals.items():
-            write_source(path, data)
+            if path not in applied:
+                continue
+            if read_source(path) == applied[path]:
+                write_source(path, data)
+            else:
+                print(f"  [警告] {path.name} 已被别处改动，未覆盖还原")
+                touched_elsewhere.add(path)
 
     for path, data in originals.items():
+        if path in touched_elsewhere:
+            continue
         if read_source(path) != data:
             print(f"\nFAIL: 还原后 {path.name} 与原始不一致（行尾符被改动）")
             return 9
-    print("\n还原自检: ratelimit.py / main.py / api_auth.py 逐字节一致")
+    print("\n还原自检: ratelimit.py / main.py / api_auth.py / nginx.conf 逐字节一致")
 
     print()
     if survived or not_run:

@@ -727,7 +727,15 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 
 上限写 `0` 表示该桶不限流。
 
-**怎么算同一个来源**：只看直接连上来的那个地址。只有直接对端落在回环、私网或链路本地网段时，才采信 `X-Forwarded-For` 的第一个地址——公网对端送来的这个头不可信（否则任何人换一个头就能绕开限流）。
+**怎么算同一个来源**：只看直接连上来的那个地址。只有直接对端落在回环、私网或链路本地网段时，才采信 `X-Forwarded-For`——但采信的是它的**最后一段**（边缘代理追加进去的权威地址），不是第一段（客户端可以随便伪造的那段）。公网对端送来的这个头整个不采信（否则任何人换一个头就能绕开限流）。
+
+**反向代理信任模型**：来源身份由**边缘代理与后端共同**决定，两边都要对（ADR 0022）：
+
+- **边缘必须覆盖 `X-Forwarded-For`**：`proxy_set_header X-Forwarded-For $remote_addr;`——**覆盖**，不是追加（`$proxy_add_x_forwarded_for`）。追加语义下客户端自带的值会排到最前、并且仍然留在头里（读这个头的别的东西会读到假值）；覆盖让头里只剩一个权威地址。
+- **后端取末段**：`backend/ratelimit.py` 的 `client_identity()` 取这个头的最后一段。标准边缘代理用的是追加语义，把自己看到的对端地址追加在**末尾**，所以末位才是权威的，客户端自报的前缀失效。两边都做：任何一边被改坏，另一半仍守得住自己那半。
+- **前面多一层 CDN / 反代时，必须改用 nginx 的 realip 模块**：`set_real_ip_from` + `real_ip_header` 把真实客户端地址还原成 `$remote_addr`。不做这一步，nginx 看到的 `$remote_addr` 是**那一层代理**的地址 → 所有用户落进同一个桶 → 正常用户互相误伤（集体 429）。**没有 realip 就硬上一层 CDN，是把「绕过」换成「误伤」**，后者更难查（它长得像「服务不稳定」）。
+- **后端端口不得对外暴露**：绕过 nginx 直连后端（对端是回环/私网）并带一个单段 `X-Forwarded-For` 时，后端取到的末位就是那个自报值。它只能在容器网络或本机回环上可达。
+- **怎么自检**：`python scripts/ops/check_xff_bypass.py`（只依赖标准库）——从栈**外面**连打 25 次带唯一伪造头的 `/api/parse`，断言至少出现一次 `429` 且 `detail.code == rate_limit`；一个 429 都没有 = 绕过成立，退出码 1。生产环境加 `--url https://your-domain.com/api/parse`。CI 的「生产构建」作业里跑的就是它（那一步起的是真镜像、走的是真 nginx）。
 
 **这层的边界**：计数在进程内，重启即清零；多实例部署时每个实例各算各的。它是速率维度，不是并发闸门：同一来源的并发请求它不管——那道由下面这道闸门管。
 
@@ -750,7 +758,7 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 
 **并发 429 的错误体**里 `code` 是 `concurrency_limit`（速率那道是 `rate_limit`）——前端据此把「同时在跑太多」与「来得太勤」分成两种提示，前者的用户动作是「结束前面那个任务」，不是「等一分钟」。
 
-**真值文件**：`backend/ratelimit.py`；判据与用例见 `backend/tests/test_ratelimit.py`（15 条）、`backend/tests/mutation_ratelimit.py`（8 个变异）、`backend/tests/test_concurrency_limit.py`（22 条）与 `backend/tests/mutation_concurrency_limit.py`（7 个变异）。
+**真值文件**：`backend/ratelimit.py`；判据与用例见 `backend/tests/test_ratelimit.py`（21 条）、`backend/tests/mutation_ratelimit.py`（10 个变异）、`backend/tests/test_concurrency_limit.py`（22 条）与 `backend/tests/mutation_concurrency_limit.py`（7 个变异）。来源身份那条链还有一道**端到端守卫**：`scripts/ops/check_xff_bypass.py`（从栈外面打带伪造头的请求，CI 的「生产构建」作业里跑）。
 
 ### 10.5 管理员播种
 
@@ -884,7 +892,13 @@ server {
     proxy_pass http://127.0.0.1:8000;
     proxy_set_header Host              $host;
     proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    # 必须**覆盖** X-Forwarded-For，不能用 $proxy_add_x_forwarded_for：
+    # 追加语义会把客户端自带的值排到最前并留在头里，而后端按 ADR 0022
+    # 取这个头的**末段**来分桶（边缘覆盖 + 后端取末段，两边都做）。
+    # 前面若还有一层 CDN / 反代，先用 realip 模块把真实地址还原成
+    # $remote_addr（set_real_ip_from + real_ip_header），否则所有用户会
+    # 落进同一个桶、互相误伤 429。
+    proxy_set_header X-Forwarded-For   $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
 
     # SSE：`/api/summarize` 与 `/api/chat` 是流式的。
@@ -935,9 +949,14 @@ curl -sS https://your-domain.com/api/health                                 # {"
 
 # 4) 静态产物正常
 curl -sS -o /dev/null -w '%{http_code}\n' https://your-domain.com/favicon.svg
+
+# 5) 限流的来源身份没被伪造的头绕开（ADR 0022）
+#    边缘覆盖 + 后端取末段都到位时，这 25 次会落进同一个桶，第 21 次起出 429。
+#    一个 429 都没有 = 绕过成立（退出码 1）。
+python scripts/ops/check_xff_bypass.py --url https://your-domain.com/api/parse
 ```
 
-第 2 条返回 404 = rewrite 没生效；返回 200 但第 3 条返回 HTML = rewrite 盖住了 API。
+第 2 条返回 404 = rewrite 没生效；返回 200 但第 3 条返回 HTML = rewrite 盖住了 API。第 5 条红 = 边缘没有覆盖 `X-Forwarded-For`（或后端取错了段），限流可被一个头绕过——先查第 10.4 节的「反向代理信任模型」。
 
 ### 11.5.5 其它静态托管平台
 
