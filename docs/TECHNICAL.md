@@ -202,6 +202,8 @@
 
 - SQLite，`journal_mode=WAL`、`foreign_keys=ON`；连接线程本地复用。
 - **写是串行的**：`sqlite3.connect` 未传 `timeout`，走 Python 默认的 5 秒等待窗口；长事务会撞 `database is locked`。这是后端单进程建议的来源。
+- **下载目录 `backend/downloads/` 是运行期产物**，不是数据：文件发完就删，构建上下文也排除它
+  （不进镜像）。异常残留由巡检第 6 项按超龄收走，详见 `docs/OPERATIONS.md` §8.4。
 
 ### 5.2 表与关键列
 
@@ -324,6 +326,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | SSE 中途断流 | 看 `backend/logs/app.log` 的 JSON 行 | 上游断流或网关补空帧 | 空帧已被 `backend/summarizer.py` 的 `_iter_delta_text` 跳过；真断流无自动重连 |
 | 前端改了没生效 | `curl -I http://127.0.0.1:8080/index.html` | 浏览器缓存了入口页 | 入口页已标 `no-store`；重建镜像后再验 |
 | 端口连不上 | `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/api/health` | Vite 只监听 IPv6 回环；宿主端口被占 | 用 `http://localhost:5173`；换端口启动 |
+| 下载目录一直变大 | `backend/venv/Scripts/python.exe scripts/ops/inspect_runtime.py` | 下载失败/进程被杀留下的残留没人收 | 巡检第 6 项按超龄清（`--max-download-age-hours`，下限 1 小时）；见 `docs/OPERATIONS.md` §8.4 |
 | 后端起不来 | 看启动日志里是否提到 `JWT_SECRET` | 缺 `JWT_SECRET` 是设计好的拒绝启动 | 在 `backend/.env` 里配置 |
 
 **不在本仓的问题**：平台反爬、厂商限流、模型上下文长度限制。
@@ -389,7 +392,6 @@ bash ./init.sh          # 退出码 0 = 已验证
 | P2 | 敏感扫描只覆盖可达历史 | 被 force-push 掉的凭据仍可从对象库取回（force push 现在被保护规则挡住，但对象库里的旧对象还在） |
 | P2 | 后端依赖不可复现 | `backend/requirements.txt` 全是下界、无锁无 hash；前端有锁文件，后端没有；也没有 SBOM |
 | P2 | 容器运行态细节未在 Linux 环境验 | 非 root 用户（uid 10001）对 bind mount 目录的可写性只在文档里 |
-| P2 | 下载产物无生命周期管理 | 清理只在进程退出路径 |
 | P2 | 日志与凭据边界无机器断言 | 只有注释声明，没有自动化断言 |
 | P2 | SSE 真实断流、超时、重连无用例 | 前端测试用假流解析契约 |
 | P2 | OS 矩阵缺口 | CI 只有 ubuntu；Windows 仅本地，macOS 从未跑过 |
