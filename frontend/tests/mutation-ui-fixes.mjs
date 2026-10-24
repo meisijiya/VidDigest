@@ -192,6 +192,32 @@ const MUTANTS = [
     to: "  if (errorCodeOf(err) === '__mutant_never__') return true",
     expect: /不靠「服务器限流」四个字/,
   },
+  {
+    // 工单 #95：历史页没接登录入口。锚点带 `back: goHome,`，
+    // 因为社区页与首页也各有一处一模一样的 'need-login' 接线 ——
+    // 锚点太短会打在别人身上，变异就打偏了。
+    name: 'M20 历史页不接 need-login（点了「去登录」登录框不开）',
+    file: join(FE, 'src/App.vue'),
+    from: "        back: goHome,\r\n        'need-login': () => showAuthModal('login'),",
+    to: "        back: goHome,\r\n        'need-login-unused': () => showAuthModal('login'),",
+    expect: /历史页没接登录入口/,
+  },
+  {
+    name: 'M21 历史页模板里没有未登录这一支',
+    file: join(FE, 'src/components/HistoryPage.vue'),
+    from: 'v-else-if="needLogin"',
+    to: 'v-else-if="neverNeedLogin"',
+    expect: /模板里没有未登录这一支/,
+  },
+  {
+    // 锚点只取**第一个** isUnauthorized —— load() 在 loadFacets() 前面，
+    // 而 node --test 那条断言判的就是 load() 的函数体。
+    name: 'M22 load() 不再把 401 翻译成 needLogin（错误码又甩回用户脸上）',
+    file: join(FE, 'src/components/HistoryPage.vue'),
+    from: '    if (isUnauthorized(e)) {',
+    to: '    if (false) {',
+    expect: /401 没被翻译成 needLogin/,
+  },
 ]
 
 let killed = 0

@@ -157,10 +157,13 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 | ------------------------- | :---: | --------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------- |
 | `ALIYUN_BAILIAN_API_KEY`  | ✅   | —                                                   | AI 总结 / 导图 / 问答（推荐，最便宜）                 | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/)       |
 | `ALIYUN_BAILIAN_BASE_URL` | —   | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼兼容模式端点                                | 用 workspace 专属地址                                                                 |
-| `ALIYUN_BAILIAN_MODEL`    | —   | `qwen-turbo`                                        | 模型名（`qwen-turbo` 最便宜，`qwen-plus` 性价比最高） | 百炼模型市场                                                                           |
+| `ALIYUN_BAILIAN_MODEL`    | —   | 模型清单表里的 `bailian.default_model`（表里没配时回落 `qwen-plus`） | 模型名（`qwen-turbo` 最便宜，`qwen-plus` 性价比最高） | 百炼模型市场                                                                           |
 | `DEEPSEEK_API_KEY`        | ✅   | —                                                   | AI 总结 / 导图 / 问答（与百炼二选一）                  | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
 | `JWT_SECRET`              | ✅   | 无默认值（缺失或纯空白则拒绝启动）                        | JWT 签名密钥                                | `openssl rand -hex 32`（32+ 位随机串）                                                  |
 | `VIDDIGEST_ADMIN_EMAILS`  | —   | 空（合法：没有管理员）                                    | 首个管理员播种，逗号分隔；见 §10.4          | 就是目标账号的邮箱，逗号分隔                                                           |
+| `VIDDIGEST_ALLOWED_ORIGINS` | — | 空（合法：**完全不允许**跨域，默认如此）                | 跨域白名单，逗号分隔                          | 按实际前端地址填                                                                        |
+| `VIDDIGEST_DAILY_PARSE_LIMIT` | — | `3`                                                | 每日解析额度（改它只改默认值，不清零已用额度）        | 纯数字；非数字退回默认值                                                                   |
+| `VIDDIGEST_DAILY_CHAT_LIMIT` | — | `10`                                               | 每日问答额度（同上，两个额度各自独立、次日 0 点 UTC 重置） | 纯数字；非数字退回默认值                                                              |
 | `OPENAI_API_KEY`          | —   | —                                                   | 视频无字幕时 Whisper ASR 回退                   | [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)     |
 | `STRIPE_SECRET_KEY`       | —   | —                                                   | 支付服务接入                                  | [https://dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys)     |
 | `STRIPE_PRICE_ID_MONTHLY` | —   | —                                                   | 月订阅价格 ID                                | Stripe Dashboard → Products                                                      |
@@ -172,7 +175,8 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 
 ```env
 # ─── AI（必填，配置任一组即可；阿里云百炼最便宜）──
-# 阿里云百炼：填写 ALIYUN_BAILIAN_API_KEY 即可，默认模型 qwen-turbo
+# 阿里云百炼：填写 ALIYUN_BAILIAN_API_KEY 即可。模型名留空就走模型清单表里的
+# bailian.default_model（表里没配时回落 qwen-plus）；写死 qwen-turbo 就是显式选它。
 ALIYUN_BAILIAN_API_KEY=sk-your-bailian-key
 ALIYUN_BAILIAN_MODEL=qwen-turbo
 # 或 DeepSeek（两组配任意一组即可，程序按非空的那组选用）

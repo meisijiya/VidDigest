@@ -200,7 +200,7 @@ bash ./init.sh          # exit code 0 = verified
 | 2 | `backend: compileall` | Every backend module compiles |
 | 3 | `secrets: content-level scan` | No credential-shaped string in tracked files **or in reachable git history** — `.gitignore` is filename-level and does not stop a pasted key |
 | 4 | `frontend: npm test` | All static / contract assertions pass (node:test) |
-| 5 | `frontend: npm run test:mount` | 192 mounted-component tests (Vitest) — a separate runner on purpose, so a green layer cannot hide a red one |
+| 5 | `frontend: npm run test:mount` | 199 mounted-component tests (Vitest) — a separate runner on purpose, so a green layer cannot hide a red one |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` reports no type errors |
 | 7 | `frontend: npm run lint` | ESLint reports no problems |
 | 8 | `frontend: npm run format:check` | Every file matches Prettier |
@@ -209,7 +209,7 @@ bash ./init.sh          # exit code 0 = verified
 
 Two properties make the gate trustworthy rather than decorative:
 
-- **Mutation testing.** 19 mutation scripts deliberately break one invariant at a time
+- **Mutation testing.** 22 mutation scripts deliberately break one invariant at a time
   (auth boundary, canonical URLs, database fixtures, payment webhooks, secret scanning,
   …) and assert that the gate turns red. A check that never turns red is not a check.
 - **The gate checks itself.** Checks 6 and 7 exist because the instructions, the ADRs,
@@ -229,20 +229,58 @@ gaps, mutation harness) and [docs/OPERATIONS.md](docs/OPERATIONS.md) (runtime fa
 
 ## ⚙️ Configuration
 
-Copy `backend/.env.example` to `backend/.env` and fill in what you need. **No secret has a
-default value**: the process refuses to start when `JWT_SECRET` is missing rather than
-falling back to something guessable.
+Copy `backend/.env.example` to `backend/.env`. The template annotates every entry; this
+section explains **what is required and what breaks if you get it wrong**.
 
-| Variable | Required | Purpose |
-|----------|:--------:|---------|
-| `JWT_SECRET` | ✅ | Token signing key — the process refuses to start without it |
-| `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ALIYUN_BAILIAN_API_KEY` | for AI features | LLM provider key |
-| `VIDDIGEST_ALLOWED_ORIGINS` | no | Explicit CORS allow-list; empty means no cross-origin access at all (the default) |
-| `VIDDIGEST_ADMIN_EMAILS` | no | Comma-separated list of accounts seeded as admins |
-| `FRONTEND_URL` | no | Frontend origin used in redirects and CORS decisions |
-| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_ID_MONTHLY` | no | Payments |
+### AI services (without a key you only get downloading)
+
+The process reads **three keys** plus two Bailian endpoint/model variables, and they do different jobs:
+
+| Variable | Purpose | Where to get it | If missing |
+|----------|---------|-----------------|------------|
+| `ALIYUN_BAILIAN_API_KEY` | **Primary**: summaries, mind maps, tags, follow-up chat (Alibaba Bailian, OpenAI-compatible mode) | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) → API-KEY management | Falls back to the key below; with neither one the AI features raise an error |
+| `ALIYUN_BAILIAN_BASE_URL` | Endpoint, defaults to `https://dashscope.aliyuncs.com/compatible-mode/v1` | The workspace-specific address from the Bailian console | The default is used |
+| `ALIYUN_BAILIAN_MODEL` | Model, defaults to `bailian.default_model` in the model catalog (falling back to `qwen-plus` when the table has none) | Same as above | The default is used |
+| `DEEPSEEK_API_KEY` | **Fallback** for the key above | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | Same as above |
+| `OPENAI_API_KEY` | **Whisper ASR only**: transcribes audio when a video has no subtitles | [platform.openai.com](https://platform.openai.com/) | ASR is skipped; nothing else is affected |
+
+When both provider keys are present, Bailian wins — that is the order the backend reads
+them in (`backend/summarizer.py`). With a user-supplied credential (BYOK), the platform
+key is not used at all.
+
+### The other required entry
+
+| Variable | Purpose | If missing |
+|----------|---------|------------|
+| `JWT_SECRET` | Token signing key — **required, no fallback** (ADR 0010) | The process refuses to start at import time rather than falling back to something guessable |
+| `VIDDIGEST_ALLOWED_ORIGINS` | Explicit CORS allow-list, comma-separated; empty means no cross-origin access at all (the default) | Same-origin frontend access is unaffected |
+| `VIDDIGEST_ADMIN_EMAILS` | Comma-separated list of accounts seeded as admins | Nobody is an admin |
+| `VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT` | Daily free quotas, 3 / 10 by default, counted separately and reset at midnight (UTC) | The defaults are used; changing them changes the **default only**, it never resets what a user already spent |
+| `FRONTEND_URL` | Frontend origin used in redirects and CORS decisions | The default origin |
+
+Generate a JWT secret:
+
+```bash
+openssl rand -hex 32
+```
+
+### Payments (currently disabled)
+
+`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_ID_MONTHLY` are kept as
+configuration slots only: the project does not do memberships, so filling them changes
+nothing.
+
+> **Real values live in `backend/.env` and nowhere else.** It is covered by `.gitignore`,
+> but `.gitignore` is **filename-level** — it stops the file, not somebody pasting a
+> password into the docs. That is why this repo also runs a content-level scan
+> (`scripts/check_secrets.py`, gate check 4) over the worktree and every reachable git
+> history. The template `backend/.env.example` deliberately keeps **no concrete string**
+> in it (not even a sample password) — generate the value instead.
 
 > Without an LLM key, parsing and downloading still work; the AI features do not.
+
+Full variable list and how changes take effect: [docs/OPERATIONS.md §4](docs/OPERATIONS.md).
+Annotated template: [backend/.env.example](backend/.env.example).
 
 ---
 

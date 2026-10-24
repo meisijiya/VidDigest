@@ -190,14 +190,14 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件**与可达 git 历史**里没有凭据形态的字符串（`.gitignore` 只挡文件名，挡不住被抄进文档的口令） |
 | 4 | `frontend: npm test` | 前端全部静态 / 契约断言通过（node:test） |
-| 5 | `frontend: npm run test:mount` | 前端 192 条挂载层用例通过（Vitest）——两套 runner 刻意分开，绿色的那一层遮不住红的那一层 |
+| 5 | `frontend: npm run test:mount` | 前端 199 条挂载层用例通过（Vitest）——两套 runner 刻意分开，绿色的那一层遮不住红的那一层 |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` 无类型错误（`.js` 迁到 `.ts` 之后，类型检查比人眼审 53 个组件快得多） |
 | 7 | `frontend: npm run lint` | ESLint 无告警（未使用的变量、无用转义、模板可访问名缺失都在这一关现形） |
 | 8 | `frontend: npm run format:check` | Prettier 全部文件符合格式 |
 | 9 | `refs: ADR 与路径引用一致性` | 文档与注释里提到的每个 `ADR NNNN`、每条源码路径都还指得到 |
 | 10 | `gate: 关卡数口径一致性` | 本节写的关卡数就是门禁真跑的关卡数（从 `init.sh` 里数出来，不硬编码） |
 
-关卡本身也要被验证：19 个变异脚本每次故意破坏一条不变量（鉴权边界、链接归一、
+关卡本身也要被验证：22 个变异脚本每次故意破坏一条不变量（鉴权边界、链接归一、
 数据库夹具、支付回调、敏感内容扫描……），断言门禁会转红。详见
 [docs/TESTING-STRATEGY.md](docs/TESTING-STRATEGY.md)。
 
@@ -205,28 +205,46 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 ## ⚙️ 配置
 
-复制 `backend/.env.example` 为 `backend/.env`，填入以下内容：
+复制 `backend/.env.example` 为 `backend/.env`。模板里每一项都带注释，本节讲**哪些必填、填错会怎样**。
 
-```env
-# ── AI 服务（必填）───────────────
-DEEPSEEK_API_KEY=sk-your-key     # 从 platform.deepseek.com 获取
+### AI 服务（不填就只有下载能用）
 
-# ── JWT 密钥（必填，无默认值）──────
-# 漏配时进程直接拒绝启动，不会用兜底值凑合。
-JWT_SECRET=your-random-secret-32chars+
+程序读**三个 key** 和两个百炼端点/模型变量，作用各不相同：
 
-# ── 支付（可选）──────────────────
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
-STRIPE_PRICE_ID_MONTHLY=
+| 变量 | 用途 | 从哪拿 | 缺了会怎样 |
+|------|------|--------|-----------|
+| `ALIYUN_BAILIAN_API_KEY` | **主用**：摘要、思维导图、标签、追问（阿里云百炼 OpenAI 兼容模式） | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) → API-KEY 管理 | 走下面的兜底；两个都没有 ⇒ AI 功能直接报错 |
+| `ALIYUN_BAILIAN_BASE_URL` | 端点，默认 `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼控制台给的 workspace 专属地址 | 用默认值 |
+| `ALIYUN_BAILIAN_MODEL` | 模型，默认取模型清单表里的 `bailian.default_model`（表里没配时回落 `qwen-plus`） | 同上 | 用默认值 |
+| `DEEPSEEK_API_KEY` | **兜底**：百炼没配时用它 | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | 同上 |
+| `OPENAI_API_KEY` | **只给 Whisper ASR**：视频没有字幕时转写音频 | [platform.openai.com](https://platform.openai.com/) | 跳过 ASR，不影响其它 AI 功能 |
 
-# ── 前端地址 ─────────────────────
-FRONTEND_URL=http://localhost:5173
+两个 key 都在时**百炼优先**（`backend/summarizer.py` 里读环境变量的顺序）。用户自己带凭据（BYOK）时，平台 key 不参与。
+
+### 其它必填项
+
+| 变量 | 用途 | 缺了会怎样 |
+|------|------|-----------|
+| `JWT_SECRET` | Token 签名密钥，**必填、无兜底**（ADR 0010） | 进程在 import 阶段就拒绝启动 —— 不会拿兜底值凑合 |
+| `VIDDIGEST_ALLOWED_ORIGINS` | 跨域白名单，逗号分隔；留空 = 完全不允许跨域（默认） | 前端同源访问不受影响 |
+| `VIDDIGEST_ADMIN_EMAILS` | 逗号分隔的管理员账号 | 没人是管理员 |
+| `VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT` | 每日免费额度，默认 3 / 10，各自独立、次日 0 点（UTC）重置 | 用默认值；**改它只改默认值，不清零已用额度** |
+
+生成一个 JWT 密钥：
+
+```bash
+openssl rand -hex 32
 ```
+
+### 支付（当前不启用）
+
+`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_ID_MONTHLY` 只保留配置位：项目不做会员制，填了也不会被用。
+
+> **真实值只进 `backend/.env`。** 它已被 `.gitignore` 挡住，但 `.gitignore` 是**文件名级**的 —— 它挡得住这个文件，挡不住「把口令抄进文档」。所以本仓还有一道内容级扫描（`scripts/check_secrets.py`，`init.sh` 第 4 关）扫工作树与全部可达 git 历史。模板 `backend/.env.example` 里刻意**不留任何具体字符串**（连示例口令都没有），要值就现生成。
 
 > 不配置 LLM API Key 时，视频下载功能仍可用，AI 功能不可用。
 
-完整的配置说明见 [docs/](docs/)。
+完整变量清单与生效方式见 [docs/OPERATIONS.md §4](docs/OPERATIONS.md)，逐项注释的模板见 [backend/.env.example](backend/.env.example)。
 
 ---
 

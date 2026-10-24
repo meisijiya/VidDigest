@@ -160,6 +160,19 @@
         <div v-for="n in 5" :key="n" class="skeleton h-20 rounded-2xl"></div>
       </div>
 
+      <!-- 没登录：给入口，不给错误码。错误码是写给开发者看的，
+           用户看到「需要登录」才知道下一步该干什么。 -->
+      <div v-else-if="needLogin" class="flex flex-col items-center justify-center py-24">
+        <p class="text-sm mb-1 text-gray-600">历史记录需要登录后查看</p>
+        <p class="text-xs text-gray-400">解析记录只属于你自己，登录后就能看到</p>
+        <button
+          @click="$emit('need-login')"
+          class="mt-4 px-4 py-2 rounded-xl bg-blue text-on-primary text-sm font-medium hover:bg-blue-600 transition-colors"
+        >
+          去登录
+        </button>
+      </div>
+
       <!-- 真故障与「没有内容」必须分开：一次 500 渲染成「暂无解析历史」，
            用户会以为是自己解析错了，于是反复重试。 -->
       <div v-else-if="loadError" class="flex flex-col items-center justify-center py-24">
@@ -354,6 +367,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import TagFilterRow from './TagFilterRow.vue'
 import { tagsToQuery } from '../lib/tag-filter.ts'
+import { isLoggedIn } from '../api/auth.ts'
+import { useSessionStore } from '../stores/session.ts'
 import {
   clearHistories,
   deleteHistory,
@@ -364,7 +379,7 @@ import {
 } from '../api/history.ts'
 import type { HistoryFacet, HistoryItem } from '../api/history.ts'
 
-const emit = defineEmits(['back', 'open-record', 'error'])
+const emit = defineEmits(['back', 'open-record', 'error', 'need-login'])
 
 /** 与后端 HISTORY_PAGE_SIZE_DEFAULT 同值：两个列表的翻页手感不该不一样。 */
 const PAGE_SIZE = 20
@@ -407,6 +422,27 @@ const loadError = ref('')
 /** 标签加载失败单独说：它是次要功能，坏了不该让整个页面变成一句「加载失败」。 */
 const facetError = ref('')
 
+/**
+ * 「没登录」不是故障，是这一页的常态之一。
+ *
+ * 以前这里把服务端的 401 原样塞进 loadError，于是用户看到的是
+ * 「历史记录加载失败 / Request failed with status code 401」——
+ * 错误码是写给开发者看的，普通用户看不懂，也不知道下一步该干什么。
+ * 现在：没登录就**不发这个请求**（判登录放在本地，不去撞 401），
+ * 服务端真回了 401 也翻译成同一件事：给一个「去登录」的入口。
+ */
+const needLogin = ref(false)
+
+/**
+ * 这次失败是不是「服务端说没登录」。
+ *
+ * 只看状态码，不看错误文案：文案是给用户看的，改一次就飘一次。
+ */
+function isUnauthorized(e: unknown): boolean {
+  const err = e as { response?: { status?: number } }
+  return err?.response?.status === 401
+}
+
 const hasFilters = computed(() => !!(activeQuery.value || activeTags.value.length || ai.value || favoriteOnly.value))
 
 function params() {
@@ -423,14 +459,30 @@ function params() {
 async function load() {
   loading.value = true
   loadError.value = ''
+  if (!isLoggedIn()) {
+    // 没登录就不去撞 401：这一页的每一条记录都是私有的，
+    // 未登录时它注定是空的，撞一次 401 只会把错误码甩到用户脸上。
+    needLogin.value = true
+    items.value = []
+    total.value = 0
+    totalPages.value = 0
+    loading.value = false
+    return
+  }
   try {
     const body = await fetchHistories(params())
+    needLogin.value = false
     items.value = body.items || []
     total.value = body.total || 0
     totalPages.value = body.total_pages || 0
     page.value = body.page || 1
   } catch (e) {
-    loadError.value = (e as { message?: string }).message || '加载失败'
+    if (isUnauthorized(e)) {
+      // token 在本地还在、但服务端不认（过期 / 被踢下线）——同一件事，同样处理。
+      needLogin.value = true
+    } else {
+      loadError.value = (e as { message?: string }).message || '加载失败'
+    }
     items.value = []
     total.value = 0
     totalPages.value = 0
@@ -441,10 +493,23 @@ async function load() {
 
 async function loadFacets() {
   facetError.value = ''
+  if (!isLoggedIn()) {
+    // 标签同样是私有数据：没登录时它是空的，不是「加载失败」。
+    facets.value = []
+    return
+  }
   try {
     facets.value = await fetchHistoryFacets()
   } catch (e) {
     facets.value = []
+    if (isUnauthorized(e)) {
+      // 401：标签也是私有数据，没登录时它就是空的，不该变成一条橙色报错条。
+      //
+      // ⚠️ 这里**不**把整页切成「需要登录」——列表可能已经加载出来了。
+      // 因为标签取不到就把用户已经拿到的列表藏起来，是比报错更糟的错。
+      // 整页的登录态由列表那条请求说了算（见 load()）。
+      return
+    }
     facetError.value = (e as { message?: string }).message || '标签加载失败'
   }
 }
@@ -603,6 +668,33 @@ function formatTime(ts: string | null) {
   if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`
   return d.toLocaleDateString('zh-CN')
 }
+
+/**
+ * 登录状态一变，这一页就得跟着变：
+ * 刚登录 → 把列表取回来（不然用户登录完还杵在「需要登录」上）；
+ * 刚登出 → 把列表收走（别把上一个用户的记录继续留在屏幕上）。
+ *
+ * 判据读 store 里的 isAuthenticated，不直接读 localStorage：
+ * 登录成功后 token 是 App.vue 那边 applyUser 写进 store 的，
+ * localStorage 只是它的落盘副本，读 store 才是同一份状态。
+ */
+const session = useSessionStore()
+watch(
+  () => session.isAuthenticated,
+  (now) => {
+    if (now) {
+      needLogin.value = false
+      void load()
+      void loadFacets()
+    } else {
+      needLogin.value = true
+      items.value = []
+      total.value = 0
+      totalPages.value = 0
+      facets.value = []
+    }
+  },
+)
 
 // 「仅收藏」是纯开关，切过去就重新取一次。刻意用 watch 而不是模板上
 // @click="load()"：两种写法都能跑，但后者会在有人重排模板按钮时被漏掉，

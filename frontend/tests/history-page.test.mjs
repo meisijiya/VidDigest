@@ -18,7 +18,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { tagsToQuery, toggleTag, needsExpand, shouldShowToggle, parseTagQuery } from '../src/lib/tag-filter.ts'
-import { extractFn } from './helpers/source-slice.mjs'
+import { extractFn, sliceBetween } from './helpers/source-slice.mjs'
 import { transpileTs } from './helpers/ts-sandbox.mjs'
 
 function read(...parts) {
@@ -288,5 +288,45 @@ describe('列表用的是完整信封', () => {
     // fetchHistoryFacets 一旦改名或挪位置，split 找不到就返回整份文件，
     // 断言退化成「全仓没有 return res.data.items」，观察范围悄悄放大而不报错。
     assert.doesNotMatch(fn, /return res\.data\.items\b/, 'fetchHistories 退回了只返回 items')
+  })
+})
+
+// ── 未登录：给入口，不给错误码（工单 #95）────────────────────
+//
+// 这一页的记录全是私有的。未登录时它该说的是「登录后就能看到」，
+// 而不是把服务端的 401 原样甩出来（错误码是写给开发者看的）。
+//
+// ⚠️ 下面两条是**接线**判据，行为判据在 `history-page.mount.spec.mjs`
+// （真挂载，看 DOM 与发出的事件）。两边对着读：文本判据盯住「接线还在」，
+// 挂载判据盯住「接线真的生效」。
+
+describe('未登录的接线', () => {
+  test('App.vue 的 history 分支接了 need-login → 弹登录框', () => {
+    // ⚠️ 必须**按 history 那一段**断言，不能全文搜 'need-login'：
+    // 社区页与首页各有一处同样的接线，全文搜的话把历史页那行删掉，
+    // 这条断言照样绿 —— 而症状正是「点了去登录，登录框不开」。
+    const historyCase = sliceBetween(
+      read('../src/App.vue'),
+      "case 'history':",
+      "case 'community':",
+      'App.vue 的 history 分支',
+    )
+    assert.match(
+      historyCase,
+      /'need-login':\s*(?:\(\)\s*=>\s*)?showAuthModal\('login'\)/,
+      '历史页没接登录入口 —— 点「去登录」不会有任何反应',
+    )
+  })
+
+  test('历史页模板里有「需要登录」这一块与去登录按钮', () => {
+    assert.match(code, /v-else-if="needLogin"/, '模板里没有未登录这一支')
+    assert.match(code, /\$emit\('need-login'\)/, '未登录提示没有去登录入口')
+  })
+
+  test('401 不进 loadError：它被翻译成 needLogin', () => {
+    // 划到 load() 的函数体里判（不是全文搜）：别处出现同样的字样不算数。
+    const fn = extractFn(code, 'load')
+    assert.match(fn, /isUnauthorized\(e\)/, 'load() 没判 401')
+    assert.match(fn, /needLogin\.value = true/, '401 没被翻译成 needLogin')
   })
 })
