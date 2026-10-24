@@ -52,7 +52,9 @@
 | 🕘 **Parse history** | Search, tag and favourite your own parse records | ✅ |
 | 🛠️ **Admin console** | Quota management, admin flags, community moderation, model catalogue | Admins only |
 
-> Parsing and downloading do not require an account; the AI features do. The free tier is
+> Parsing and downloading do not require an account; the AI features do.
+> **Registration needs an invite code — get one from an administrator.**
+> The free tier is
 > **two independent counters**: 3 parses per day (a parse yields summary + mind map + tags)
 > and 10 follow-up questions per day. Reading the community consumes neither. The numbers
 > come from `VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT`.

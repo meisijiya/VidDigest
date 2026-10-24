@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import secrets
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -387,7 +388,43 @@ def init_db():
             );
 
             CREATE INDEX IF NOT EXISTS idx_chat_user_url ON chat_messages(user_id, video_url, id);
+
+            -- 邀请码（工单 #99）。注册必须带码，码由管理员发放。
+            --
+            -- **明文存库**：管理员要把码复制给用户，存哈希就没法复制了。
+            -- 代价是库被读走等于码被读走——所以**所有列表出口一律脱敏**
+            -- （只回前 4 后 4），明文只在创建响应里给那一次。
+            --
+            -- expires_at 为空 = 永不过期；max_uses 是总名额，used_count 是已用数。
+            -- revoked 是作废位：作废与用尽是两件事——用尽是「名额用完了」，
+            -- 作废是「这个码提前收回」，都拒绝注册，但管理员要能分开看。
+            --
+            -- created_by 是发放者的 user id，不建外键：与 videos.parsed_by
+            -- 同一理由——发放者被删之后，码本身还得留着（已注册的账号不该
+            -- 因为管理员换人就失效）。
+            --
+            -- note 是给管理员看的备注（这枚码给了谁）。**可空**。
+            CREATE TABLE IF NOT EXISTS invite_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                created_by INTEGER,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                max_uses INTEGER NOT NULL DEFAULT 1,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                note TEXT
+            );
         """)
+
+        # 邀请码（工单 #99）：建表 + 补列。
+        #
+        # 排在最前面不是因为它更要紧，而是因为它是**唯一一张新表**：
+        # 老库里这张表压根不存在，executescript 里的
+        # `CREATE TABLE IF NOT EXISTS` 正好把缺的表建出来；而这一步
+        # 还要负责「表在但列不全」的补列（SQLite 不支持
+        # ADD COLUMN IF NOT EXISTS，只能先查列再 ALTER）。
+        _migrate_invite_codes_table(conn)
 
         _migrate_quota_columns(conn)
         _migrate_quota_override_columns(conn)
@@ -419,6 +456,60 @@ def init_db():
         # `from database import get_user_by_id` 同一套路。
         from model_catalog import init_model_catalog
         init_model_catalog(conn)
+
+
+def _migrate_invite_codes_table(conn) -> None:
+    """确保 invite_codes 表存在、且列齐全（工单 #99，upgrade 路径）。
+
+    ## 为什么需要这一步
+
+    老库里这张表**压根不存在**。`CREATE TABLE IF NOT EXISTS` 写在
+    init_db 的 executescript 里，它对老库其实也能建出这张表——但那
+    段脚本是「整段执行」的：它前面任何一条语句失败，后面这张表就
+    永远建不出来，而症状是「注册时 no such table」，发生在**用户
+    注册的那一刻**，不是启动的那一刻。
+
+    所以这里**独立再走一遍**：表不在就建，表在但缺列就补列。
+    重复执行幂等（CREATE TABLE IF NOT EXISTS + 先查列再 ALTER）。
+
+    ## 建表语句写了两遍
+
+    与 _migrate_quota_columns 同一取舍：老库升级路径必须自带 DDL，
+    只靠 executescript 那一处就等于把「升级能不能起来」押在别人的
+    脚本顺序上。两处漂移的后果是老库与新库的列集不一样——所以
+    `tests/test_invite_codes.py` 里有一条断言在守这个：
+    **老库升级后的列集必须与全新库完全一致**。
+    """
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='invite_codes'"
+    ).fetchone()
+    if row is None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS invite_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                created_by INTEGER,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                max_uses INTEGER NOT NULL DEFAULT 1,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                note TEXT
+            )
+        """)
+    # 表在但列不全（例如上一版发布时少写了两列）：逐列补。
+    # SQLite 没有 ADD COLUMN IF NOT EXISTS，先查列再 ALTER。
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(invite_codes)")}
+    for column, ddl in (
+        ("note", "ALTER TABLE invite_codes ADD COLUMN note TEXT"),
+        ("revoked", "ALTER TABLE invite_codes ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0"),
+        ("used_count", "ALTER TABLE invite_codes ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0"),
+        ("max_uses", "ALTER TABLE invite_codes ADD COLUMN max_uses INTEGER NOT NULL DEFAULT 1"),
+        ("expires_at", "ALTER TABLE invite_codes ADD COLUMN expires_at TEXT"),
+        ("created_at", "ALTER TABLE invite_codes ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"),
+    ):
+        if column not in existing:
+            conn.execute(ddl)
 
 
 def _migrate_quota_columns(conn) -> None:
@@ -2904,3 +2995,279 @@ def get_video_by_url(video_url: str) -> dict | None:
     item = dict(row)
     item["tags"] = _decode_tags_text(item.get("tags"))
     return item
+
+
+# ── 邀请码（工单 #99）─────────────────────────────────────
+#
+# 注册必须带邀请码，码由管理员发放。四类失效原因要分开说（用户据此
+# 才知道该做什么）：不存在 / 已作废 / 已过期 / 已用完。
+#
+# 明文存库、列表脱敏：管理员要把码复制给用户，所以不能存哈希；
+# 但管理端的列表接口**不回显完整码**——明文只在创建响应里给一次。
+
+#: 邀请码字符集。**去掉易混字符**：0/O、1/I/L、2/Z、5/S、8/B。
+#:
+#: 码是要被人抄过去的——管理员口头告诉用户、截图发过去——字形相近的
+#: 字符抄错一次的代价是「用户填了却注册不了」，而用户看到的提示是
+#: 「邀请码无效」，不会怀疑是抄错了。
+INVITE_CODE_ALPHABET = "ABCDEFGHJKMNPRTUVWXY34679"
+
+#: 码长。24 个字符 × 12 位 ≈ 8.7e16 种可能，猜不出来。
+INVITE_CODE_LENGTH = 12
+
+
+class InviteRegistrationError(Exception):
+    """注册被拒的原因。``detail`` 是给用户看的中文。
+
+    为什么不让数据层直接抛 HTTPException：数据层抛 HTTP 错误会把它
+    钉死在「只能在 HTTP 路径上用」，而它真正的职责是
+    「校验 + 建号 + 计数，一笔交易」。翻译成 HTTP 状态码是路由层的活。
+    """
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+
+def generate_invite_code(length: int = INVITE_CODE_LENGTH) -> str:
+    """生成一枚邀请码（随机、大写、无易混字符）。
+
+    用 ``secrets`` 而不是 ``random``：码是注册闸门，猜中就能注册，
+    必须用密码学安全的随机源——``random`` 的可预测性在这里是漏洞。
+    """
+    return "".join(secrets.choice(INVITE_CODE_ALPHABET) for _ in range(length))
+
+
+def mask_invite_code(code: str) -> str:
+    """脱敏：只回前 4 后 4。
+
+    列表接口不得回显完整码（工单 #99）：明文只在创建响应里给一次。
+    """
+    if not code:
+        return ""
+    if len(code) <= 8:
+        return code[:4] + "****"
+    return code[:4] + "****" + code[-4:]
+
+
+def _iso_utc(moment: datetime | None = None) -> str:
+    """UTC ISO-8601（秒级、固定格式）。
+
+    固定格式是刻意的：``expires_at`` 的比较用字符串字典序就成立
+    （同一时区、同一精度），不必每次都 parse 一遍。
+    """
+    stamp = moment if moment is not None else datetime.now(timezone.utc)
+    return stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def _parse_iso_utc(raw: str | None) -> datetime | None:
+    """把 expires_at 解析成带时区的 datetime；空值或坏值返回 None。"""
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _invite_code_expired(expires_at: str | None, now: datetime | None = None) -> bool:
+    """这枚码是否已过期。
+
+    空值 = 永不过期（设计如此）。
+
+    **坏值按过期处理**（fail closed）：expires_at 只有本模块写，出现
+    坏值说明数据被改坏了；此时放行等于把闸门敞开。
+    """
+    if not expires_at or not expires_at.strip():
+        return False
+    deadline = _parse_iso_utc(expires_at)
+    if deadline is None:
+        return True
+    moment = now if now is not None else datetime.now(timezone.utc)
+    return deadline <= moment.astimezone(timezone.utc)
+
+
+def _invite_code_item(row, *, include_code: bool = False) -> dict:
+    """邀请码的对外投影。
+
+    ``include_code=False``（列表）**不回显完整码**，只给 code_masked；
+    ``include_code=True``（创建响应）才给明文，且只给那一次。
+
+    状态字段给的是**算出来的**，不是存出来的：过期与否取决于「现在」，
+    而库里不存「已过期」这个状态——存了就与时间脱钩，第二天还得改一遍。
+    """
+    expired = _invite_code_expired(row["expires_at"])
+    exhausted = row["used_count"] >= row["max_uses"]
+    if row["revoked"]:
+        status = "revoked"
+    elif expired:
+        status = "expired"
+    elif exhausted:
+        status = "exhausted"
+    else:
+        status = "active"
+    item = {
+        "id": row["id"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+        "expires_at": row["expires_at"],
+        "max_uses": row["max_uses"],
+        "used_count": row["used_count"],
+        "revoked": row["revoked"],
+        "note": row["note"],
+        "expired": expired,
+        "exhausted": exhausted,
+        "status": status,
+    }
+    if include_code:
+        item["code"] = row["code"]
+    else:
+        item["code_masked"] = mask_invite_code(row["code"])
+    return item
+
+
+def invite_code_expiry(hours: int | None) -> str | None:
+    """「几小时后过期」→ expires_at 时间戳（UTC ISO-8601）。None = 永不过期。
+
+    放在数据层是因为**时间戳格式只有这一处定义**：管理端算「24 小时」
+    要是自己拼一次字符串，就多了一个真相来源，而两处格式一旦漂移，
+    症状是「码没过期」或「码刚发就过期」——都很难查。
+    """
+    if hours is None:
+        return None
+    return _iso_utc(datetime.now(timezone.utc) + timedelta(hours=hours))
+
+
+def create_invite_code(created_by: int | None = None, max_uses: int = 1,
+                        expires_at: str | None = None, note: str | None = None) -> dict:
+    """建一枚邀请码，返回**含明文码**的行。
+
+    明文只在这里给一次：之后所有列表出口都只给脱敏码。
+    """
+    if max_uses < 1:
+        raise ValueError("max_uses 至少是 1")
+    with get_db() as conn:
+        for _ in range(8):
+            code = generate_invite_code()
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO invite_codes (code, created_by, created_at, expires_at,"
+                    " max_uses, used_count, revoked, note)"
+                    " VALUES (?, ?, ?, ?, ?, 0, 0, ?)",
+                    (code, created_by, _iso_utc(), expires_at, max_uses, note),
+                )
+            except sqlite3.IntegrityError:
+                # 撞上重复的码（概率极低）：换一枚重试。
+                continue
+            row = conn.execute(
+                "SELECT * FROM invite_codes WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+            return _invite_code_item(row, include_code=True)
+    raise RuntimeError("生成邀请码失败：连续多枚都撞上了重复的码")
+
+
+def get_invite_code_by_id(invite_id: int) -> dict | None:
+    """按 id 读一枚码（脱敏投影）。没有则 None。"""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM invite_codes WHERE id = ?", (invite_id,)
+        ).fetchone()
+    return _invite_code_item(row) if row else None
+
+
+def list_invite_codes(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0) -> dict:
+    """邀请码列表（require_admin 保护）。返回 {items, total, limit, offset}。
+
+    **不回显完整码**：这一层只给 code_masked（工单 #99）。
+
+    按 id 降序：刚发的码排在最前，管理员不用翻页去找自己刚生成的那枚。
+    """
+    limit, offset = _clamp_limit_offset(limit, offset)
+    with get_db() as conn:
+        total = conn.execute("SELECT count(*) FROM invite_codes").fetchone()[0]
+        rows = conn.execute(
+            "SELECT * FROM invite_codes ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    return {
+        "items": [_invite_code_item(r) for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def revoke_invite_code(invite_id: int) -> int:
+    """作废一枚码。返回受影响的行数（0 = 没有这枚码 → 404）。
+
+    **幂等**：已作废的码再作废一次仍然成功（返回 1）——管理员点两下
+    不该收到报错，那是误报。
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            "UPDATE invite_codes SET revoked = 1 WHERE id = ?", (invite_id,)
+        )
+        return cursor.rowcount
+
+
+def register_with_invite_code(email: str, password_hash: str, invite_code: str) -> dict:
+    """校验邀请码 + 建用户 + 给码计数，**同一事务**（工单 #99）。
+
+    返回 ``{"id": ..., "email": ...}``；被拒时抛 ``InviteRegistrationError``。
+
+    ## 为什么必须是一个事务
+
+    「校验 → 建号 → 计数」跨两张表。不是一个事务就会出两种歪账：
+    码被消耗了而账号没建成（用户白丢一个码），或账号建成了而码没计数
+    （同一个名额被用两次）。所以三步放进**一个**事务，任一步失败整笔
+    回滚——两种歪账都出不来。
+
+    ## 为什么是 BEGIN IMMEDIATE
+
+    默认的 DEFERRED 到**第一个写语句**才拿锁，那时两个并发请求都已经
+    读到了 used_count=0，然后各自写回 1：谁都没被拒绝，两个账号共用
+    一个名额，而且**没有任何报错**。IMMEDIATE 在事务开头就拿写锁，
+    第二个请求只能等；等完醒来看到的已是 used_count=1，于是被拒。
+    """
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM invite_codes WHERE code = ?", (invite_code,)
+        ).fetchone()
+        if row is None:
+            raise InviteRegistrationError("邀请码无效")
+        if row["revoked"]:
+            raise InviteRegistrationError("邀请码已作废")
+        if _invite_code_expired(row["expires_at"]):
+            raise InviteRegistrationError("邀请码已过期")
+        if row["used_count"] >= row["max_uses"]:
+            raise InviteRegistrationError("邀请码已被用完")
+        if conn.execute(
+            "SELECT 1 FROM users WHERE email = ?", (email,)
+        ).fetchone() is not None:
+            raise InviteRegistrationError("该邮箱已注册")
+        try:
+            cursor = conn.execute(
+                "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+                (email, password_hash),
+            )
+        except sqlite3.IntegrityError:
+            # 邮箱唯一约束：并发下另一个请求刚好把同一个邮箱建了。
+            # 抛出去 → 整笔回滚 → 码不被消耗。
+            raise InviteRegistrationError("该邮箱已注册") from None
+        consumed = conn.execute(
+            "UPDATE invite_codes SET used_count = used_count + 1"
+            " WHERE id = ? AND used_count < max_uses AND revoked = 0",
+            (row["id"],),
+        ).rowcount
+        if not consumed:
+            # 走到这里说明计数没生效：宁可整笔回滚，也不留
+            # 「账号建成了但码没计数」的歪账。
+            raise InviteRegistrationError("邀请码已被用完")
+        return {"id": cursor.lastrowid, "email": email}

@@ -787,6 +787,130 @@
             </div>
           </template>
         </div>
+
+        <!-- ══ 邀请码（工单 #99）。注册闸门的钥匙由管理员发。
+             不做成第四个页签：页签是「同一批数据的不同视图」，邀请码是另一件事；
+             挂成页签会给「页签 key / 每页一份状态槽」那份冻结契约再加一份。
+             展开才加载列表：进后台就替管理员打一次邀请码接口没有意义。 ══ -->
+        <section class="mt-8 rounded-2xl border border-line bg-panel p-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-sm font-medium text-gray-800">邀请码</h2>
+            <p class="text-xs text-gray-400">注册需要邀请码。码在这里发，明文只给一次。</p>
+            <button
+              type="button"
+              class="ml-auto px-3 py-1.5 rounded-lg border border-line text-xs text-gray-500 hover:border-blue-200 hover:text-blue-600 transition-colors"
+              @click="toggleInvites"
+              :aria-expanded="invitesOpen ? 'true' : 'false'"
+              aria-controls="admin-invite-codes"
+            >
+              {{ invitesOpen ? '收起邀请码' : '展开邀请码' }}
+            </button>
+          </div>
+
+          <div v-if="invitesOpen" id="admin-invite-codes" class="mt-4 space-y-4">
+            <!-- 生成 -->
+            <form class="flex flex-wrap items-end gap-3" @submit.prevent="createInvite">
+              <div>
+                <label for="admin-invite-max" class="block text-xs text-gray-500 mb-1">可用次数</label>
+                <input
+                  id="admin-invite-max"
+                  v-model="inviteDraft.maxUses"
+                  type="number"
+                  min="1"
+                  class="w-28 px-3 py-2 rounded-xl bg-panel border border-line text-sm text-gray-800"
+                />
+              </div>
+              <div>
+                <label for="admin-invite-hours" class="block text-xs text-gray-500 mb-1">有效小时数</label>
+                <input
+                  id="admin-invite-hours"
+                  v-model="inviteDraft.expiresInHours"
+                  type="number"
+                  min="1"
+                  placeholder="留空 = 永不过期"
+                  class="w-44 px-3 py-2 rounded-xl bg-panel border border-line text-sm text-gray-800 placeholder-gray-400 focus:border-blue-200 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label for="admin-invite-note" class="block text-xs text-gray-500 mb-1">备注</label>
+                <input
+                  id="admin-invite-note"
+                  v-model="inviteDraft.note"
+                  type="text"
+                  placeholder="给谁"
+                  class="w-48 px-3 py-2 rounded-xl bg-panel border border-line text-sm text-gray-800 placeholder-gray-400 focus:border-blue-200 focus:outline-none"
+                />
+              </div>
+              <button
+                type="submit"
+                :disabled="creatingInvite"
+                class="px-4 py-2 rounded-xl bg-blue text-on-primary text-sm font-medium hover:bg-blue-600 transition-colors disabled:opacity-50"
+              >
+                {{ creatingInvite ? '生成中…' : '生成邀请码' }}
+              </button>
+            </form>
+            <span aria-live="polite" :class="['block text-xs', feedbackClass(inviteFeedback.kind)]">
+              {{ inviteFeedback.text }}
+            </span>
+
+            <!-- 刚生成的明文码：只给这一次，之后列表里只有脱敏码。 -->
+            <div v-if="issuedCode" class="rounded-xl border border-line bg-panel-2 px-4 py-3">
+              <p class="text-xs text-gray-500">刚生成的码（明文只给这一次，之后列表里只看得见脱敏码）</p>
+              <div class="mt-1 flex flex-wrap items-center gap-2">
+                <code class="font-pixel text-sm text-gray-800">{{ issuedCode }}</code>
+                <button
+                  type="button"
+                  class="px-2.5 py-1 rounded-lg border border-line text-xs text-gray-500 hover:border-blue-200 hover:text-blue-600 transition-colors"
+                  @click="copyIssuedCode"
+                >
+                  复制
+                </button>
+              </div>
+            </div>
+
+            <!-- 列表：只显示脱敏码（后端在列表出口就把完整码拿掉了）。 -->
+            <div class="overflow-x-auto rounded-2xl border border-line bg-panel">
+              <table class="w-full text-sm">
+                <caption class="sr-only">
+                  邀请码列表，只显示脱敏码
+                </caption>
+                <thead>
+                  <tr class="text-left text-xs text-gray-400 border-b border-line">
+                    <th scope="col" class="px-4 py-3 font-medium">码</th>
+                    <th scope="col" class="px-4 py-3 font-medium">状态</th>
+                    <th scope="col" class="px-4 py-3 font-medium">用量</th>
+                    <th scope="col" class="px-4 py-3 font-medium">过期</th>
+                    <th scope="col" class="px-4 py-3 font-medium">备注</th>
+                    <th scope="col" class="px-4 py-3 font-medium">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in inviteRows" :key="row.id" class="border-b border-line last:border-b-0">
+                    <td class="px-4 py-3 font-pixel text-xs text-gray-800">{{ row.codeMasked }}</td>
+                    <td class="px-4 py-3 text-xs text-gray-600">{{ inviteStatusLabel(row.status) }}</td>
+                    <td class="px-4 py-3 text-xs text-gray-600">{{ row.usedCount }} / {{ row.maxUses }}</td>
+                    <td class="px-4 py-3 text-xs text-gray-400">{{ row.expiresAt || '永不过期' }}</td>
+                    <td class="px-4 py-3 text-xs text-gray-400">{{ row.note || '—' }}</td>
+                    <td class="px-4 py-3">
+                      <button
+                        type="button"
+                        :disabled="row.revoked === 1 || revokingInviteId === row.id"
+                        class="px-2.5 py-1 rounded-lg border border-line text-xs text-gray-500 hover:border-blue-200 hover:text-blue-600 transition-colors disabled:opacity-40"
+                        @click="revokeInvite(row.id)"
+                      >
+                        {{ row.revoked === 1 ? '已作废' : '作废' }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-if="!inviteRows.length" class="px-4 py-6 text-center text-xs text-gray-400">还没有邀请码</p>
+            </div>
+            <span aria-live="polite" :class="['block text-xs', feedbackClass(inviteListFeedback.kind)]">
+              {{ inviteListFeedback.text }}
+            </span>
+          </div>
+        </section>
       </template>
     </div>
   </div>
@@ -807,6 +931,7 @@
  *    useTheme 只读 DOM；后台再判一次必然和那两处打架。
  */
 import { ref, reactive, computed, onMounted } from 'vue'
+import axios from 'axios'
 import {
   fetchAdminUsers,
   setUserQuota,
@@ -1680,6 +1805,169 @@ const confirmDelete: (u: AdminUser) => Promise<void> = async function confirmDel
     opsFeedbackOf(u.id).text = `没删掉：${messageOf(err)}${extra}`
   } finally {
     busyUserId.value = null
+  }
+}
+
+// ── 邀请码（工单 #99）───────────────────────────────────────
+//
+// 注册的闸门钥匙由管理员发：发码、列表、作废三个出口。
+//
+// **为什么这里直接用 axios，而不走 api/admin.ts**：邀请码是新增的出口，
+// 而 api/admin.ts 的导出名单被 tests/admin-ui.test.mjs 冻结（多一个名字
+// 就红），加出口会动那份契约。token 的取法与 api/admin.ts 的 client()
+// 同一口径（localStorage 的 auth_token，没有就不发 Authorization 头）。
+//
+// **列表不在 onMounted 里加载**：进后台就替管理员打一次邀请码接口没有意义，
+// 展开这一块时才打——与「新建用户」折叠块同一形态。
+//
+// **明文只给一次**：后端创建响应里给一次明文，之后列表里只有脱敏码。
+// 所以「刚生成的码」单独占一块，复制走它。
+const invitesOpen = ref(false)
+const creatingInvite = ref(false)
+const revokingInviteId = ref<number | null>(null)
+const inviteRows = ref<InviteRow[]>([])
+const inviteDraft = reactive({ maxUses: '1', expiresInHours: '', note: '' })
+const inviteFeedback = reactive({ kind: '', text: '' })
+const inviteListFeedback = reactive({ kind: '', text: '' })
+const issuedCode = ref('')
+
+/** 邀请码的一行。字段名是 camelCase，模板里不许出现 snake_case 取值。 */
+interface InviteRow {
+  id: number
+  codeMasked: string
+  maxUses: number
+  usedCount: number
+  revoked: number
+  expiresAt: string | null
+  note: string | null
+  status: string
+}
+
+/**
+ * 后端原文（snake_case）→ 组件里的一行。
+ *
+ * 这份映射**只此一处**：邀请码没有 api 层出口（见上面的说明），所以组件是
+ * 唯一的消费者，不存在「两份映射各改各的」。等 api 层有了出口，这份要跟着
+ * 搬过去——那时组件里不该再留一份。
+ */
+function toInviteRow(raw: unknown): InviteRow {
+  const r = (raw ?? {}) as Record<string, unknown>
+  return {
+    id: Number(r.id) || 0,
+    codeMasked: String(r.code_masked ?? ''),
+    maxUses: Number(r.max_uses) || 0,
+    usedCount: Number(r.used_count) || 0,
+    revoked: Number(r.revoked) || 0,
+    expiresAt: r.expires_at ? String(r.expires_at) : null,
+    note: r.note ? String(r.note) : null,
+    status: String(r.status ?? ''),
+  }
+}
+
+/** 状态 → 给管理员看的中文。 */
+function inviteStatusLabel(status: string): string {
+  if (status === 'revoked') return '已作废'
+  if (status === 'expired') return '已过期'
+  if (status === 'exhausted') return '已用完'
+  return '可用'
+}
+
+/** 管理端请求的实例。token 没有就不发 Authorization 头（不发空的 Bearer）。 */
+function inviteClient() {
+  const token = localStorage.getItem('auth_token')
+  return axios.create({
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+}
+
+async function loadInvites(): Promise<void> {
+  try {
+    const res = await inviteClient().get('/api/admin/invite-codes')
+    const body = (res?.data ?? {}) as { items?: unknown[] }
+    inviteRows.value = (body.items ?? []).map(toInviteRow)
+  } catch (err) {
+    inviteRows.value = []
+    inviteListFeedback.kind = 'error'
+    inviteListFeedback.text = `邀请码列表取不到：${messageOf(err)}`
+  }
+}
+
+function toggleInvites(): void {
+  invitesOpen.value = !invitesOpen.value
+  if (invitesOpen.value) {
+    issuedCode.value = ''
+    inviteFeedback.kind = ''
+    inviteFeedback.text = ''
+    void loadInvites()
+  }
+}
+
+/** 发码。次数与有效期在**本地**先判一道，不为显然错的输入跑一趟网络。 */
+const createInvite: () => Promise<void> = async function createInvite() {
+  if (creatingInvite.value) return
+  const maxUses = Number(inviteDraft.maxUses)
+  if (!Number.isInteger(maxUses) || maxUses < 1) {
+    inviteFeedback.kind = 'error'
+    inviteFeedback.text = '可用次数至少是 1'
+    return
+  }
+  const hoursRaw = inviteDraft.expiresInHours.trim()
+  const hours = hoursRaw ? Number(hoursRaw) : null
+  if (hours !== null && (!Number.isInteger(hours) || hours < 1)) {
+    inviteFeedback.kind = 'error'
+    inviteFeedback.text = '有效小时数至少是 1；留空 = 永不过期'
+    return
+  }
+  creatingInvite.value = true
+  inviteFeedback.kind = ''
+  inviteFeedback.text = ''
+  try {
+    const res = await inviteClient().post('/api/admin/invite-codes', {
+      max_uses: maxUses,
+      expires_in_hours: hours,
+      note: inviteDraft.note.trim() || null,
+    })
+    const body = (res?.data ?? {}) as { item?: { code?: string } }
+    issuedCode.value = String(body.item?.code ?? '')
+    inviteDraft.note = ''
+    inviteFeedback.kind = 'ok'
+    inviteFeedback.text = '已生成。明文只给这一次，列表里只看得见脱敏码。'
+    await loadInvites()
+  } catch (err) {
+    inviteFeedback.kind = 'error'
+    inviteFeedback.text = `没生成：${messageOf(err)}`
+  } finally {
+    creatingInvite.value = false
+  }
+}
+
+/** 作废。作废之后这个码不能再注册，但已经用它建好的号不动。 */
+const revokeInvite: (id: number) => Promise<void> = async function revokeInvite(id) {
+  if (revokingInviteId.value !== null) return
+  revokingInviteId.value = id
+  try {
+    await inviteClient().post(`/api/admin/invite-codes/${id}/revoke`)
+    await loadInvites()
+    inviteListFeedback.kind = 'ok'
+    inviteListFeedback.text = '已作废。这个码不能再注册了，已经用它建好的号不动。'
+  } catch (err) {
+    inviteListFeedback.kind = 'error'
+    inviteListFeedback.text = `没作废：${messageOf(err)}`
+  } finally {
+    revokingInviteId.value = null
+  }
+}
+
+/** 复制刚生成的明文码。剪贴板不可用时给一句能照做的提示，而不是静默失败。 */
+async function copyIssuedCode(): Promise<void> {
+  if (!issuedCode.value) return
+  try {
+    await navigator.clipboard?.writeText(issuedCode.value)
+    inviteFeedback.kind = 'ok'
+    inviteFeedback.text = '已复制。把它发给对方——明文只给这一次。'
+  } catch {
+    inviteFeedback.kind = 'error'
+    inviteFeedback.text = '复制不了：手动选中上面那串码复制。'
   }
 }
 

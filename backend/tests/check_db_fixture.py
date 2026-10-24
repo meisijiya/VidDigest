@@ -86,6 +86,12 @@ DB_FUNCS = {
     # 漏掉任何一个，这道门禁就对「测试直接调它」失明 ——
     # 而 delete_user 还会连带删 chat_messages。
     "create_admin_user", "set_user_admin", "delete_user",
+    # 邀请码（工单 #99）：建码、消费、作废三个**写**出口 + 两个读出口。
+    # register_with_invite_code 是写出口（建号 + 给码计数），漏掉它，
+    # 这道门禁就对「测试直接调它注册」失明 —— 那会把用户写进开发机上的
+    # 真实 app.db。create_invite_code 与 revoke_invite_code 同理。
+    "create_invite_code", "get_invite_code_by_id", "list_invite_codes",
+    "revoke_invite_code", "register_with_invite_code",
 }
 
 #: 取了这些参数就算拿到了 db 夹具（client_app 内部依赖 db）

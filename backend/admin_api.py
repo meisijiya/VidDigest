@@ -16,6 +16,9 @@
 | `PATCH /api/admin/community/{video_id}` | require_admin | **写**（只改标签） |
 | `DELETE /api/admin/community/{video_id}` | require_admin | **写**（只删 videos 一行） |
 | `GET /api/admin/tags/vocabulary` | require_admin | 只读 |
+| `GET /api/admin/invite-codes` | require_admin | 只读（码已脱敏） |
+| `POST /api/admin/invite-codes` | require_admin | **写**（发码，明文只给一次） |
+| `POST /api/admin/invite-codes/{id}/revoke` | require_admin | **写**（作废） |
 
 ## 为什么 `/api/models` 是公开的
 
@@ -52,13 +55,18 @@ from database import (
     UserConflict,
     admin_user_detail,
     create_admin_user,
+    create_invite_code,
     delete_user,
     delete_video_record,
+    get_invite_code_by_id,
     get_user_by_email,
+    invite_code_expiry,
     is_vip_active,
     list_admin_community,
     list_admin_users,
+    list_invite_codes,
     QUOTA_KINDS,
+    revoke_invite_code,
     set_user_admin,
     set_user_quota_override,
     update_video_tags,
@@ -594,3 +602,124 @@ async def admin_delete_user(
         # return 不是 raise：_conflict 返回的是 JSONResponse，不是异常。
         return _conflict(exc)
     return {"deleted": user_id}
+
+
+# ── 邀请码（工单 #99）───────────────────────────────────────
+#
+# 注册闸门的钥匙由管理员发（ADR 0023）。限流按来源 IP 计，换个 IP 就能
+# 重来，所以它挡不住批量注册；邀请码能，因为码是有限的几枚、且有名字
+# （issued to whom）——它把「谁能进来」从公网匿名变成一个人的决定。
+
+
+class InviteCodeCreateRequest(BaseModel):
+    """发一枚邀请码的请求体。
+
+    三个字段都**可省**：省掉就用默认（一次、不过期、无备注）。
+
+    ``max_uses`` / ``expires_in_hours`` 声明成 ``Any``：值域错（0、负数、
+    字符串）要由本文件转成 **400**，而不是让 pydantic 回 422——与本文件
+    既有的「值域 400 / 结构 422」口径一致。收下再判的写法见
+    ``normalize_quota_value``。
+
+    ``extra="forbid"``：传了一个没声明的键时**报错**，而不是被 pydantic
+    静默丢掉。丢掉的话管理员会以为「可用次数」生效了，其实发出去的是
+    默认的一次性码。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_uses: Any = None
+    expires_in_hours: Any = None
+    note: str | None = None
+
+
+def _normalize_max_uses(raw: Any) -> int:
+    """可用次数。默认 1；至少 1。
+
+    bool 显式拒绝：``True == 1``，收下就意味着「可用无数次」或
+    「一次」取决于调用方想的是什么——而这个字段决定的是**名额**。
+    """
+    if raw is None:
+        return 1
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise HTTPException(status_code=400, detail="max_uses 必须是正整数")
+    if raw < 1:
+        raise HTTPException(status_code=400, detail="max_uses 至少是 1")
+    return raw
+
+
+def _normalize_expires_in_hours(raw: Any) -> int | None:
+    """有效期（小时）。None = 永不过期。
+
+    0 与负数都拒：「0 小时后过期」在字面上成立，但它发出去就是一枚
+    立刻作废的码，管理员会以为自己发错了——而真正的错误是传了 0。
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise HTTPException(status_code=400, detail="expires_in_hours 必须是正整数")
+    if raw < 1:
+        raise HTTPException(status_code=400, detail="expires_in_hours 至少是 1")
+    return raw
+
+
+@router.post("/admin/invite-codes")
+async def admin_create_invite_code(
+    payload: InviteCodeCreateRequest,
+    admin: dict = Depends(require_admin),
+):
+    """发一枚邀请码。**明文码只在这一次响应里给。**
+
+    为什么明文只给一次：码要被复制给用户，所以库里存明文（存哈希就没法
+    复制了）；但明文再出现在列表里，就等于后台页面成了一张「所有人都有
+    的注册钥匙」的表。创建完，管理员手上那一份就是全部——所以前端在创建
+    成功后要**立刻显示并提示复制**，之后列表里只有脱敏码（前 4 后 4）。
+
+    回读而不是回显：返回的是「库里现在是什么」（含真实 id、真实计数）。
+    """
+    max_uses = _normalize_max_uses(payload.max_uses)
+    hours = _normalize_expires_in_hours(payload.expires_in_hours)
+    created = create_invite_code(
+        created_by=admin["id"],
+        max_uses=max_uses,
+        expires_at=invite_code_expiry(hours),
+        note=payload.note,
+    )
+    return {"item": created}
+
+
+@router.get("/admin/invite-codes")
+async def admin_list_invite_codes(
+    limit: int = Query(ADMIN_PAGE_SIZE_DEFAULT, description="每页条数，有上界"),
+    offset: int = Query(0, description="跳过的条数"),
+    _: dict = Depends(require_admin),
+):
+    """邀请码列表。**不回显完整码**，只有脱敏码（前 4 后 4）。
+
+    每项带用量（used_count / max_uses）、是否过期、是否作废——这三样
+    是管理员唯一需要的信息：还能不能用、还能用几次、要不要作废。
+    """
+    return list_invite_codes(limit=limit, offset=offset)
+
+
+@router.post("/admin/invite-codes/{invite_id}/revoke")
+async def admin_revoke_invite_code(
+    invite_id: int,
+    _: dict = Depends(require_admin),
+):
+    """作废一枚邀请码。
+
+    **作废与用尽是两件事**：作废是「这枚码从此作废」（可能还没用），
+    用尽是「名额用完了」。所以库里只存 revoked 一个标志，用尽是
+    ``used_count >= max_uses`` 这个**算出来的**状态——不存成两列，
+    否则两个真相会互相打架。
+
+    **幂等**：已作废的码再作废一次仍然成功。已经作废过的码再点一次
+    报 409 是误报——管理员点重了不是错误。
+    """
+    if not revoke_invite_code(invite_id):
+        raise HTTPException(status_code=404, detail="邀请码不存在")
+    item = get_invite_code_by_id(invite_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="邀请码不存在")
+    return {"item": item}
