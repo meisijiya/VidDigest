@@ -212,6 +212,7 @@ jobs:
           - tests/mutation-nav-wall.mjs
           - tests/mutation-ui-fixes.mjs
           - tests/mutation_wiring.mjs
+          - tests/mutation_history_login.mjs
     steps:
       - uses: actions/checkout@v4
 

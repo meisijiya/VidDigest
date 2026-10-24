@@ -48,7 +48,7 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 ### 0.3 变异装置不在 `init.sh` 里，但都在 CI 矩阵里
 
-仓库里跟踪着 19 个变异装置（以 `glob **/mutation*` 的实际结果为准）：`scripts/` 下 10 个、`backend/tests/` 下 6 个、`frontend/tests/` 下 3 个。
+仓库里跟踪着 22 个变异装置（以 `glob **/mutation*` 的实际结果为准）：`scripts/` 下 10 个、`backend/tests/` 下 8 个、`frontend/tests/` 下 4 个。
 
 `init.sh` 里的 pytest 与两套前端 runner 都**不收集** `tests/` 目录下这几个文件——目录位置不决定收集行为，文件名模式才决定：
 

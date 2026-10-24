@@ -37,8 +37,8 @@
 | 挂鉴权依赖的端点 | 29（`get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
 | 后端用例 | 1308 | `pytest --collect-only`（A4） |
-| 前端静态 / 契约断言 | 497 | `npm test`（A5） |
-| 前端挂载用例 | 192 | `npm run test:mount`（A6） |
+| 前端静态 / 契约断言 | 505 | `npm test`（A5） |
+| 前端挂载用例 | 199 | `npm run test:mount`（A6） |
 | 变异脚本 | 19（后端 16 + 前端 3） | 文件清单（A7） |
 | 门禁 | 10 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
 | CI | 4 个 job 定义，展开 21 个实例 | `.github/workflows/ci.yml`（A9） |
@@ -189,6 +189,10 @@
 4. 覆盖权由 `parsed_by` 判定，作者本人可覆盖自己的那一份。
 
 **失败表现**：未登录访问需要身份的接口 → 鉴权依赖直接抛 401，不返回空、不返回半份。
+前端把这一层翻译成「登录入口」，而不是把 401 甩给用户：本地没有登录态时**根本不发请求**
+（历史列表、标签都不发），服务端真的回 401 时也翻译成同一个登录入口
+（`frontend/src/components/HistoryPage.vue` 的 `needLogin` 分支 → `App.vue` 弹登录框）。
+社区搜索那一侧同理（`frontend/src/api/community.ts` 的 `needLogin`）。
 
 **判据**：维护者能复述每条链路的 5 步，并说出每一步失败时用户看到什么。
 
@@ -257,8 +261,8 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 1 | `backend: pytest` | 1308 条后端用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
-| 4 | `frontend: npm test` | 497 条静态 / 契约断言通过 |
-| 5 | `frontend: npm run test:mount` | 192 条挂载用例通过 |
+| 4 | `frontend: npm test` | 505 条静态 / 契约断言通过 |
+| 5 | `frontend: npm run test:mount` | 199 条挂载用例通过 |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` 无类型错误 |
 | 7 | `frontend: npm run lint` | ESLint 无告警 |
 | 8 | `frontend: npm run format:check` | Prettier 全部文件符合格式 |
@@ -454,8 +458,8 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A2 | 29 | `get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3 | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/'` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -n 'EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
 | A4 | 1308 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
-| A5 | 497 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
-| A6 | 192 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
+| A5 | 505 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
+| A6 | 199 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
 | A7 | 19 | `scripts/` 10 + `backend/tests/` 6 + `frontend/tests/` 3 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation-*.mjs` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
 | A8 | 10 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
 | A9 | 4 个 job 定义 / 21 个实例 | 1 个门禁 job + 1 个生产构建 job + 16 个后端变异实例 + 3 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |

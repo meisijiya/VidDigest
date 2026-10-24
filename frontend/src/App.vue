@@ -604,6 +604,7 @@ function listenersFor(page: PageKey): Record<string, (...args: never[]) => void>
     case 'history':
       return {
         back: goHome,
+        'need-login': () => showAuthModal('login'),
         'open-record': handleOpenRecord,
         error: showErrorFromPage,
       }

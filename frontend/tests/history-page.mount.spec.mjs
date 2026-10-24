@@ -16,6 +16,7 @@
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 
 // vi.mock 必须在顶部：它靠「被提升到组件 import 之前」生效。下沉到共用夹具就依赖
 // 导入顺序，失效是静默的——组件真去发 axios 请求，jsdom 没有 XHR，形态是「挂载即炸」。
@@ -29,6 +30,7 @@ vi.mock('../src/api/history.ts', () => ({
 }))
 
 import HistoryPage from '../src/components/HistoryPage.vue'
+import { useSessionStore } from '../src/stores/session.ts'
 import {
   clearHistories,
   deleteHistory,
@@ -74,10 +76,38 @@ const FACETS = [
   { tag: '教程', count: 1 },
 ]
 
-async function mountPage(envelope = env()) {
+/**
+ * 挂载历史页。
+ *
+ * 默认**假装已登录**：这一页的记录全是私有的，未登录时组件根本不发请求
+ * （工单 #95），所以想测「有记录时页面长什么样」就得先有 token。
+ * 要测未登录那一支的用例传 `{ loggedIn: false }`。
+ *
+ * ⚠️ 这里会设**默认**实现（`mockResolvedValue`），它会覆盖用例自己设的实现。
+ * 要预设一次失败就用 `mockRejectedValueOnce`（一次性队列优先于默认实现），
+ * 别用 `mockRejectedValue` —— 那样会被这里悄悄改回成功，症状是
+ * 「用例以为自己造了故障，页面却好好地」。
+ *
+ * pinia 必须装上：组件读会话状态（登录后自动刷新列表），
+ * 缺了它 setup 里就抛「no active Pinia」，挂载直接失败。
+ */
+async function mountPage(envelope = env(), { loggedIn = true } = {}) {
   fetchHistories.mockResolvedValue(envelope)
   fetchHistoryFacets.mockResolvedValue(FACETS)
-  const w = mount(HistoryPage)
+  if (loggedIn) localStorage.setItem('auth_token', 'test-token')
+  else localStorage.removeItem('auth_token')
+  const w = mount(HistoryPage, { global: { plugins: [createPinia()] } })
+  await flushPromises()
+  return w
+}
+
+/**
+ * 直接挂载，不预置任何 mock 返回值。给「先设好一次失败、再挂载」的用例用
+ * —— mountPage 会覆写默认实现，用它会把用例要的一次性失败冲掉。
+ */
+async function mountRaw() {
+  localStorage.setItem('auth_token', 'test-token')
+  const w = mount(HistoryPage, { global: { plugins: [createPinia()] } })
   await flushPromises()
   return w
 }
@@ -101,6 +131,9 @@ beforeEach(() => {
   // ⚠️ clearAllMocks 只清**调用历史**，不清**实现**。每个 mock 都必须在这里设一次默认
   // 实现，否则某条用例会悄悄用着前面某条留下的实现，表现为「全量绿、单跑红」。
   vi.clearAllMocks()
+  // token 是「已登录」的前提：组件会读它决定发不发请求。用例要测未登录那一支时
+  // 自己再删掉（mountPage 会按参数设置）。
+  localStorage.removeItem('auth_token')
   fetchHistories.mockResolvedValue(env())
   fetchHistoryFacets.mockResolvedValue(FACETS)
   deleteHistory.mockResolvedValue({ ok: true })
@@ -300,9 +333,8 @@ describe('封面走代理', () => {
 
 describe('故障与空在界面上分开', () => {
   test('服务端故障时显示故障文案，不显示「暂无解析历史」', async () => {
-    fetchHistories.mockRejectedValue(new Error('boom'))
-    const w = mount(HistoryPage)
-    await flushPromises()
+    fetchHistories.mockRejectedValueOnce(new Error('boom'))
+    const w = await mountRaw()
 
     expect(w.text()).toContain('历史记录加载失败')
     expect(w.text()).toContain('boom')
@@ -311,8 +343,7 @@ describe('故障与空在界面上分开', () => {
 
   test('故障态带一个可点的重试，点完真的会重新取', async () => {
     fetchHistories.mockRejectedValueOnce(new Error('boom'))
-    const w = mount(HistoryPage)
-    await flushPromises()
+    const w = await mountRaw()
     expect(w.text()).toContain('历史记录加载失败')
 
     fetchHistories.mockResolvedValue(env({ items: [row()], total: 1, page: 1, total_pages: 1 }))
@@ -354,8 +385,7 @@ describe('标签清单加载失败', () => {
   test('清单加载失败时说出原因，而列表本身照常渲染', async () => {
     fetchHistories.mockResolvedValue(oneRow())
     fetchHistoryFacets.mockRejectedValue(new Error('boom'))
-    const w = mount(HistoryPage)
-    await flushPromises()
+    const w = await mountRaw()
 
     expect(w.text(), '标签挂了却什么都不说 —— 它与「历史里还没有标签」长得一模一样').toContain('标签筛选没加载出来')
     expect(w.text()).toContain('boom')
@@ -366,11 +396,108 @@ describe('标签清单加载失败', () => {
   test('清单成功但真的为空时**不**显示失败（两件事必须分开）', async () => {
     fetchHistories.mockResolvedValue(oneRow())
     fetchHistoryFacets.mockResolvedValue([])
-    const w = mount(HistoryPage)
-    await flushPromises()
+    const w = await mountRaw()
 
     // 这条是上一条的对照。只有两条都在，才证明界面分得清「挂了」与「没有」。
     expect(w.text(), '真的没有标签却说「加载失败」').not.toContain('标签筛选没加载出来')
     expect(w.text()).toContain('甲视频')
+  })
+})
+
+// ── 未登录：给入口，不给错误码 ─────────────────────────────────
+//
+// 工单 #95。以前这一页把服务端的 401 原样甩给用户：「历史记录加载失败 /
+// Request failed with status code 401」——错误码是写给开发者看的，普通用户
+// 既看不懂也不知道下一步该干什么，于是去问「这报错啥意思」。
+//
+// 现在：没登录就**不发请求**（判登录放在本地，不去撞 401），服务端真回了 401
+// 也翻译成同一件事：给一个「去登录」的入口。
+
+describe('未登录时的历史页', () => {
+  test('未登录不发列表请求，也不发标签请求', async () => {
+    const w = await mountPage(env(), { loggedIn: false })
+
+    expect(fetchHistories, '未登录还去撞 401 —— 错误码就是这么甩到用户脸上的').not.toHaveBeenCalled()
+    expect(fetchHistoryFacets, '未登录还去取私有标签').not.toHaveBeenCalled()
+    expect(w.text(), '未登录时该给登录入口').toContain('历史记录需要登录后查看')
+  })
+
+  test('页面里没有 401，也没有「加载失败」', async () => {
+    const w = await mountPage(env(), { loggedIn: false })
+    const text = w.text()
+
+    expect(text, '把状态码原样甩给用户了').not.toContain('401')
+    expect(text, '未登录被当成故障了').not.toContain('历史记录加载失败')
+    expect(text, '标签那条橙色错误条也不该出现——不是它坏了，是没登录').not.toContain('标签筛选没加载出来')
+    expect(btnNamed(w, '去登录'), '没有去登录入口 —— 用户被挡在门外还不知道该干什么').toBeTruthy()
+  })
+
+  test('点「去登录」抛出 need-login，登录框才开得起来', async () => {
+    const w = await mountPage(env(), { loggedIn: false })
+    await btnNamed(w, '去登录').trigger('click')
+
+    expect(w.emitted('need-login'), '点了却没抛 need-login —— 登录框不会开，用户只能干瞪眼').toBeTruthy()
+  })
+
+  test('token 在本地但服务端不认（401）：同一件事，同样给登录入口', async () => {
+    // ⚠️ 刻意**只**让列表请求 401，标签请求照常成功。
+    // 两个都 401 时，标签那条分支也会把 needLogin 置上，
+    // 于是「列表那支有没有把 401 翻译成登录入口」被掩盖了 ——
+    // 变异 H2（把列表的 401 翻译摘掉）会照样绿，那是「变异存活」的假象。
+    fetchHistories.mockRejectedValueOnce({ response: { status: 401 } })
+    const w = await mountPage(env())
+    const text = w.text()
+
+    expect(text, '401 被当成普通故障了').not.toContain('历史记录加载失败')
+    expect(text, '状态码不该出现在界面上').not.toContain('401')
+    expect(text, '该给的是登录入口').toContain('历史记录需要登录后查看')
+    expect(btnNamed(w, '去登录')).toBeTruthy()
+  })
+
+  test('标签请求 401：不给橙色错误条，也不把已经加载出来的列表藏起来', async () => {
+    // 反向对照：整页的登录态由**列表**那条请求说了算。
+    // 标签取不到就把用户已经拿到的记录藏起来，是比报错更糟的错 ——
+    // 用户明明已经有自己的数据，却看到一句「需要登录」。
+    fetchHistoryFacets.mockRejectedValueOnce({ response: { status: 401 } })
+    const w = await mountPage(env({ items: [row()], total: 1, page: 1, total_pages: 1 }))
+    const text = w.text()
+
+    expect(text, '标签 401 变成了橙色报错条').not.toContain('标签筛选没加载出来')
+    expect(text, '标签 401 把整页切成了「需要登录」').not.toContain('历史记录需要登录后查看')
+    expect(text, '已经加载出来的列表被藏起来了').toContain('甲视频')
+  })
+
+  test('反向对照：500 仍然是故障，不能被当成「需要登录」', async () => {
+    fetchHistories.mockRejectedValueOnce({ message: 'Request failed with status code 500' })
+    const w = await mountPage(env())
+
+    expect(w.text(), '真故障被吞成「需要登录」，用户会以为是自己没登录').not.toContain('历史记录需要登录后查看')
+    expect(w.text()).toContain('历史记录加载失败')
+  })
+
+  test('登录成功后列表自己回来，用户不用再点一次「重试」', async () => {
+    fetchHistories.mockResolvedValue(env({ items: [row()], total: 1, page: 1, total_pages: 1 }))
+    const pinia = createPinia()
+    localStorage.removeItem('auth_token')
+    const w = mount(HistoryPage, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    expect(w.text(), '前提不成立：未登录时没给登录入口').toContain('历史记录需要登录后查看')
+    expect(fetchHistories, '前提不成立：未登录时还是发了请求').not.toHaveBeenCalled()
+
+    // 模拟 App.vue 那边登录成功后做的事：token 落盘，再写回 store
+    localStorage.setItem('auth_token', 'fresh-token')
+    useSessionStore(pinia).applyUser({
+      id: 1,
+      email: 'tester@example.com',
+      is_vip: false,
+      is_admin: false,
+    })
+    await flushPromises()
+    await flushPromises()
+
+    expect(fetchHistories, '登录成功后没有自己去取列表 —— 用户得手动重试一次').toHaveBeenCalled()
+    expect(w.text(), '登录成功了还杵在「需要登录」上').not.toContain('历史记录需要登录后查看')
+    expect(w.text(), '列表没回来').toContain('甲视频')
   })
 })
