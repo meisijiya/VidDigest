@@ -18,6 +18,8 @@
 - M3 摘掉解析端点上的并发依赖：重活又没人管（故事 1/2）
 - M4 两个端点桶共用一个计数键：解析把下载也堵死（故事 3）
 - M5 忽略阈值环境变量：换配置也没用（故事 11）
+- M6 下载端点不主动还名额：名额要等响应发完才还回去，客户端在响应体刚
+  开始发的时候再点一次会被自己上一个任务挡住
 
 ## 回归
 
@@ -74,6 +76,16 @@ MUTATIONS = [
         "    return _env_int(env_name, default)\n",
         "    env_name, default = CONCURRENCY_BUCKETS[bucket]\n"
         "    return default\n",
+    ),
+    (
+        "M6 下载端点不主动还名额：名额要等响应发完才还回去",
+        MAIN_FILE,
+        "        # 名额必须在响应发出去之前还回去：文件已经在盘上了，剩下只是回传，\n"
+        "        # 那不该继续占着名额（客户端收到响应后可能立刻再发一次）。\n"
+        "        _slot.release()\n",
+        "        # 名额必须在响应发出去之前还回去：文件已经在盘上了，剩下只是回传，\n"
+        "        # 那不该继续占着名额（客户端收到响应后可能立刻再发一次）。\n"
+        "        pass  # 变异：名额不还了\n",
     ),
 ]
 
@@ -149,8 +161,16 @@ def parse_counts(out):
     lines = out.strip().splitlines()
     summary = lines[-1] if lines else out
     passed = sum(int(m.group(1)) for m in _COUNT_RE.finditer(summary) if m.group(2) == "passed")
-    failed = sum(int(m.group(1)) for m in _COUNT_RE.finditer(summary) if m.group(2) in ("failed", "error"))
-    return passed, failed, summary.strip()
+    failed = sum(int(m.group(1)) for m in _COUNT_RE.finditer(summary) if m.group(2) == "failed")
+    errors = sum(int(m.group(1)) for m in _COUNT_RE.finditer(summary) if m.group(2) == "error")
+    return passed, failed, errors, summary.strip()
+
+
+#: 一次「像样的」转红长什么样：断言红了（AssertionError），或者
+#: pytest.raises 那个守卫没被触发（DID NOT RAISE）。这两种都说明
+#: **判据在守**。收集期的错误（语法错、导入错）不算——那说明的是
+#: 「我改坏了代码」。
+_ASSERTION_MARKERS = ("AssertionError", "DID NOT RAISE")
 
 
 def main():
@@ -159,8 +179,8 @@ def main():
         print("FAIL: 基线不绿，无法评估变异")
         print(out[-2000:])
         return 9
-    p, f, summary = parse_counts(out)
-    if p + f == 0:
+    p, f, e, summary = parse_counts(out)
+    if p + f + e == 0:
         print("FAIL: 目标收集到 0 个测试，变异评估无意义")
         return 9
     print(f"基线 {TARGET[0]}: {summary}\n")
@@ -185,15 +205,23 @@ def main():
             finally:
                 write_source(target_file, original)
 
-            p, f, _ = parse_counts(out)
-            if p + f == 0:
+            p, f, e, _ = parse_counts(out)
+            if p + f + e == 0:
                 print(f"  [没跑] {name} —— 收集到 0 个测试，结果无效")
                 not_run.append(name)
-            elif f > 0:
-                print(f"  [杀死] {name}  ({f} 条转红)")
-            else:
+            elif f == 0:
                 print(f"  [存活] {name}  <-- 测试守不住")
                 survived.append(name)
+            elif e > 0:
+                # 收集期就炸了（语法错、导入错）：那证明的是「我改坏了
+                # 代码」，不是「判据在守」。
+                print(f"  [无效] {name}  <-- 收集期报错（{e} 个 error），不是判据转红")
+                not_run.append(name)
+            elif not any(marker in out for marker in _ASSERTION_MARKERS):
+                print(f"  [无效] {name}  <-- 红了但不像断言转红")
+                not_run.append(name)
+            else:
+                print(f"  [杀死] {name}  ({f} 条转红，伴随断言)")
     finally:
         for path, data in originals.items():
             write_source(path, data)
@@ -210,7 +238,7 @@ def main():
         print("\nFAIL: 回归不绿 —— 既有后端用例被这次改动弄坏了")
         print(out[-3000:])
         return 9
-    _p, _f, summary = parse_counts(out)
+    _p, _f, _e, summary = parse_counts(out)
     print(f"回归: 全量后端用例 {summary}")
 
     print()

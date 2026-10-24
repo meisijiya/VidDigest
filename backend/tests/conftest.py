@@ -29,8 +29,14 @@ os.environ.setdefault("VIDDIGEST_RATE_LIMIT_ENABLED", "0")
 #
 # 并发闸门本身由 backend/tests/test_concurrency_limit.py 负责验证，
 # 它自己把上限打开。
-os.environ.setdefault("VIDDIGEST_CONCURRENCY_PARSE", "0")
-os.environ.setdefault("VIDDIGEST_CONCURRENCY_DOWNLOAD", "0")
+#
+# 为什么这里**直接赋值**而不是 setdefault：这两个变量管的是「测试套件
+# 里并发闸门开不开」，外部环境里有没有配它跟测试无关——留着真实配置
+# 的话，套件的行为取决于跑它的人的环境，同样的代码在两台机器上结果
+# 可能不同。setdefault 是「外部配了就用外部的」，这里要的是「测试里
+# 一律关着」。
+os.environ["VIDDIGEST_CONCURRENCY_PARSE"] = "0"
+os.environ["VIDDIGEST_CONCURRENCY_DOWNLOAD"] = "0"
 
 import pytest
 

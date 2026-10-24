@@ -93,9 +93,14 @@ CONCURRENCY_BUCKETS = {
 #: 并发闸门的 `Retry-After` 固定值（秒）。
 #:
 #: 为什么是固定值而不是「前一个任务还剩多久」：那一刻算不出来——闸门只知道
-#: 有几个在跑，不知道它们什么时候结束。给一个短而保守的固定值，够客户端
-#: 别立刻重试形成风暴就行；真正的建议在错误文案里（「等前面的任务结束再试」）。
-CONCURRENCY_RETRY_AFTER_SECONDS = 5
+#: 有几个在跑，不知道它们什么时候结束。真正的建议在错误文案里（「等前面的
+#: 任务结束再试」）。
+#:
+#: 为什么是 30：占着名额的任务可能跑几分钟（下载要出网 + 落盘）。给 5 秒
+#: 的话，客户端按这个头回来重试，多半还是超限，只是白等一轮。这里给的是
+#: **保底下限**——真的等待取决于前面的任务什么时候结束，错误文案说的
+#: 才是准的。
+CONCURRENCY_RETRY_AFTER_SECONDS = 30
 
 
 class FixedWindowCounter:
@@ -417,6 +422,9 @@ def concurrency_limit(bucket: str):
                 status_code=429,
                 detail={
                     "success": False,
+                    # 这段文案前端在按字面识别（`frontend/src/lib/errors.ts`
+                    # 的 `looksLikeServerConcurrencyLimit`）——改这里要同步改
+                    # 那里，两边分家就会把「自家并发闸门」误报成「平台风控」。
                     "error": (
                         f"同时进行的任务太多：这个来源同时在跑的任务已超过 {limit} 个，"
                         "请等前面的任务结束再试"

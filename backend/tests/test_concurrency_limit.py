@@ -35,6 +35,7 @@
 连接被拒是立刻发生的），断言只看 HTTP 层。
 """
 import ast
+import itertools
 import subprocess
 import sys
 import threading
@@ -257,8 +258,57 @@ def test_the_rejection_message_says_too_many_at_the_same_time(client, monkeypatc
     assert "请求过于频繁" not in error
 
 
-# ── 用户故事 3：两个桶互不牵连 ────────────────────────────
+def _seconds_in(text):
+    """文案里「N 秒」这种写法的 N（只认紧挨着「秒」的数字）。"""
+    found = []
+    digits = ""
+    for char in text:
+        if char.isdigit():
+            digits += char
+            continue
+        if char == "秒" and digits:
+            found.append(int(digits))
+        digits = ""
+    return found
 
+
+def test_the_retry_after_header_and_the_wording_say_the_same_thing(
+    client, monkeypatch
+):
+    """429 的 Retry-After 头、文案与常量说的是同一件事。
+
+    为什么：头里的秒数是客户端**机器**读的那一份，文案是人读的那一份。
+    两边对不上，客户端按头等几秒就回来重试（多半还是超限），用户按文案
+    等前面的任务结束。秒数本身也要是个明确的数：改它的人得知道自己在
+    改什么。
+    """
+    inflight = _InFlight().install_parse(monkeypatch)
+    first = _post_async(client, "/api/parse", _parse_body(), [])
+    inflight.wait_arrived()
+
+    second = _probe_while_in_flight(inflight, client, "/api/parse", _parse_body())
+    first.join(timeout=30)
+
+    assert second.status_code == 429
+    header = int(second.headers["retry-after"])
+    assert header == ratelimit.CONCURRENCY_RETRY_AFTER_SECONDS, (
+        "响应头里的秒数与常量对不上 —— 头不能另写一个数"
+    )
+    assert header == 30, (
+        f"并发闸门的 Retry-After 变成了 {header} 秒 —— 那个值是个决定，"
+        "改它之前先想清楚占着名额的任务要跑多久"
+    )
+
+    error = second.json()["detail"]["error"]
+    assert "等前面的任务结束" in error, (
+        "文案没说清要等前面的任务结束 —— 用户不知道该等多久"
+    )
+    assert all(n == header for n in _seconds_in(error)), (
+        f"文案里的秒数与 Retry-After 头对不上（头是 {header}）"
+    )
+
+
+# ── 用户故事 3：两个桶互不牵连 ────────────────────────────
 def test_the_parse_bucket_does_not_block_the_download_bucket(client, monkeypatch, tmp_path):
     """解析占满了名额，下载照跑。
 
@@ -312,6 +362,81 @@ def test_the_slot_is_released_as_soon_as_the_task_finishes(client, monkeypatch):
 
     second = client.post("/api/parse", json=_parse_body())
     assert second.status_code != 429
+
+
+class _ProbeDuringResponse:
+    """在响应体开始发出的那一刻，从后台线程发第二个请求。
+
+    为什么挑这一刻：名额什么时候还回来，就是这件事的全部。响应还没发完
+    就还回来的话，客户端在下载途中再点一次不会被自己上一个任务挡住；
+    等响应发完才还，用户在收到响应之前那段时间里再点一次就会被 429。
+
+    为什么在包装器里等第二个请求回来：不等的话，两个请求谁先谁后就是
+    运气——运气好的时候，第二个请求赶在第一个任务收尾之后就到了，判据
+    就测不出「名额在响应发出之前有没有还回来」。
+    """
+
+    def __init__(self, app, fire):
+        self.app = app
+        self._fire = fire
+        self.fired = False
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.body" and not self.fired:
+                self.fired = True
+                self._fire().join(timeout=30)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+def test_the_slot_is_released_before_the_response_body_starts(
+    client, monkeypatch, tmp_path
+):
+    """名额在响应体开始发出之前就还回来了。
+
+    为什么这条要紧：产物用完即删让下载端点的响应变长了——文件是从响应
+    里流出去的。客户端拿到响应之前那段时间，这个任务其实已经不占资源
+    了。这时候还占着名额，用户在下载途中再点一次就会被自己上一个任务
+    挡住（429）。
+    """
+    counter = itertools.count()
+
+    def fake_download(url, format_id):
+        # 每次下载给一个自己的文件：第二个请求不许动第一个请求正在发的那个。
+        path = tmp_path / f"probe-{next(counter)}.mp4"
+        path.write_bytes(b"probe-bytes")
+        return {"filepath": str(path), "filename": path.name}
+
+    monkeypatch.setattr(main_module.downloader, "download_video", fake_download)
+
+    results = []
+    probe = _ProbeDuringResponse(
+        main_module.app,
+        lambda: _post_async(client, "/api/download", _download_body(), results),
+    )
+    watching = make_client(
+        probe, client=PUBLIC_PEER, raise_server_exceptions=False
+    )
+
+    first = watching.post("/api/download", json=_download_body())
+
+    assert first.status_code == 200
+    assert probe.fired, "第二个请求根本没发出去 —— 前置条件不成立"
+    assert results, "第二个请求没回来 —— 前置条件不成立"
+    assert results[0].status_code != 429, (
+        "响应体都开始发了，名额还没还回来 —— 客户端在这个窗口里再点一次"
+        "会被自己上一个任务挡住"
+    )
+
+    # 响应发完之后，名额当然也得是还回来的。
+    after = client.post("/api/download", json=_download_body())
+    assert after.status_code != 429
 
 
 # ── 用户故事 8：两道闸门各管各的 ──────────────────────────
