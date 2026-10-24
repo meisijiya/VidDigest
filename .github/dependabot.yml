@@ -27,12 +27,27 @@ updates:
       - dependencies
       - frontend
     ignore:
-      # typescript-eslint 8.x 的 peer 依赖是 typescript >=4.8.4 <6.1.0。
-      # 放行 7.x 只会造出一个 npm ci 就 ERESOLVE 的 PR（实测 #73 全红，
-      # 每天重开一次，永远合不掉）。
+      # 大版本一律不放行：自动合并只该做「补丁 + 次版本」这种改行为概率低的事。
+      # 这三个都是会改运行时行为的大版本，人工评估过再放进来：
+      #  - typescript >=6：只在本地跑过 vue-tsc --noEmit（exit 0），
+      #    没在「类型检查 + 测试 + 构建 + 镜像冒烟」整条链路上验过；
+      #    typescript-eslint 8.x 的 peer 上限也是 <6.1.0。
+      #  - vue-router 5：ADR 0018 记的是 vue-router 4 的用法，
+      #    大版本换的是路由运行时的行为，值得单独读一次 changelog。
+      #  - @vueuse/core 15：同为大版本，与本仓实际用到的几个组合函数无关，
+      #    但换版本不该由机器人顺手决定。
+      # 早期只挡 typescript >=6.1.0，结果 #82 仍把 typescript 提到 6.0.3
+      # 并连带 vue-router 5 / @vueuse/core 15（实测：门禁第 6 关报
+      # TS5101 baseUrl 已废弃，TypeScript 7 起该选项失效）。
       - dependency-name: "typescript"
         versions:
-          - ">=6.1.0"
+          - ">=6.0.0"
+      - dependency-name: "vue-router"
+        versions:
+          - ">=5.0.0"
+      - dependency-name: "@vueuse/core"
+        versions:
+          - ">=15.0.0"
     groups:
       frontend-deps:
         patterns:
