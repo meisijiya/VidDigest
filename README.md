@@ -55,6 +55,23 @@
 
 ---
 
+## 🖼️ 界面预览
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/home.png" alt="首页：粘贴链接即可解析" /><br><sub>首页</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/home-dark.png" alt="暗色主题" /><br><sub>暗色主题</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/features.png" alt="核心功能" width="820" />
+</p>
+
+> 截图取自本机 `docker compose up -d --build` 跑起来的当前版本（1440×900）。
+
+---
+
 ## 🚀 快速开始
 
 ```bash
@@ -80,6 +97,21 @@ npm run dev                    # → http://localhost:5173
 
 > ⚠️ 前端用 `localhost` 而不是 `127.0.0.1`：Vite 只监听 IPv6 回环，
 > `127.0.0.1:5173` 连不上。
+
+### 🐳 或者用 Docker 跑
+
+仓库自带 `docker-compose.yml`，一条命令起前后端（后端通过 `env_file` 读
+`backend/.env` 里的密钥，镜像里不含任何密钥）：
+
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8000/api/health     # → {"status":"ok"}
+# 前端入口：http://127.0.0.1:8080
+docker compose down                       # 停掉并删掉容器
+```
+
+> 停容器**不删数据**：`backend/data` 与 `backend/logs` 是 bind mount，
+> SQLite 库文件留在宿主机上，容器内外看到的是同一份。
 
 ---
 

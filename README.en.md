@@ -115,6 +115,21 @@ Open **http://localhost:5173**, paste a video link, then parse / summarise / dow
 
 > Restart the backend after editing Python code — `main.py` runs Uvicorn without `--reload`.
 
+### 🐳 Or run it with Docker
+
+The repo ships a `docker-compose.yml`; one command starts both stacks (the backend
+reads its secrets from `backend/.env` via `env_file`; no secret ever enters the image):
+
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8000/api/health     # → {"status":"ok"}
+# Frontend entry point: http://127.0.0.1:8080
+docker compose down                       # stop and remove the containers
+```
+
+> Stopping the containers **keeps the data**: `backend/data` and `backend/logs` are bind
+> mounts, so the SQLite file stays on the host and the container sees the same copy.
+
 ---
 
 ## 🏗️ Architecture
