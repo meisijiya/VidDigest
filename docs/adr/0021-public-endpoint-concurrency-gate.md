@@ -71,6 +71,20 @@ date: 2026-10-24
 - 并发闸门是**异步生成器依赖**：占用发生在 `yield` 之前，归还发生在 `finally` 里，
   所以端点抛异常时名额也一定会还回来。漏还的后果不是「偶尔多拒一次」，而是那个
   来源之后的所有请求都被拒——一次崩溃就把自己锁在门外了。
+- **名额在响应发出去之前就还**：下载端点拿到文件、准备好响应之后就把名额还了，
+  剩下那段回传不该继续占着名额——客户端收到响应后可能立刻再点一次，那一次不该被
+  自己上一个任务挡住。
+- **并发 429 的 `Retry-After` 写 30 秒，它是保底下限不是承诺**：占着名额的任务可能
+  跑几分钟（下载要出网 + 落盘），服务端那一刻不知道前面的任务什么时候结束。30 秒
+  给的是「别立刻重试」的最小间隔。
+- **下载端点的「用完即删」挂在响应对象自己的 `finally`** 上
+  （`backend/download_artifacts.py` 的 `ArtifactResponse`），不挂在框架注入的后台
+  任务上。工单 #90 的措辞是「清理挂在响应发送完成之后（框架后台任务）」，而用户故事
+  要求「响应没走完时也要执行到」——客户端中途断开时，starlette `FileResponse` 末尾
+  那句 `await self.background()` 根本不执行（它不在 try/finally 里）。两条要求只有
+  挂在响应自己的 `finally` 上同时成立。
+- 因此清理**不依赖 fastapi / starlette 的 background 注入语义**：框架升级不会让它
+  静默失效。
 - 行为由 `backend/tests/test_concurrency_limit.py` 与
   `backend/tests/mutation_concurrency_limit.py` 钉住；运维口径见
   `docs/OPERATIONS.md` 第 10.4 节。
