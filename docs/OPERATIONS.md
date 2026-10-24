@@ -66,7 +66,7 @@ graph LR
 | npm     | 10    | 10+        | `npm --version`     |
 | ffmpeg  | 任意   | 最新稳定       | `ffmpeg -version`   |
 | SQLite  | 3.x  | 系统自带       | `sqlite3 --version` |
-| 磁盘      | —    | ≥ 10 GB 可用 | `downloads/` 会持续增长  |
+| 磁盘      | —    | ≥ 10 GB 可用 | 下载产物用完即删，残留由巡检按超龄清（§8.4） |
 
 > **Node 版本不是建议，是硬要求**：Vite 8 的 `engines` 写的是
 > `^20.19.0 || >=22.12.0`，Node 18 会在 `npm install` 阶段直接失败。
@@ -494,7 +494,7 @@ curl -fs -o /dev/null http://localhost:5173/ || alert "Frontend down"
 # 3) 代理链路
 curl -fs http://localhost:5173/api/health || alert "Vite proxy broken"
 
-# 4) 磁盘空间（downloads 增长快）
+# 4) 磁盘空间（下载产物用完即删，这里看的是残留占用）
 du -sh backend/downloads/ && df -h backend/
 
 # 5) 数据库大小
@@ -511,7 +511,7 @@ ls -lh backend/data/app.db
 | ------------------------- | ----------- | -------------------- |
 | `backend-api` uptime 重启次数 | 1h 内 ≥ 3 次  | 看 `hub logs` 查 panic |
 | `/api/health` 连续失败        | 30s 内 3 次   | 重启后端                 |
-| `downloads/` 大小           | &gt; 10 GB  | 清理旧文件                |
+| `downloads/` 大小           | &gt; 10 GB  | 巡检第 6 项会判不通过并清超龄残留（§8.4） |
 | `data/app.db` 大小          | &gt; 500 MB | 归档 + 重建索引            |
 | 磁盘剩余                      | &lt; 10%    | 紧急清理                 |
 
@@ -552,6 +552,39 @@ hub restart --name backend-api
 rm -f backend/data/app.db
 hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 ```
+
+### 8.4 下载产物生命周期
+
+**目录在哪**：`backend/downloads/`（容器内 `/app/downloads`）。通用 yt-dlp、抖音、
+ASR 转写三条道写进**同一个**目录——所以清理口径只能有一份（`backend/download_artifacts.py`）。
+
+**为什么下载要过服务器**：平台直链带签名、签名会过期，还要求用户的网络能直连平台；
+服务端下载完再一次性发出去，用户拿到的始终是一个完整文件。代价是文件要在服务器上
+落一次盘——所以落下来的东西必须用完即删。
+
+**用完即删的时机**：
+
+| 时机 | 谁清 | 清什么 |
+| --- | --- | --- |
+| 响应发完之后 | `/api/download` 挂的后台任务 | 本次返回的那个文件 |
+| 下载失败 | 抖音通道自己清；端点清 yt-dlp 的 `.part` 残留 | 本次写下的半截文件 |
+| 进程被杀 / 机器断电 | 没人清 | 巡检按超龄收 |
+
+清理**必须**挂在响应发完之后：响应体就是从那个文件里流出去的，先删就变成 0 字节
+——用户拿到一个能打开、但是空的视频。
+
+**边界**：清理范围**只**认本次请求写下的文件。别的请求正在往同一目录里写的在途文件
+不会被删（删了就是拿「残留占地方」换「下载坏掉」）。所以偶尔会漏清——漏掉的由巡检
+按超龄收走。这一层是兜底，不是主路径。
+
+**异常残留怎么被巡检收走**：巡检第 6 项（`check_download_dir`）按超龄（默认 24 小时，
+下限 1 小时）清掉没人管的残留，并报清掉几个；占用超阈（默认 2048 MB）判不通过。
+下限是 1 小时：ASR 通道用 ffmpeg 转音频，超时 300 秒，阈值比它短就会删掉正在转写的文件。
+
+**构建上下文**：`.dockerignore` 排除 `downloads/`，镜像里不留下载残留（CI 会查）。
+
+**有意不做**：容器里的下载目录**不**用 bind mount 对齐到宿主机（见 ADR 0019）。
+compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份，容器内那一份随容器销毁。
 
 ---
 
@@ -629,7 +662,7 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 | 高并发解析        | 闸门已落库（ADR 0015），不再有静默失效风险；加 `--workers` 前真正要盯的是 **SQLite 写入串行**（加 worker 不提升写吞吐）与**覆盖闸门 TTL**（`VIDDIGEST_VIDEO_REGENERATE_TTL_SECONDS` 必须大于一次覆盖的最长耗时，否则会在持闸者还在干活时把锁偷走）。详见 5.1.1                      |
 | 下载慢          | 上 CDN / 引导用户用直链 `/api/direct-url`                     |
 | AI 总结排队      | 换 PostgreSQL + Celery；当前是同步 + SSE                     |
-| downloads 爆盘 | 加 cron `find backend/downloads -mtime +1 -delete` 每天清 |
+| downloads 爆盘 | 巡检第 6 项已经管这件事：占用超阈判不通过并打印实际占用与清理办法，同一趟还会清掉超龄残留（§8.4）。别再另加 cron 定时删——删了不报，磁盘满了你才知道 |
 
 
 ### 10.3 免费用户配额
@@ -1048,6 +1081,12 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 | 数据目录 | 占用不超过阈值（默认 1024 MB） |
 | 日志新鲜度 | 日志文件存在且最近有写入（默认 24 小时内） |
 | 前端入口缓存 | 入口页响应带 `Cache-Control: no-store`（默认 http://127.0.0.1:8080/） |
+| 下载目录 | 占用不超过阈值（默认 2048 MB），并清掉超龄残留（默认 24 小时） |
+
+下载目录这一项的两个阈值可用 `--max-download-mb` / `--max-download-age-hours` 调。
+超龄下限是 1 小时：ASR 通道用 ffmpeg 转音频，超时 300 秒，阈值比它短就会删掉正在
+转写的文件。下载目录在容器里**不**与宿主机对齐（ADR 0019），所以这一项查的是
+**宿主机**上那一份（§8.4）。
 
 最后一项的由来：静态资源带内容哈希，可以长期缓存；`index.html` 里写着当前 bundle
 的文件名，浏览器捏着旧入口页就会去加载旧 bundle，页面「改了没生效」——

@@ -3,6 +3,7 @@ import asyncio
 import ipaddress
 import re
 import socket
+import time
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
@@ -10,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from cors_config import cors_kwargs
+from download_artifacts import cleanup_partial_artifacts, remove_artifact
 from downloader import VideoDownloader
 from douyin import AUDIO_FORMAT_ID, DouyinParser, is_douyin_url
 from database import init_db, seed_admin_emails_from_env
@@ -154,7 +156,9 @@ async def parse_video(req: ParseRequest, _rl: None = Depends(rate_limit("/api/pa
 # ── 服务端下载视频 ────────────────────────────────────────
 
 @app.post("/api/download")
-async def download_video(req: DownloadRequest, _rl: None = Depends(rate_limit("/api/download")), _slot=Depends(concurrency_limit("/api/download"))):
+async def download_video(req: DownloadRequest, background_tasks: BackgroundTasks,
+                         _rl: None = Depends(rate_limit("/api/download")),
+                         _slot=Depends(concurrency_limit("/api/download"))):
     """服务端下载视频后提供文件下载（自动识别抖音/其他平台）
 
     **限流**：下载要落盘，是这几个公开端点里最重的一个，每分钟同一来源
@@ -163,7 +167,12 @@ async def download_video(req: DownloadRequest, _rl: None = Depends(rate_limit("/
     **并发闸门**：同一来源同时在跑的任务超过上限（默认 2 个，可用
     `VIDDIGEST_CONCURRENCY_DOWNLOAD` 调）就拒（429 + `Retry-After`）。
     下载最占资源（出网 + 落盘），这道闸门在这里最要紧（ADR 0021）。
+
+    **产物用完即删**：文件在响应**发完之后**由后台任务删掉。挂在响应之后
+    是因为响应体就是从这个文件里流出去的——先删就变成 0 字节。
     """
+    started_at = time.time()
+    scheduled = False
     try:
         url = req.clean_url()
         loop = asyncio.get_event_loop()
@@ -183,6 +192,10 @@ async def download_video(req: DownloadRequest, _rl: None = Depends(rate_limit("/
         if not os.path.exists(filepath):
             raise HTTPException(status_code=500, detail="下载的文件不存在")
 
+        # 清理挂在响应之后，不挂在 handler 的 finally 里：响应体是从这个
+        # 文件里流出去的，先删就变成 0 字节。
+        background_tasks.add_task(remove_artifact, filepath)
+        scheduled = True
         return FileResponse(
             path=filepath,
             filename=result["filename"],
@@ -199,6 +212,10 @@ async def download_video(req: DownloadRequest, _rl: None = Depends(rate_limit("/
         # 名额必须在响应发出去之前还回去：文件已经在盘上了，剩下只是回传，
         # 那不该继续占着名额（客户端收到响应后可能立刻再发一次）。
         _slot.release()
+        if not scheduled:
+            # 失败路径拿不到后台任务：异常响应是另一个 Response，
+            # 挂在上面的后台任务不会执行。这里显式清一次半截文件。
+            cleanup_partial_artifacts(downloader.DOWNLOAD_DIR, started_at)
 
 
 # ── 获取视频直链 ──────────────────────────────────────────

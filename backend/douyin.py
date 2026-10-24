@@ -17,6 +17,7 @@ from urllib.parse import urlparse, parse_qs
 
 import requests
 
+from download_artifacts import remove_artifact
 from formats import make_format
 
 logger = logging.getLogger("douyin")
@@ -407,10 +408,22 @@ class DouyinParser:
 
     @staticmethod
     def _download_file(url: str, filepath: Path):
-        """下载文件到本地"""
+        """下载文件到本地
+
+        写的是**最终文件名**，所以中途断掉会在盘上留下半截文件。半截文件
+        对用户没有用处（下载失败就是失败），却一直占着地方，所以写失败
+        时把它删掉。
+
+        只在**已经动手写**之后才删：请求本身失败时盘上那个文件是上一次
+        下载留下的，删它等于把别人的产物删了。
+        """
         resp = requests.get(url, stream=True, timeout=30)
         resp.raise_for_status()
-        with open(filepath, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+        try:
+            with open(filepath, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        except Exception:
+            remove_artifact(filepath)
+            raise
