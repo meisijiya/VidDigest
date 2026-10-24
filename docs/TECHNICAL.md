@@ -202,6 +202,8 @@
 
 - SQLite，`journal_mode=WAL`、`foreign_keys=ON`；连接线程本地复用。
 - **写是串行的**：`sqlite3.connect` 未传 `timeout`，走 Python 默认的 5 秒等待窗口；长事务会撞 `database is locked`。这是后端单进程建议的来源。
+- **下载目录 `backend/downloads/` 是运行期产物**，不是数据：文件发完就删，构建上下文也排除它
+  （不进镜像）。异常残留由巡检第 6 项按超龄收走，详见 `docs/OPERATIONS.md` §8.4。
 
 ### 5.2 表与关键列
 
@@ -299,6 +301,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | SQLite | 唯一存储 | 写锁竞争 → `database is locked` |
 | Stripe | 会员支付 | 回调按事件幂等处理 |
 | 自家限流（`backend/ratelimit.py`） | 六个不挂鉴权的公开端点 | 超限返回 `429`，`Retry-After` 头写明等几秒；体是 `{"success": false, "error": ...}`；是**速率**闸门不是并发闸门（ADR 0020） |
+| 自家并发闸门（`backend/ratelimit.py`） | 解析与下载两个重活端点 | 同一来源同时在跑的任务超上限就返回 `429`，同样带 `Retry-After`；体是 `{"success": false, "error": ...}`，`error` 说清是「同时在跑太多」；**立刻拒，不排队**（ADR 0021） |
 
 **额度口径**：解析含字幕提取与批量生成，追问只是一次模型调用，因此拆成两个计数器（ADR 0003）。共用内容（社区里已有的那一份）不扣额度。
 
@@ -324,6 +327,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | SSE 中途断流 | 看 `backend/logs/app.log` 的 JSON 行 | 上游断流或网关补空帧 | 空帧已被 `backend/summarizer.py` 的 `_iter_delta_text` 跳过；真断流无自动重连 |
 | 前端改了没生效 | `curl -I http://127.0.0.1:8080/index.html` | 浏览器缓存了入口页 | 入口页已标 `no-store`；重建镜像后再验 |
 | 端口连不上 | `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/api/health` | Vite 只监听 IPv6 回环；宿主端口被占 | 用 `http://localhost:5173`；换端口启动 |
+| 下载目录一直变大 | `backend/venv/Scripts/python.exe scripts/ops/inspect_runtime.py` | 下载失败/进程被杀留下的残留没人收 | 巡检第 6 项按超龄清（`--max-download-age-hours`，下限 1 小时）；见 `docs/OPERATIONS.md` §8.4 |
 | 后端起不来 | 看启动日志里是否提到 `JWT_SECRET` | 缺 `JWT_SECRET` 是设计好的拒绝启动 | 在 `backend/.env` 里配置 |
 
 **不在本仓的问题**：平台反爬、厂商限流、模型上下文长度限制。
@@ -353,6 +357,8 @@ bash ./init.sh          # 退出码 0 = 已验证
 | [0016](adr/0016-url-canonical-compare-canonical-echo-original.md) | 比较用规范值，回显用原文 | 同一份数据上并存两种表示 |
 | [0018](adr/0018-vue-router-adopted.md) | 引入 `vue-router`，取代手写路由 | 多一个运行时依赖；`/admin` 需要服务端回落 |
 | [0019](adr/0019-container-ops-evidence-chain.md) | 容器化与运维证据链 | bind mount 让容器与本机开发共用一份数据文件 |
+| [0020](adr/0020-public-endpoint-rate-limit.md) | 公开端点按来源 IP 限速 | 进程内计数，重启清零；多实例各数各的 |
+| [0021](adr/0021-public-endpoint-concurrency-gate.md) | 解析与下载再加一道并发闸门 | 进程内计数，重启清零；超限立刻拒，不排队 |
 
 范围界定类：[0010](adr/0010-admin-console-scope-and-auth.md)（管理后台的边界；其后的账号生命周期与社区审核由 0012 / 0013 扩展）。实施层：[0008](adr/0008-graphite-lake-blue-visual-identity.md)（视觉）、[0009](adr/0009-theme-override-via-css-variables.md)（主题）、[0019](adr/0019-container-ops-evidence-chain.md)（运维）。已被取代：[0017](adr/0017-lightweight-routing-no-vue-router.md)（手写轻量路由，被 0018 取代）。
 
@@ -378,7 +384,6 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | 级别 | 事项 | 现状 |
 | --- | --- | --- |
-| P1 | 只有速率限流，没有并发闸门 | 六个公开端点按来源 IP 限速（429 + `Retry-After`，ADR 0020），但同一来源的并发请求仍会同时进来——限流是速率维度，不是并发维度 |
 | P1 | 多实例与跨进程并发写无验证 | 只有同进程多线程用例；compose 单实例、单 worker |
 | P1 | 真实第三方 API 传输层故障无注入 | 超时、连接重置、429 带 `Retry-After`、5xx、流中途断开都无覆盖 |
 | P1 | 生产形态备份恢复无演练 | 备份脚本这一侧是闭合的（在线备份 + `integrity_check` + 防撞名 + 6 条用例 + 3 个变异）；仍缺两件：运维手册里的手动备份还是裸拷贝口径，以及一次真正的恢复演练 |
@@ -389,7 +394,6 @@ bash ./init.sh          # 退出码 0 = 已验证
 | P2 | 敏感扫描只覆盖可达历史 | 被 force-push 掉的凭据仍可从对象库取回（force push 现在被保护规则挡住，但对象库里的旧对象还在） |
 | P2 | 后端依赖不可复现 | `backend/requirements.txt` 全是下界、无锁无 hash；前端有锁文件，后端没有；也没有 SBOM |
 | P2 | 容器运行态细节未在 Linux 环境验 | 非 root 用户（uid 10001）对 bind mount 目录的可写性只在文档里 |
-| P2 | 下载产物无生命周期管理 | 清理只在进程退出路径 |
 | P2 | 日志与凭据边界无机器断言 | 只有注释声明，没有自动化断言 |
 | P2 | SSE 真实断流、超时、重连无用例 | 前端测试用假流解析契约 |
 | P2 | OS 矩阵缺口 | CI 只有 ubuntu；Windows 仅本地，macOS 从未跑过 |
@@ -399,6 +403,21 @@ bash ./init.sh          # 退出码 0 = 已验证
 ### 10.3 明确不做
 
 范围边界以 `AGENTS.md` 为准：会员制、点赞 / 收藏 / 评论 / 关注、内容审核与举报流程、下载功能本身的改动（纯音频下载除外）、推荐算法与个性化排序、移动端原生应用、多语言界面、社区视频下架、封禁 / 解封账号。
+
+另外三件是**有意不做**，不是没做完：
+
+- **多实例部署下的共享并发计数**：并发闸门的计数在进程内（ADR 0021）。要跑成两个以上进程 / 容器共享同一份数据库文件时，计数得换成共享存储——那是另一次改造，本轮不做。
+- **公开端点仍不做鉴权**：六个公开端点不挂鉴权依赖是**有意保留**的（ADR 0020、ADR 0021）。防滥用靠速率闸门 + 并发闸门 + 落盘配额这三层兜，不靠鉴权。
+- **分支保护的人工审核**：单人仓库里 PR 作者不能 approve 自己的 PR，开「至少 1 个 approve」就是死锁。所以 master 的保护只开「必过检查 + 生产构建」，不指望人工审核（见 `docs/OPERATIONS.md` §14.1.1）。
+
+### 10.4 跨端耦合
+
+有些口径横跨前后端，改一边就必须改另一边：
+
+- **并发 429 的前端分类认的是服务端的中文文案**：前端在 `frontend/src/lib/errors.ts`
+  的 `looksLikeServerConcurrencyLimit` 里按中文子串匹配后端 `backend/ratelimit.py`
+  写进 `error` 的文案（`同时进行的任务太多` / `同时在跑的任务已超过` / `并发上限`）。
+  两边分头改文案，前端就会把「自家并发闸门」误报成「平台风控」。
 
 **判据**：读者分得清「已知问题」与自己踩到的新坑，也知道哪些是产品边界而不是没做完。
 

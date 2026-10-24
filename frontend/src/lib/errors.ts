@@ -8,6 +8,7 @@
  *   链接不对   → 让他重新检查链接（换个视频 / 确认是不是完整地址）
  *   平台在拦   → 让他等一会儿（平台在拦，不是他的错）
  *   服务器在限 → 让他等一会儿（**我们**的护栏，别让他去怪视频站）
+ *   同时在跑太多 → 让他等前面的任务结束（**我们**的护栏，但下一步不同）
  *   网络/服务  → 让他重试
  *
  * 判据要能**变异**：只断言「出现了某种提示」的话，把分类逻辑整个
@@ -76,6 +77,25 @@ function looksLikeServerRateLimit(err: unknown): boolean {
   return /服务器限流|server rate limit/.test(m)
 }
 
+/**
+ * 服务器的并发闸门：同一来源同时在跑的任务太多（还是**我们**自己的护栏）。
+ *
+ * 为什么必须和「服务器限流」分开说：两件事的下一步不一样——
+ * 限流是「来得太频繁，等一分钟」，并发是「你前面那个任务还没跑完，
+ * 等它结束」。照着「等一分钟」的提示做，用户会白等一分钟。
+ *
+ * 判据：后端并发闸门回的消息里带「同时进行的任务太多」（见
+ * `backend/ratelimit.py` 的 `concurrency_limit`），这是**自家**的措辞。
+ *
+ * 改文案要同步改后端：这段正则认的是**中文子串**，两边分头改就会把
+ * 「自家并发闸门」误报成「平台风控」（后端文案在
+ * `backend/ratelimit.py` 的 `concurrency_limit` 里）。
+ */
+function looksLikeServerConcurrencyLimit(err: unknown): boolean {
+  const m = messageOf(err).toLowerCase()
+  return /同时进行的任务太多|同时在跑的任务已超过|并发上限/.test(m)
+}
+
 /** 网络层问题：连不上、超时。 */
 function looksLikeNetwork(err: unknown): boolean {
   const e = (err ?? {}) as ErrorLike
@@ -112,6 +132,18 @@ export function classifyError(err: unknown, action: 'parse' | 'download' | 'paym
       hint:
         '服务器在限制请求速度，等一分钟左右再试一次。' +
         '如果你刚才连着解析了好几个视频，那就是触发得太快了——一次解析一个就好。',
+    }
+  }
+
+  // 并发闸门必须排在 looksLikeThrottled 前面：并发超限也是 429，
+  // 而 429 这个词本来一律被当成「平台在拦」。排后面的话，用户会以为
+  // 视频站在封他——可占着他名额的其实是他自己那个还没跑完的任务。
+  if (looksLikeServerConcurrencyLimit(err)) {
+    return {
+      title: '同时在跑的任务太多',
+      message: message,
+      hint:
+        '服务器上你这个来源同时在跑的任务已经到上限了。' + '等前面那个任务结束再试就好——不用换链接，也不用干等一分钟。',
     }
   }
 

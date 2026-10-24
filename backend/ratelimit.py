@@ -20,6 +20,15 @@
 范围：这是**单机**限流。进程重启计数就清零，多实例之间各数各的——
 现在后端是单进程单 worker（`docs/TECHNICAL.md` §1.3），多实例部署那天
 再换成共享存储。
+
+这里有**两道闸门**，管的是两件事：
+
+- **速率闸门**（`rate_limit`）：管「一段时间内来了多少次」——超了说明来得频繁。
+- **并发闸门**（`concurrency_limit`）：管「此刻有几个还在跑」——超了说明同时在跑太多。
+
+同一个来源一分钟只发一次、但那个任务跑十分钟，速率闸门一次都不会拦；
+反过来一秒发二十次、但每个都秒回，速率闸门会拦、并发闸门不会。两道闸门
+各调各的，互不干扰（ADR 0021）。
 """
 
 import math
@@ -63,6 +72,35 @@ BUCKETS = {
     "/api/login": ("VIDDIGEST_RATE_LIMIT_LOGIN", 10),
     "/api/register": ("VIDDIGEST_RATE_LIMIT_REGISTER", 5),
 }
+
+#: 并发闸门的每个桶：(环境变量名, 默认并发上限)。上限 0 表示这个桶不限并发。
+#:
+#: 只挂解析与下载两个端点：它们是仅有的两个「一次请求要在服务器这边占资源
+#: 占很久」的公开端点（出网抓取、落盘）。直链、缩略图、登录、注册都是秒级
+#: 往返，速率闸门对它们已经够了，再挂一道并发闸门只会多一处要维护的口径。
+#:
+#: 默认 2 的取法：一个来源同时跑两个重活就已经把带宽与 CPU 占满了，第三个
+#: 进来只会让三个都变慢。宁可让用户等一下，也不要让整台机器被一个来源拖垮。
+#:
+#: 桶名沿用「被限的那个端点路径」，与速率闸门同一约定（ADR 0021）。为什么
+#: 不写 `parse` 那种短名：额度种类在 `database.QUOTA_KINDS` 里只有一处枚举，
+#: 别处再写一遍会破坏那条结构守卫。
+CONCURRENCY_BUCKETS = {
+    "/api/parse": ("VIDDIGEST_CONCURRENCY_PARSE", 2),
+    "/api/download": ("VIDDIGEST_CONCURRENCY_DOWNLOAD", 2),
+}
+
+#: 并发闸门的 `Retry-After` 固定值（秒）。
+#:
+#: 为什么是固定值而不是「前一个任务还剩多久」：那一刻算不出来——闸门只知道
+#: 有几个在跑，不知道它们什么时候结束。真正的建议在错误文案里（「等前面的
+#: 任务结束再试」）。
+#:
+#: 为什么是 30：占着名额的任务可能跑几分钟（下载要出网 + 落盘）。给 5 秒
+#: 的话，客户端按这个头回来重试，多半还是超限，只是白等一轮。这里给的是
+#: **保底下限**——真的等待取决于前面的任务什么时候结束，错误文案说的
+#: 才是准的。
+CONCURRENCY_RETRY_AFTER_SECONDS = 30
 
 
 class FixedWindowCounter:
@@ -131,13 +169,92 @@ class FixedWindowCounter:
             del self._entries[oldest_key]
 
 
+class ConcurrencyCounter:
+    """「此刻还有几个没结束」的计数器。
+
+    与 `FixedWindowCounter` 是两回事：那个记「一段时间内来过几次」，
+    窗口一到就归零；这个记**当下**还在跑的数量，所以它的值会升也会降——
+    任务结束时必须显式还回来，否则名额会被已经结束的幽灵任务永久占住。
+
+    键是 (来源, 端点桶)：同一个来源在解析与下载上的占用互不相干，
+    否则一个慢解析会把下载也堵死。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[tuple[str, str], int] = {}
+
+    def acquire(self, key: tuple[str, str], limit: int) -> bool:
+        """占一个名额；名额满了就一个也不占，返回 False。"""
+        with self._lock:
+            current = self._entries.get(key, 0)
+            if current >= limit:
+                return False
+            self._entries[key] = current + 1
+            return True
+
+    def release(self, key: tuple[str, str]) -> None:
+        """还回一个名额。
+
+        多还一次也不会把计数弄成负数：键不存在就当还了 0 个。
+        宁可少算也不能让计数变负——负数会让后面的请求永远放行。
+        """
+        with self._lock:
+            current = self._entries.get(key, 0)
+            if current <= 1:
+                self._entries.pop(key, None)
+                return
+            self._entries[key] = current - 1
+
+    def reset(self) -> None:
+        """清空计数（测试与将来的人工清理都用它）。"""
+        with self._lock:
+            self._entries.clear()
+
+
+class ConcurrencySlot:
+    """一次并发占用的凭据：调 `release()` 把名额还回去。
+
+    **为什么要多这一层，而不是端点直接调计数器**：名额有两条释放路径
+    （端点显式释放、依赖收尾兜底），两条都走这里，所以「还过了没有」
+    得记在这个凭据上——多还一次会把别人的名额也减掉，计数一旦偏小，
+    上限就形同虚设。
+
+    **为什么要端点显式释放**：FastAPI 的依赖收尾发生在响应发出**之后**
+    （`fastapi/routing.py` 里 `await response(...)` 在退出栈之前），
+    只靠收尾还名额的话，客户端收到响应后立刻再发一次请求，
+    仍会被自己上一个任务挡住。
+    """
+
+    def __init__(self, counter: ConcurrencyCounter, key: tuple[str, str] | None = None) -> None:
+        self._counter = counter
+        # key 为 None = 不限并发，本来就没有名额可还。
+        self._key = key
+        self._released = False
+
+    def release(self) -> None:
+        """把名额还回去。重复调用是空操作。"""
+        if self._released:
+            return
+        self._released = True
+        if self._key is not None:
+            self._counter.release(self._key)
+
+
 #: 进程内唯一的计数器。
 _counter = FixedWindowCounter()
 
+#: 进程内唯一的并发计数器。
+_concurrency_counter = ConcurrencyCounter()
+
 
 def reset_counters() -> None:
-    """清空计数（测试与将来的人工清理都用它）。"""
+    """清空**所有**计数（速率窗口 + 并发在跑数；测试与将来的人工清理都用它）。
+
+    两个都清：它们是同一层护栏上的两道闸门，「手动清一次」不该只清一道。
+    """
     _counter.reset()
+    _concurrency_counter.reset()
 
 
 def use_counter(counter: FixedWindowCounter) -> None:
@@ -259,5 +376,68 @@ def rate_limit(bucket: str):
 
     def dependency(request: Request) -> None:
         enforce(request, bucket)
+
+    return dependency
+
+
+def _concurrency_limit_for(bucket: str) -> int:
+    """某个桶的并发上限；0 表示不限并发。"""
+    env_name, default = CONCURRENCY_BUCKETS[bucket]
+    return _env_int(env_name, default)
+
+
+def concurrency_limit(bucket: str):
+    """返回一个 FastAPI 依赖：同一来源同时在跑的任务超过上限就 429。
+
+    与速率闸门是**两件事**，谁也替代不了谁：
+
+    - 速率闸门管「一段时间内来了多少次」——超了说明**来得频繁**；
+    - 并发闸门管「此刻有几个还在跑」——超了说明**同时在跑太多**。
+
+    同一个来源一分钟只发一次、但那个任务跑十分钟，速率闸门一次都不会拦；
+    反过来一秒发二十次、但每个都秒回，速率闸门会拦、并发闸门不会。
+    两道闸门的消息也不一样：前端得分开告诉用户「等一分钟」还是
+    「等前一个任务结束」（ADR 0021）。
+
+    桶名写错要在**装配时**就炸（写错桶名等于端点没挂上限，还不报错）。
+
+    **释放为什么由端点来做**：FastAPI 的依赖收尾在响应发出**之后**
+    （`fastapi/routing.py` 里 `await response(...)` 排在退出栈之前），
+    只靠收尾还名额的话，客户端收到响应后立刻再发一次请求，
+    仍会被自己上一个任务挡住。所以这里 yield 出去一个凭据，
+    端点在 `finally` 里显式释放；这里的收尾只兜底「端点根本没跑」
+    的那种情况（请求体校验不通过时端点根本不会被调用）。
+    """
+    if bucket not in CONCURRENCY_BUCKETS:
+        raise KeyError(f"未知的并发桶: {bucket}")
+
+    async def dependency(request: Request):
+        limit = _concurrency_limit_for(bucket)
+        if limit <= 0:
+            yield ConcurrencySlot(_concurrency_counter)
+            return
+        key = (client_identity(request), bucket)
+        if not _concurrency_counter.acquire(key, limit):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "success": False,
+                    # 这段文案前端在按字面识别（`frontend/src/lib/errors.ts`
+                    # 的 `looksLikeServerConcurrencyLimit`）——改这里要同步改
+                    # 那里，两边分家就会把「自家并发闸门」误报成「平台风控」。
+                    "error": (
+                        f"同时进行的任务太多：这个来源同时在跑的任务已超过 {limit} 个，"
+                        "请等前面的任务结束再试"
+                    ),
+                },
+                headers={"Retry-After": str(CONCURRENCY_RETRY_AFTER_SECONDS)},
+            )
+        slot = ConcurrencySlot(_concurrency_counter, key)
+        try:
+            yield slot
+        finally:
+            # 端点抛异常时也得还回去——漏了这一步，名额会被幽灵任务占死，
+            # 那个来源之后的所有请求都会被拒。
+            slot.release()
 
     return dependency

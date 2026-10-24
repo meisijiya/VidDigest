@@ -66,8 +66,65 @@ jobs:
       - name: 编排文件自检
         run: docker compose config -q
 
+      - name: 种下载产物探针
+        # 这一步是为了让下一条检查**真能变红**。
+        # 干净检出里 backend/downloads 压根不存在，构建上下文里没有它——
+        # 那时 `downloads/` 这条 .dockerignore 规则写没写、删了还是没删，
+        # 检查都判绿。一条永远关不住任何东西的检查是假守卫。
+        # 所以构建之前先往构建上下文里种一个探针：谁把规则删了，
+        # 探针就会进镜像，检查立刻转红。
+        #
+        # 探针不进仓库：backend/downloads 已被 .gitignore 忽略。
+        run: |
+          set -euo pipefail
+          mkdir -p backend/downloads
+          echo ci-download-probe > backend/downloads/ci-probe.txt
+          if [ -n "$(git status --porcelain backend/downloads)" ]; then
+            echo "backend/downloads 没有被 git 忽略，探针会污染工作树："
+            git status --porcelain backend/downloads
+            exit 1
+          fi
+
       - name: 镜像构建
         run: docker compose build
+
+      - name: 镜像里查不到下载残留
+        # 下载产物用完即删，留在盘上的多半是半截文件。构建上下文带着它，
+        # 等于把上一台机器的残留发给下一台机器。
+        #
+        # 两条判据：探针不许出现在镜像里的任何位置（这是「规则被删了」
+        # 的真信号）；/app/downloads 目录本身也不该有内容。目录不存在是
+        # 正常的（排除之后它压根不会被建出来）——查不到 ≠ 有残留。
+        #
+        # 用 compose 推导出的镜像名（`config --images` 打印的就是构建时
+        # 打上的那个 tag）去查，但**不**用 compose run 进去——那会把 bind
+        # mount 的宿主目录按 root 属主建出来，后面的冒烟步骤就 chmod
+        # 不动了。
+        #
+        # 为什么不用 `docker compose images -q backend`：那条命令列的是
+        # **容器**用的镜像，这时还没有容器，输出是空的（实测）。
+        run: |
+          set -euo pipefail
+          image=$(docker compose config --images | grep -E -- '-backend$' | head -n 1)
+          if [ -z "$image" ]; then
+            echo "找不到后端镜像，镜像检查无从谈起"
+            exit 1
+          fi
+          probe=$(docker run --rm --entrypoint sh "$image" -c \
+            "find /app -name 'ci-probe.txt' 2>/dev/null")
+          if [ -n "$probe" ]; then
+            echo "构建上下文没排除下载目录，探针进了镜像："
+            printf '%s\n' "$probe"
+            exit 1
+          fi
+          leftovers=$(docker run --rm --entrypoint sh "$image" -c \
+            'if [ -d /app/downloads ]; then ls -A /app/downloads; fi')
+          if [ -n "$leftovers" ]; then
+            echo "镜像里的 /app/downloads 有内容："
+            printf '%s\n' "$leftovers"
+            exit 1
+          fi
+          echo "镜像里没有下载残留（探针也没进去）"
 
       - name: 镜像启动冒烟
         # 只构建不冒烟，等于「镜像是怎么来的」仍然只有半句证据。
@@ -123,6 +180,8 @@ jobs:
           - backend/tests/mutation_backup_naming.py
           - backend/tests/mutation_legacy_users.py
           - backend/tests/mutation_ratelimit.py
+          - backend/tests/mutation_concurrency_limit.py
+          - backend/tests/mutation_download_artifacts.py
     steps:
       - uses: actions/checkout@v4
 

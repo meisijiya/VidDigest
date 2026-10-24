@@ -63,6 +63,9 @@ async def register(req: RegisterRequest, _rl: None = Depends(rate_limit("/api/re
 
     **限流**：注册是写库端点，每分钟同一来源最多 5 次。登录同理（10 次）——
     这两个端点要算 bcrypt，是撞库面。
+
+    **不挂并发闸门**：注册是一次写库的短往返，占不住什么资源；并发闸门
+    只挂在真正长时间占资源的解析与下载上（ADR 0021）。
     """
     if not validate_email(req.email):
         raise HTTPException(status_code=400, detail="邮箱格式不正确")
@@ -91,6 +94,9 @@ async def login(req: LoginRequest, _rl: None = Depends(rate_limit("/api/login"))
 
     **限流**：登录要算 bcrypt（慢哈希），且是最典型的撞库面，每分钟同一
     来源最多 10 次。
+
+    **不挂并发闸门**：一次登录是毫秒级往返，速率闸门对撞库面已经够用；
+    并发闸门只挂在真正长时间占资源的解析与下载上（ADR 0021）。
     """
     user = get_user_by_email(req.email)
     if not user:

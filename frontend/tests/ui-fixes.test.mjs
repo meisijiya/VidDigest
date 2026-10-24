@@ -470,6 +470,21 @@ describe('错误分类器 · 每种失败都给出可执行的下一步', () => 
     assert.match(r.hint, /等/, '没告诉用户该等')
   })
 
+  test('自家并发闸门 ≠ 速率闸门：让他等前面的任务结束，不是等一分钟', () => {
+    const r = classifyError({
+      response: {
+        data: {
+          detail: {
+            error: '同时进行的任务太多：这个来源同时在跑的任务已超过 2 个，请等前面的任务结束再试',
+          },
+        },
+      },
+    })
+    assert.match(r.title, /同时/, '并发闸门没有单独分类')
+    assert.doesNotMatch(r.title, /平台/, '并发闸门被说成平台风控 —— 用户会去怪视频站')
+    assert.match(r.hint, /结束/, '没告诉用户该等前面的任务结束')
+  })
+
   test('拿不到响应 + 网络词 → 网络问题，让他检查网络', () => {
     const r = classifyError({ message: 'Network Error' })
     assert.match(r.title, /连不上/)
@@ -491,6 +506,13 @@ describe('错误分类器 · 每种失败都给出可执行的下一步', () => 
       { message: 'HTTP Error 429: Too Many Requests' },
       { message: 'Network Error' },
       { response: { data: { detail: { error: 'Internal Server Error' } } } },
+      {
+        response: {
+          data: {
+            detail: { error: '同时进行的任务太多：这个来源同时在跑的任务已超过 2 个，请等前面的任务结束再试' },
+          },
+        },
+      },
     ]
     for (const c of cases) {
       const r = classifyError(c)

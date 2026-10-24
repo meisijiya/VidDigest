@@ -21,6 +21,23 @@ os.environ.setdefault(
 # 限流本身由 backend/tests/test_ratelimit.py 负责验证，它自己把开关打开。
 os.environ.setdefault("VIDDIGEST_RATE_LIMIT_ENABLED", "0")
 
+# 并发闸门默认**关着**（工单 #89）。
+#
+# 理由同上：整个测试套件都从同一个测试客户端发起，而并发闸门数的是
+# 「此刻有几个还在跑」。开着的话，某个用例只要留下一个还没结束的后台
+# 请求，名额就会漏到后面的用例里去，后面的用例就莫名其妙收到 429。
+#
+# 并发闸门本身由 backend/tests/test_concurrency_limit.py 负责验证，
+# 它自己把上限打开。
+#
+# 为什么这里**直接赋值**而不是 setdefault：这两个变量管的是「测试套件
+# 里并发闸门开不开」，外部环境里有没有配它跟测试无关——留着真实配置
+# 的话，套件的行为取决于跑它的人的环境，同样的代码在两台机器上结果
+# 可能不同。setdefault 是「外部配了就用外部的」，这里要的是「测试里
+# 一律关着」。
+os.environ["VIDDIGEST_CONCURRENCY_PARSE"] = "0"
+os.environ["VIDDIGEST_CONCURRENCY_DOWNLOAD"] = "0"
+
 import pytest
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

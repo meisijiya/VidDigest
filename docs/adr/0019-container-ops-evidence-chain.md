@@ -20,7 +20,8 @@ date: 2026-10-23
    缓冲会把事件攒到结束才吐给前端，实时性就没了。
 3. **数据与日志用 bind mount 挂到宿主目录**，不用命名卷。
 4. **备份走 SQLite 在线备份 API**，拷完必须过 `PRAGMA integrity_check`，不过即失败；
-   巡检脚本对健康端点、库完整性、数据目录占用、日志新鲜度四项出判据，任一不达标退出码非零。
+   巡检脚本对健康端点、库完整性、数据目录占用、日志新鲜度、前端入口缓存、下载目录占用
+   六项出判据，任一不达标退出码非零。
 5. **日志一行一条 JSON**（`ts` / `level` / `logger` / `msg`），10MB×5 轮转，时间戳统一 UTC；
    接管 `uvicorn` 三个 logger 并把它们的 `propagate` 关掉。
 
@@ -63,4 +64,9 @@ date: 2026-10-23
 - `JWT_SECRET` 缺失时后端拒绝启动——这是设计好的失败，不是崩溃。
 - 宿主机上的 `scripts/ops/backup_db.py`、`scripts/ops/inspect_runtime.py` 针对的是
   容器正在用的那一份数据与日志，容器路径由 bind mount 对齐。
+- **下载目录没有 bind mount**：容器里的下载产物落在镜像内的 `/app/downloads`，
+  宿主机上的巡检看不到那一份。这是有意不做——加 bind mount 会撞上「宿主目录以 root
+  属主创建 vs 容器里 uid 10001 写不进去」的权限问题。代价是：compose 部署形态下，
+  巡检第 6 项查的是宿主机上的 `backend/downloads`（本机直接跑后端时的那一份），
+  容器内那一份随容器销毁，不受它管。
 - 运维手册的容器化章节见 `docs/OPERATIONS.md` 第 13 节。
