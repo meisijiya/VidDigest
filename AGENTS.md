@@ -133,6 +133,15 @@ master 受分支保护保护：**force push 与删除分支被挡住**，直推 
 两个检查在最新提交上通过。所以改动走：切分支 → 推分支 → 开 PR → 等检查全绿 → 合入 master。
 PR 模板在 `.github/pull_request_template.md`（要求贴命令与退出码）。详见 `docs/OPERATIONS.md` §14.1.1。
 
+三条现实约束，别照着字面想当然：
+
+- **推分支**：本机 git 的代理（127.0.0.1:33210）已经死了，直连要绕开它：
+  `git -c http.proxy= -c https.proxy= push -u origin <分支>`。
+- **`CODEOWNERS` 目前没有强制力**：它只是声明。分支保护没开「至少 1 个 approve」——
+  单人仓库里 PR 作者不能 approve 自己的 PR，设了就是死锁，所以改用「必过检查 + PR 模板要求贴证据」兜。
+- **保护规则只存在于 GitHub，不在仓库里**：谁改了 master 的保护设置，仓库内没有任何机制会告警。
+  动它之前先 `gh api repos/meisijiya/VidDigest/branches/master/protection` 记一份基线。
+
 ## 会话结束
 
 - 跑 `bash ./init.sh`，如实报告结果（过了就说过了，没过就说没过，附完整输出与退出码）

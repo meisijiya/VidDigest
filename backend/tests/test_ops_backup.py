@@ -32,6 +32,7 @@
 """
 import importlib.util
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -164,3 +165,24 @@ def test_a_missing_source_is_refused(tmp_path):
     rc = backup_db.main(["--db", str(tmp_path / "nope.db"), "--out-dir", str(out_dir)])
     assert rc == 2
     assert not _backup_files(out_dir)
+
+
+def test_the_backup_name_carries_sub_second_precision(tmp_path):
+    """文件名必须带微秒部分。
+
+    为什么钉粒度而不只钉「不覆盖」：撞名序号能兜住「同一秒两次备份互相覆盖」
+    这一件事，但兜不住「两次备份其实是同一刻」——文件名是排序与保留策略的
+    唯一依据，粒度掉到秒，按名字排序就分不出先后。
+    """
+    source = tmp_path / "app.db"
+    out_dir = tmp_path / "backups"
+    _make_source_db(source, ["only"])
+
+    assert backup_db.main(["--db", str(source), "--out-dir", str(out_dir)]) == 0
+
+    names = _backup_files(out_dir)
+    assert len(names) == 1, names
+    assert re.match(r"^app-\d{8}-\d{6}-\d{6}\.db$", names[0].name), (
+        f"备份文件名 {names[0].name!r} 里没有亚秒部分 —— "
+        "按文件名排序分不出先后，保留策略跟着失准"
+    )
