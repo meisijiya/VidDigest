@@ -72,6 +72,8 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 1. 变异装置在 CI 里是**独立 job**，不并进 `init.sh`（理由见 §7）。
 2. 本地 `init.sh` 绿不代表变异装置已经跑过；要看变异结论，去 CI 的矩阵里看，或本地手动跑脚本。
 
+**还有一类既不是用例也不是变异装置的判据**：**端到端守卫**。`scripts/ops/check_xff_bypass.py` 从栈**外面**打真实请求，断言限流的来源身份没被伪造的 `X-Forwarded-For` 绕开（绕过成立就退出码 1）。它同样不进 `init.sh`——它要起真镜像、走真 nginx，不是单进程能判的；它跑在 CI 的「生产构建」作业里，compose 栈起来之后跑一遍，红了就把那个作业打红。
+
 ---
 
 ## 1. 现状快照

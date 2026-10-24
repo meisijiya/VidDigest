@@ -53,6 +53,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -128,7 +132,8 @@ jobs:
 
       - name: 镜像启动冒烟
         # 只构建不冒烟，等于「镜像是怎么来的」仍然只有半句证据。
-        # 这里把两个镜像真起一次、打一次 /api/health、再收摊。
+        # 这里把两个镜像真起一次、打一次 /api/health。收摊交给最后一步
+        # （always）——后面还有检查，它们红的时候栈也不能留在机器上。
         run: |
           set -euo pipefail
           # bind mount 的宿主目录默认以 root 属主创建，容器里的非 root 用户
@@ -152,7 +157,19 @@ jobs:
             exit 1
           fi
           curl -fsS -o /dev/null -w 'health=%{http_code}\n' http://127.0.0.1:8080/api/health
-          docker compose down
+
+      - name: 反向代理来源身份自检
+        # 限流的来源身份是**边缘代理与后端共同**决定的：边缘必须覆盖
+        # X-Forwarded-For，后端取末段（ADR 0022）。只测后端那一半不够——
+        # 边缘被改回追加语义时，这套栈照样能被一个伪造的头完全绕过。
+        # 这里从栈**外面**打 25 次带唯一伪造头的请求：修好后它们应当
+        # 落进同一个桶，第 21 次起就该出现 429（detail.code == rate_limit）。
+        # 一个 429 都没有 = 绕过成立 = 这套栈不合格。
+        run: python3 scripts/ops/check_xff_bypass.py
+
+      - name: 收摊
+        if: always()
+        run: docker compose down
 
   # 变异验证：把每一种要抓的形态故意放回去，确认关卡会转红。
   # 每个脚本一个 job：互相独立、并行跑、互不污染（脚本自己按字节还原）。

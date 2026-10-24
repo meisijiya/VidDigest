@@ -328,6 +328,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 总结不出字幕 | 看 SSE 事件序列里有没有 `subtitle` | 没有字幕轨道且 ASR 未配置 | 配 ASR，或用带字幕的视频 |
 | 额度提前用完 | `backend/venv/Scripts/python.exe scripts/ops/inspect_runtime.py` | 解析与追问是两个计数器；失败会退款 | 看 `users` 的两个计数列与当天日期列 |
 | 请求收到 429 | `curl -i http://127.0.0.1:8000/api/parse` 看 `Retry-After` | 同一来源 IP 在固定窗口内用满了该端点的额度（ADR 0020） | 读响应里的 `Retry-After` 决定等多久；上限可用 `VIDDIGEST_RATE_LIMIT_*` 覆盖；响应体里的 `detail.code` 说明是哪道闸门（`rate_limit` = 来得太勤，`concurrency_limit` = 同时在跑太多） |
+| 伪造 `X-Forwarded-For` 能绕开限流（连打很多次也不出 429） | `backend/venv/Scripts/python.exe scripts/ops/check_xff_bypass.py` | 边缘代理没**覆盖**这个头（用了 `$proxy_add_x_forwarded_for`），或后端取的不是末段 | 边缘覆盖 + 后端取末段，两边都要（ADR 0022）；信任模型与部署口径见 `docs/OPERATIONS.md` §10.4 |
 | SSE 中途断流 | 看 `backend/logs/app.log` 的 JSON 行 | 上游断流或网关补空帧 | 空帧已被 `backend/summarizer.py` 的 `_iter_delta_text` 跳过；真断流无自动重连 |
 | 前端改了没生效 | `curl -I http://127.0.0.1:8080/index.html` | 浏览器缓存了入口页 | 入口页已标 `no-store`；重建镜像后再验 |
 | 端口连不上 | `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/api/health` | Vite 只监听 IPv6 回环；宿主端口被占 | 用 `http://localhost:5173`；换端口启动 |
@@ -363,6 +364,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | [0019](adr/0019-container-ops-evidence-chain.md) | 容器化与运维证据链 | bind mount 让容器与本机开发共用一份数据文件 |
 | [0020](adr/0020-public-endpoint-rate-limit.md) | 公开端点按来源 IP 限速 | 进程内计数，重启清零；多实例各数各的 |
 | [0021](adr/0021-public-endpoint-concurrency-gate.md) | 解析与下载再加一道并发闸门 | 进程内计数，重启清零；超限立刻拒，不排队 |
+| [0022](adr/0022-reverse-proxy-client-identity.md) | 边缘覆盖 `X-Forwarded-For`，后端取末段 | 前置多一层代理时不配 realip 会让所有用户同桶、集体误伤 429 |
 
 范围界定类：[0010](adr/0010-admin-console-scope-and-auth.md)（管理后台的边界；其后的账号生命周期与社区审核由 0012 / 0013 扩展）。实施层：[0008](adr/0008-graphite-lake-blue-visual-identity.md)（视觉）、[0009](adr/0009-theme-override-via-css-variables.md)（主题）、[0019](adr/0019-container-ops-evidence-chain.md)（运维）。已被取代：[0017](adr/0017-lightweight-routing-no-vue-router.md)（手写轻量路由，被 0018 取代）。
 
@@ -403,6 +405,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | P2 | OS 矩阵缺口 | CI 只有 ubuntu；Windows 仅本地，macOS 从未跑过 |
 | P2 | 保护规则与 CODEOWNERS 不在仓库内 | master 的保护设置只存在于 GitHub，仓库内没有任何机制会告警它漂移；`.github/CODEOWNERS` 目前只是声明（未开人工 approve：单人仓库里 PR 作者不能 approve 自己的 PR） |
 | P2 | 依赖的大版本升级没有人工评估的记录 | `.github/dependabot.yml` 放行补丁与次版本，`typescript >=6`、`vue-router >=5`、`@vueuse/core >=15` 三个大版本被 ignore 挡住——它们要进来得先读 changelog 并单独验一条链路 |
+| P2 | 前置 CDN / 多层反代的来源身份未验证 | 边缘覆盖 `X-Forwarded-For` + 后端取末段已就位，并有端到端守卫 `scripts/ops/check_xff_bypass.py`；但前置再架一层 CDN 时的 realip 还原没在本仓验证过——不配 `set_real_ip_from` / `real_ip_header` 会让所有用户落进同一个桶、集体误伤 429（ADR 0022）。另外直连后端端口（不经 nginx）时单段 `X-Forwarded-For` 仍可自报，所以后端端口不得对外暴露 |
 
 ### 10.3 明确不做
 

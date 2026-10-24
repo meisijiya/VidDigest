@@ -20,10 +20,12 @@
 
 ## 三个容易做错的地方，这里都有用例钉着
 
-1. **X-Forwarded-For 不能无条件采信**。公网直连时任何人改一个头就能绕开
-   限流，限流器就成了摆设。只有直接对端是回环/私网（前面确实有反向代理）
-   才采信。两条用例一正一反：公网对端换 XFF 仍算同一个人，私网对端换 XFF
-   算不同的人。
+1. **X-Forwarded-For 不能无条件采信，也不能取错位置**。公网直连时任何人改一个
+   头就能绕开限流，限流器就成了摆设——只有直接对端是回环/私网（前面确实有
+   反向代理）才采信。而采信时取的是这个头的**末段**：边缘代理追加的
+   `$remote_addr` 在末尾，客户端自报的段可以随便伪造，取它等于把限流桶的键
+   交给攻击者挑（工单 #94、ADR 0022）。另一半在边缘代理那一侧：
+   `frontend/nginx.conf` 必须**覆盖**这个头，不能追加。
 2. **超上限时踢最旧的那条**，踢新的等于给攻击者发免死金牌。
 3. **限流器默认在测试里是关着的**（conftest 设 `VIDDIGEST_RATE_LIMIT_ENABLED=0`），
    免得别的用例互相干扰；这一份用例自己把它打开。
@@ -221,6 +223,178 @@ class TestTheForwardedHeaderIsNotTakenOnFaith:
             "/api/parse", json=_parse_body(), headers={"X-Forwarded-For": "198.51.100.9"}
         )
         assert second.status_code != 429, "两个不同的真实来源被算成了同一个人"
+
+
+class TestTheForwardedHeaderIsTakenFromItsLastSegment:
+    """采信 `X-Forwarded-For` 时取的是**末段**（工单 #94、ADR 0022）。
+
+    边缘代理追加 `$remote_addr` 在末尾；客户端自报的那些段可以随便伪造。
+    取首位 = 把限流桶的键交给攻击者挑 = 限流被完全绕过。
+    """
+
+    def test_a_multi_segment_header_keeps_only_its_last_segment(self, monkeypatch):
+        """多段 XFF：末段相同 ⇒ 同一个来源 ⇒ 第二次 429。"""
+        monkeypatch.setenv("VIDDIGEST_RATE_LIMIT_PARSE", "1")
+        monkeypatch.setattr(
+            main_module.downloader,
+            "parse_video",
+            lambda url: (_ for _ in ()).throw(RuntimeError("probe")),
+        )
+        behind_proxy = TestClient(main_module.app, client=("127.0.0.1", 50000))
+        first = behind_proxy.post(
+            "/api/parse",
+            json=_parse_body(),
+            headers={"X-Forwarded-For": "203.0.113.7, 198.51.100.9"},
+        )
+        assert first.status_code != 429
+        second = behind_proxy.post(
+            "/api/parse",
+            json=_parse_body(),
+            headers={"X-Forwarded-For": "198.51.100.99, 198.51.100.9"},
+        )
+        assert second.status_code == 429, (
+            "两个 X-Forwarded-For 的末段相同（同一个来源），却没被算成同一个人 —— "
+            "说明取的是头里的第一段，客户端自报的值成了限流桶的键（工单 #94）"
+        )
+
+    def test_a_multi_segment_header_with_different_last_segments_is_two_sources(
+        self, monkeypatch
+    ):
+        """反向对照：末段不同 ⇒ 两个来源 ⇒ 第二次不该被拦。
+
+        这条挡住「干脆把所有头都算成一个人」那种改法：那样整个站点变成
+        一个桶，正常的用户会互相误伤（守卫越权比变异存活更严重）。
+        """
+        monkeypatch.setenv("VIDDIGEST_RATE_LIMIT_PARSE", "1")
+        monkeypatch.setattr(
+            main_module.downloader,
+            "parse_video",
+            lambda url: (_ for _ in ()).throw(RuntimeError("probe")),
+        )
+        behind_proxy = TestClient(main_module.app, client=("127.0.0.1", 50000))
+        first = behind_proxy.post(
+            "/api/parse",
+            json=_parse_body(),
+            headers={"X-Forwarded-For": "203.0.113.7, 198.51.100.9"},
+        )
+        assert first.status_code != 429
+        second = behind_proxy.post(
+            "/api/parse",
+            json=_parse_body(),
+            headers={"X-Forwarded-For": "203.0.113.8, 198.51.100.10"},
+        )
+        assert second.status_code != 429, (
+            "两个末段不同的来源被算成了同一个人 —— 采信 X-Forwarded-For 时"
+            "只该认末段"
+        )
+
+    def test_a_single_segment_header_is_used_as_is(self, monkeypatch):
+        """单段 XFF：末位就是那一段——同一个值 ⇒ 同一个来源 ⇒ 第二次 429。"""
+        monkeypatch.setenv("VIDDIGEST_RATE_LIMIT_PARSE", "1")
+        monkeypatch.setattr(
+            main_module.downloader,
+            "parse_video",
+            lambda url: (_ for _ in ()).throw(RuntimeError("probe")),
+        )
+        behind_proxy = TestClient(main_module.app, client=("127.0.0.1", 50000))
+        first = behind_proxy.post(
+            "/api/parse", json=_parse_body(), headers={"X-Forwarded-For": "198.51.100.7"}
+        )
+        assert first.status_code != 429
+        second = behind_proxy.post(
+            "/api/parse", json=_parse_body(), headers={"X-Forwarded-For": "198.51.100.7"}
+        )
+        assert second.status_code == 429, "同一个来源的单段 X-Forwarded-For 没被算成同一个人"
+
+    def test_a_missing_header_falls_back_to_the_peer_address(self, monkeypatch):
+        """没有这个头：按直接对端地址分桶——两个不同的对端是两个来源。"""
+        monkeypatch.setenv("VIDDIGEST_RATE_LIMIT_PARSE", "1")
+        monkeypatch.setattr(
+            main_module.downloader,
+            "parse_video",
+            lambda url: (_ for _ in ()).throw(RuntimeError("probe")),
+        )
+        one = TestClient(main_module.app, client=("127.0.0.1", 50000))
+        two = TestClient(main_module.app, client=("127.0.0.2", 50000))
+        assert one.post("/api/parse", json=_parse_body()).status_code != 429
+        assert two.post("/api/parse", json=_parse_body()).status_code != 429, (
+            "两个不同的直接对端被算成了同一个人 —— 没有 X-Forwarded-For 时"
+            "应当用对端地址分桶"
+        )
+        assert one.post("/api/parse", json=_parse_body()).status_code == 429
+
+    def test_a_public_peer_ignores_the_header_entirely(self, monkeypatch):
+        """公网对端：这个头整个不采信。
+
+        判别法：两个不同的公网对端送**同一个**伪造的头。实现一旦采信了它，
+        两者就撞成同一个人（第二次 429）——那正是绕过限流的形状。
+        """
+        monkeypatch.setenv("VIDDIGEST_RATE_LIMIT_PARSE", "1")
+        monkeypatch.setattr(
+            main_module.downloader,
+            "parse_video",
+            lambda url: (_ for _ in ()).throw(RuntimeError("probe")),
+        )
+        one = TestClient(main_module.app, client=("203.0.113.5", 50000))
+        two = TestClient(main_module.app, client=("203.0.113.6", 50000))
+        forged = {"X-Forwarded-For": "198.51.100.7"}
+        assert one.post("/api/parse", json=_parse_body(), headers=forged).status_code != 429
+        assert two.post("/api/parse", json=_parse_body(), headers=forged).status_code != 429, (
+            "公网对端送了同一个伪造的头就被算成同一个人 —— 直接对端是公网时"
+            "应当完全忽略 X-Forwarded-For"
+        )
+
+
+#: 边缘代理模板：来源身份的一半由它决定（ADR 0022）。
+NGINX_CONF = Path(__file__).resolve().parent.parent.parent / "frontend" / "nginx.conf"
+
+
+def _nginx_api_block():
+    """取 `frontend/nginx.conf` 里 `location /api/ {` 那一块的正文。
+
+    作用域受限：只看这一块。文件别处出现 `X-Forwarded-For` 与这条守卫
+    无关——**不该管的改动必须保持绿**。
+
+    锚点找不到（块被改名或删掉）时直接报错：返回空串会让断言恒真，
+    守卫就成了永远绿的摆设。
+    """
+    text = NGINX_CONF.read_text(encoding="utf-8")
+    start = text.find("location /api/ {")
+    assert start != -1, f"{NGINX_CONF} 里找不到 location /api/ 块"
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    raise AssertionError(f"{NGINX_CONF} 的 location /api/ 块没有闭合")
+
+
+class TestTheEdgeProxyOverwritesTheForwardedHeader:
+    """边缘代理那一侧：`X-Forwarded-For` 必须被**覆盖**（ADR 0022）。
+
+    后端取末段只是后端那一半。边缘这一半不覆盖，末段就是
+    `$proxy_add_x_forwarded_for` 追加出来的客户端伪造值——绕过照旧。
+    """
+
+    def test_the_api_block_overwrites_the_forwarded_header(self):
+        block = _nginx_api_block()
+        settings = [
+            line.strip()
+            for line in block.splitlines()
+            if line.strip().startswith("proxy_set_header") and "X-Forwarded-For" in line
+        ]
+        assert len(settings) == 1, (
+            "location /api/ 块里应当恰好有一处 X-Forwarded-For 设置，实际有 %d 处：%r"
+            % (len(settings), settings)
+        )
+        assert settings[0] == "proxy_set_header X-Forwarded-For $remote_addr;", (
+            "边缘代理必须**覆盖** X-Forwarded-For（$remote_addr）；追加语义"
+            "（$proxy_add_x_forwarded_for）会把客户端自带的值排到最前，"
+            "后端取到的末段就成了攻击者自报的地址（工单 #94）"
+        )
 
 
 class TestTheCounterTableIsBounded:
