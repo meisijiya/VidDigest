@@ -62,3 +62,7 @@ date: 2026-10-24
 - 行为由 `backend/tests/test_ratelimit.py`（15 条）与
   `backend/tests/mutation_ratelimit.py`（8 个变异）钉住；运维口径见
   `docs/OPERATIONS.md` 第 10.4 节。
+- 「采信 `X-Forwarded-For` 的哪一段」由 [ADR 0022](0022-reverse-proxy-client-identity.md)
+  收紧：边缘代理必须**覆盖**这个头，后端取**末段**。上面那两份文件的条数是 0020
+  当时的快照，当前的条数与规则以 `backend/tests/test_ratelimit.py`、
+  `backend/tests/mutation_ratelimit.py` 与 ADR 0022 为准。
