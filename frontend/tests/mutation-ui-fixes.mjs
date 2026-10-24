@@ -178,6 +178,20 @@ const MUTANTS = [
     to: '<div class="grid grid-cols-3 gap-1 mb-5" aria-hidden="true"><span class="w-2.5 h-2.5 rounded-[2px] bg-violet/40 animate-pixel-blink"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-purple/40 animate-pixel-blink delay-1"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-pink/40 animate-pixel-blink delay-2"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-purple/40 animate-pixel-blink delay-3"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/40 animate-pixel-blink delay-4"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-transparent"></span><span class="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/40 animate-pixel-blink delay-5"></span></div><p class="text-sm mb-1">{{ hasFilters ? \'没有匹配的记录\' : \'暂无解析历史\' }}</p>',
     expect: /母题被复制了一份/,
   },
+  {
+    name: 'M18 并发分类器忽略 detail.code（退回只认中文文案）',
+    file: join(FE, 'src/lib/errors.ts'),
+    from: "  if (errorCodeOf(err) === 'concurrency_limit') return true",
+    to: "  if (errorCodeOf(err) === '__mutant_never__') return true",
+    expect: /文案换成完全无关的话/,
+  },
+  {
+    name: 'M19 限流分类器忽略 detail.code（自家限流被说成平台风控）',
+    file: join(FE, 'src/lib/errors.ts'),
+    from: "  if (errorCodeOf(err) === 'rate_limit') return true",
+    to: "  if (errorCodeOf(err) === '__mutant_never__') return true",
+    expect: /不靠「服务器限流」四个字/,
+  },
 ]
 
 let killed = 0

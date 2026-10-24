@@ -76,6 +76,12 @@ MUTATIONS = [
         'async def login(req: LoginRequest, _rl: None = Depends(rate_limit("/api/login"))):',
         "async def login(req: LoginRequest):",
     ),
+    (
+        "M8 限流 429 的错误体没有 code：前端只能去认中文文案",
+        RATELIMIT_FILE,
+        '            "code": RATE_LIMIT_CODE,\n',
+        "",
+    ),
 ]
 
 _COUNT_RE = re.compile(r"(\d+) (passed|failed|error)", re.IGNORECASE)

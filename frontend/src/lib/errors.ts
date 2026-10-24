@@ -25,7 +25,7 @@ interface ErrorLike {
   message?: string
   response?: {
     data?: {
-      detail?: string | { error?: string }
+      detail?: string | { error?: string; code?: string }
     }
   }
 }
@@ -55,6 +55,21 @@ function looksLikeBadLink(err: unknown): boolean {
   return false
 }
 
+/**
+ * 取后端给的**机器可读**错误码（`detail.code`）。
+ *
+ * 为什么需要它：过去前端靠中文文案认出「这是我们自己的闸门」，两边分头改
+ * 就会把自家闸门误报成平台风控。协议落在字段上之后，文案只给人看。
+ *
+ * 值的来源：`backend/ratelimit.py` 的 `RATE_LIMIT_CODE` / `CONCURRENCY_LIMIT_CODE`。
+ */
+function errorCodeOf(err: unknown): string | undefined {
+  const e = (err ?? {}) as ErrorLike
+  const detail = e?.response?.data?.detail
+  if (detail && typeof detail === 'object') return detail.code
+  return undefined
+}
+
 /** 平台在拦：风控 / 限流 / 需要登录。这类**不是用户的错**。 */
 function looksLikeThrottled(err: unknown): boolean {
   const m = messageOf(err).toLowerCase()
@@ -68,11 +83,14 @@ function looksLikeThrottled(err: unknown): boolean {
  * 而 429 这个词原本一律被当成「平台在拦」。那样用户会以为视频站在封他，
  * 于是去换视频、反复重试——不但没解决，还把触发得更狠。
  *
- * 判据：后端限流回的消息里带「服务器限流」四个字（见
- * `backend/ratelimit.py` 的 `enforce`），这是**自家**的措辞；
- * 视频站的风控消息里没有这几个字。
+ * 判据（按可靠性排序）：
+ * 1. **机器可读的 `detail.code`**（`backend/ratelimit.py` 的 `RATE_LIMIT_CODE`）——
+ *    这是协议，前端与后端认的是同一个字段。
+ * 2. 老后端兼容：响应体里还没带 `code` 时才退回认文案。本仓前后端同仓同
+ *    构建发布，老响应只出现在「本地后端进程没重启」这种开发期场景。
  */
 function looksLikeServerRateLimit(err: unknown): boolean {
+  if (errorCodeOf(err) === 'rate_limit') return true
   const m = messageOf(err).toLowerCase()
   return /服务器限流|server rate limit/.test(m)
 }
@@ -84,14 +102,14 @@ function looksLikeServerRateLimit(err: unknown): boolean {
  * 限流是「来得太频繁，等一分钟」，并发是「你前面那个任务还没跑完，
  * 等它结束」。照着「等一分钟」的提示做，用户会白等一分钟。
  *
- * 判据：后端并发闸门回的消息里带「同时进行的任务太多」（见
- * `backend/ratelimit.py` 的 `concurrency_limit`），这是**自家**的措辞。
- *
- * 改文案要同步改后端：这段正则认的是**中文子串**，两边分头改就会把
- * 「自家并发闸门」误报成「平台风控」（后端文案在
- * `backend/ratelimit.py` 的 `concurrency_limit` 里）。
+ * 判据（按可靠性排序）：
+ * 1. **机器可读的 `detail.code`**（`backend/ratelimit.py` 的
+ *    `CONCURRENCY_LIMIT_CODE`）——这是协议。文案只给人看，改它不再影响分类。
+ * 2. 老后端兼容：没有 `code` 时才退回认文案（见上面 `looksLikeServerRateLimit`
+ *    的第 2 条说明）。
  */
 function looksLikeServerConcurrencyLimit(err: unknown): boolean {
+  if (errorCodeOf(err) === 'concurrency_limit') return true
   const m = messageOf(err).toLowerCase()
   return /同时进行的任务太多|同时在跑的任务已超过|并发上限/.test(m)
 }
