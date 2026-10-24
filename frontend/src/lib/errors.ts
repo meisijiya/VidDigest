@@ -6,7 +6,8 @@
  * 三种情况的下一步完全不同，提示也必须不同：
  *
  *   链接不对   → 让他重新检查链接（换个视频 / 确认是不是完整地址）
- *   限流/风控  → 让他等一会儿（平台在拦，不是他的错）
+ *   平台在拦   → 让他等一会儿（平台在拦，不是他的错）
+ *   服务器在限 → 让他等一会儿（**我们**的护栏，别让他去怪视频站）
  *   网络/服务  → 让他重试
  *
  * 判据要能**变异**：只断言「出现了某种提示」的话，把分类逻辑整个
@@ -59,6 +60,22 @@ function looksLikeThrottled(err: unknown): boolean {
   return /429|rate limit|too many|blocked|forbidden|风控|限流|频率|稍后重试|访问过于频繁/.test(m)
 }
 
+/**
+ * 服务器自己在限流（我们自己的护栏），不是视频站的风控。
+ *
+ * 为什么必须分开说：后端给公开端点加了限流之后，超限的响应是 429，
+ * 而 429 这个词原本一律被当成「平台在拦」。那样用户会以为视频站在封他，
+ * 于是去换视频、反复重试——不但没解决，还把触发得更狠。
+ *
+ * 判据：后端限流回的消息里带「服务器限流」四个字（见
+ * `backend/ratelimit.py` 的 `enforce`），这是**自家**的措辞；
+ * 视频站的风控消息里没有这几个字。
+ */
+function looksLikeServerRateLimit(err: unknown): boolean {
+  const m = messageOf(err).toLowerCase()
+  return /服务器限流|server rate limit/.test(m)
+}
+
 /** 网络层问题：连不上、超时。 */
 function looksLikeNetwork(err: unknown): boolean {
   const e = (err ?? {}) as ErrorLike
@@ -85,6 +102,16 @@ export function classifyError(err: unknown, action: 'parse' | 'download' | 'paym
       title: '这个链接好像不对',
       message: message,
       hint: '请检查链接是否完整、是否还有效。B 站请用 ' + 'bilibili.com/video/BV... 这样的完整地址，不要只贴一段文字。',
+    }
+  }
+
+  if (looksLikeServerRateLimit(err)) {
+    return {
+      title: '请求太频繁',
+      message: message,
+      hint:
+        '服务器在限制请求速度，等一分钟左右再试一次。' +
+        '如果你刚才连着解析了好几个视频，那就是触发得太快了——一次解析一个就好。',
     }
   }
 

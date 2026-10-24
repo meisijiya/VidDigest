@@ -11,6 +11,16 @@ os.environ.setdefault(
     "JWT_SECRET", "test-only-jwt-secret-0123456789abcdef0123456789abcdef"
 )
 
+# 限流默认**关着**（工单 #85）。
+#
+# 为什么：限流是按「来源 IP + 时间窗口」计数的，而整个测试套件都从同一个
+# 测试客户端发起——限流开着的话，用例之间会互相影响：某个用例多打了几次
+# /api/parse，后面的用例就莫名其妙收到 429。那种红不是缺陷，是噪声，
+# 而噪声会训练所有人忽略红色。
+#
+# 限流本身由 backend/tests/test_ratelimit.py 负责验证，它自己把开关打开。
+os.environ.setdefault("VIDDIGEST_RATE_LIMIT_ENABLED", "0")
+
 import pytest
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -659,7 +659,29 @@ hub restart --name backend-api      # lifespan 启动时会自动重建表结构
 
 ---
 
-### 10.4 管理员播种
+### 10.4 公开端点的限流
+
+六个不挂鉴权依赖的公开端点按来源 IP 限速：解析、下载、直链、缩略图、登录、注册。超限返回 `429`，并在 `Retry-After` 头里写明等几秒（ADR 0020）。
+
+| 环境变量 | 默认 | 管什么 |
+| --- | --- | --- |
+| `VIDDIGEST_RATE_LIMIT_ENABLED` | `1` | 总开关，关掉后所有桶都不限流 |
+| `VIDDIGEST_RATE_LIMIT_WINDOW` | `60` | 固定窗口长度（秒） |
+| `VIDDIGEST_RATE_LIMIT_PARSE` | `20` | `/api/parse` 每窗口上限 |
+| `VIDDIGEST_RATE_LIMIT_DOWNLOAD` | `10` | `/api/download` 每窗口上限 |
+| `VIDDIGEST_RATE_LIMIT_DIRECT_URL` | `30` | `/api/direct-url` 每窗口上限 |
+| `VIDDIGEST_RATE_LIMIT_THUMBNAIL` | `60` | `/api/proxy/thumbnail` 每窗口上限 |
+| `VIDDIGEST_RATE_LIMIT_LOGIN` | `10` | `/api/login` 每窗口上限 |
+| `VIDDIGEST_RATE_LIMIT_REGISTER` | `5` | `/api/register` 每窗口上限 |
+
+上限写 `0` 表示该桶不限流。
+
+**怎么算同一个来源**：只看直接连上来的那个地址。只有直接对端落在回环、私网或链路本地网段时，才采信 `X-Forwarded-For` 的第一个地址——公网对端送来的这个头不可信（否则任何人换一个头就能绕开限流）。
+
+**这层的边界**：计数在进程内，重启即清零；多实例部署时每个实例各算各的。它是速率维度，不是并发闸门——同一来源的并发请求仍会同时进来。
+
+**真值文件**：`backend/ratelimit.py`；判据与用例见 `backend/tests/test_ratelimit.py`（15 条）与 `backend/tests/mutation_ratelimit.py`（7 个变异）。
+### 10.5 管理员播种
 
 **第一个管理员不能从界面上产生**——能进后台的人才能提权，而进后台
 本身就需要管理员。所以是启动时从环境变量播种一次：
@@ -1050,16 +1072,16 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 
 ## 14. 持续集成
 
-### 14.1 四个 job 定义，展开 20 个实例
+### 14.1 四个 job 定义，展开 21 个实例
 
 `.github/workflows/ci.yml` 只做一件事：在干净的 Linux 机器上把门禁跑一遍。
-它有 **4 个 job 定义**（门禁、生产构建、后端变异矩阵、前端变异矩阵），在 GitHub 上**展开成 20 个实例**（两个变异矩阵按脚本数各展开）。
+它有 **4 个 job 定义**（门禁、生产构建、后端变异矩阵、前端变异矩阵），在 GitHub 上**展开成 21 个实例**（两个变异矩阵按脚本数各展开）。
 
 | job | 跑什么 | 为什么这么切 |
 | --- | --- | --- |
 | `gate` | `bash scripts/bootstrap.sh` → `bash ./init.sh` | 门禁的真相在 `init.sh` 里，工作流不复述它。装环境也走 `bootstrap.sh`，本地与 CI 走同一条路，否则「本地绿、CI 红」只能靠猜 |
 | `build` | `npm ci && npm run build` → `docker compose build` | 镜像与前端生产包此前只在文档里被描述过，从没在 CI 上真跑过一次；跑一次才知道那份文档是不是在骗人 |
-| `mutation-backend` | 15 个后端变异脚本，每个一个 job | 变异脚本会故意改坏源码再还原，同一个工作区里串行跑会互相踩；分开跑互不污染 |
+| `mutation-backend` | 16 个后端变异脚本，每个一个 job | 变异脚本会故意改坏源码再还原，同一个工作区里串行跑会互相踩；分开跑互不污染 |
 | `mutation-frontend` | 3 个前端变异脚本，每个一个 job | 同上 |
 
 触发条件：推 `master`、向 `master` 提 PR、手动触发。`fail-fast: false`——一个变异脚本红了，
