@@ -127,6 +127,12 @@ Single-context: one `GLOSSARY.md` at the repo root, ADRs under `docs/adr/`. See 
 **无证据不得标记完成。**「声称完成但测试没过」是头号失败模式。
 子代理说「已修好」不算证据——自己看 diff、自己跑命令。
 
+## 改动怎么进 master
+
+master 受分支保护保护：**force push 与删除分支被挡住**，直推 master 要求「门禁」与「生产构建」
+两个检查在最新提交上通过。所以改动走：切分支 → 推分支 → 开 PR → 等检查全绿 → 合入 master。
+PR 模板在 `.github/pull_request_template.md`（要求贴命令与退出码）。详见 `docs/OPERATIONS.md` §14.1.1。
+
 ## 会话结束
 
 - 跑 `bash ./init.sh`，如实报告结果（过了就说过了，没过就说没过，附完整输出与退出码）
