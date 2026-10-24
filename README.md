@@ -55,6 +55,23 @@
 
 ---
 
+## 🖼️ 界面预览
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/home.png" alt="首页：粘贴链接即可解析" /><br><sub>首页</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/home-dark.png" alt="暗色主题" /><br><sub>暗色主题</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/features.png" alt="核心功能" width="820" />
+</p>
+
+> 截图取自本机 `docker compose up -d --build` 跑起来的当前版本（1440×900）。
+
+---
+
 ## 🚀 快速开始
 
 ```bash
@@ -80,6 +97,22 @@ npm run dev                    # → http://localhost:5173
 
 > ⚠️ 前端用 `localhost` 而不是 `127.0.0.1`：Vite 只监听 IPv6 回环，
 > `127.0.0.1:5173` 连不上。
+
+### 🐳 或者用 Docker 跑
+
+仓库自带 `docker-compose.yml`，一条命令起前后端（后端通过 `env_file` 读
+`backend/.env` 里的密钥，镜像里不含任何密钥）：
+
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8000/api/health     # → {"status":"ok"}
+# 前端入口：http://127.0.0.1:8080
+# 前端端口把 /api/ 反代到同一个后端，健康检查也一样通：http://127.0.0.1:8080/api/health
+docker compose down                       # 停掉并删掉容器
+```
+
+> 停容器**不删数据**：`backend/data` 与 `backend/logs` 是 bind mount，
+> SQLite 库文件留在宿主机上，容器内外看到的是同一份。
 
 ---
 
@@ -153,10 +186,10 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 检查 | 它证明什么 |
 |---|------|-----------|
-| 1 | `backend: pytest` | 后端 1308 条用例通过 |
+| 1 | `backend: pytest` | 后端全部用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件**与可达 git 历史**里没有凭据形态的字符串（`.gitignore` 只挡文件名，挡不住被抄进文档的口令） |
-| 4 | `frontend: npm test` | 前端 497 条静态 / 契约断言通过（node:test） |
+| 4 | `frontend: npm test` | 前端全部静态 / 契约断言通过（node:test） |
 | 5 | `frontend: npm run test:mount` | 前端 192 条挂载层用例通过（Vitest）——两套 runner 刻意分开，绿色的那一层遮不住红的那一层 |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` 无类型错误（`.js` 迁到 `.ts` 之后，类型检查比人眼审 53 个组件快得多） |
 | 7 | `frontend: npm run lint` | ESLint 无告警（未使用的变量、无用转义、模板可访问名缺失都在这一关现形） |

@@ -59,6 +59,23 @@
 
 ---
 
+## 🖼️ Interface preview
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/home.png" alt="Home: paste a link and parse" /><br><sub>Home</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/home-dark.png" alt="Dark theme" /><br><sub>Dark theme</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/features.png" alt="Core features" width="820" />
+</p>
+
+> Screenshots are taken from the current version running locally via `docker compose up -d --build` (1440×900).
+
+---
+
 ## 📦 Requirements
 
 | Tool | Minimum | Used for |
@@ -115,6 +132,23 @@ Open **http://localhost:5173**, paste a video link, then parse / summarise / dow
 
 > Restart the backend after editing Python code — `main.py` runs Uvicorn without `--reload`.
 
+### 🐳 Or run it with Docker
+
+The repo ships a `docker-compose.yml`; one command starts both stacks (the backend
+reads its secrets from `backend/.env` via `env_file`; no secret ever enters the image):
+
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8000/api/health     # → {"status":"ok"}
+# Frontend entry point: http://127.0.0.1:8080
+# The frontend port proxies /api/ to the same backend, health check included:
+#   http://127.0.0.1:8080/api/health
+docker compose down                       # stop and remove the containers
+```
+
+> Stopping the containers **keeps the data**: `backend/data` and `backend/logs` are bind
+> mounts, so the SQLite file stays on the host and the container sees the same copy.
+
 ---
 
 ## 🏗️ Architecture
@@ -162,10 +196,10 @@ bash ./init.sh          # exit code 0 = verified
 
 | # | Check | What it proves |
 |---|-------|----------------|
-| 1 | `backend: pytest` | 1308 backend tests pass (pytest, standard-library sqlite fixtures) |
+| 1 | `backend: pytest` | All backend tests pass (pytest, standard-library sqlite fixtures) |
 | 2 | `backend: compileall` | Every backend module compiles |
 | 3 | `secrets: content-level scan` | No credential-shaped string in tracked files **or in reachable git history** — `.gitignore` is filename-level and does not stop a pasted key |
-| 4 | `frontend: npm test` | 497 static / contract assertions (node:test) |
+| 4 | `frontend: npm test` | All static / contract assertions pass (node:test) |
 | 5 | `frontend: npm run test:mount` | 192 mounted-component tests (Vitest) — a separate runner on purpose, so a green layer cannot hide a red one |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` reports no type errors |
 | 7 | `frontend: npm run lint` | ESLint reports no problems |
