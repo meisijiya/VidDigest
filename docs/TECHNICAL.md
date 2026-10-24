@@ -33,18 +33,18 @@
 
 | 维度 | 当前值 | 来源（复现命令见附录 A） |
 | --- | --- | --- |
-| REST 端点 | 40 | 路由装饰器计数（A1） |
-| 挂鉴权依赖的端点 | 29（`get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3） | 依赖注入计数（A2） |
+| REST 端点 | 43 | 路由装饰器计数（A1） |
+| 挂鉴权依赖的端点 | 34（`get_current_user` 17 + `require_admin` 14 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
-| 后端用例 | 1308 | `pytest --collect-only`（A4） |
-| 前端静态 / 契约断言 | 505 | `npm test`（A5） |
+| 后端用例 | 1402 | `pytest --collect-only`（A4） |
+| 前端静态 / 契约断言 | 517 | `npm test`（A5） |
 | 前端挂载用例 | 199 | `npm run test:mount`（A6） |
-| 变异脚本 | 19（后端 16 + 前端 3） | 文件清单（A7） |
+| 变异脚本 | 23（后端 19 + 前端 4） | 文件清单（A7） |
 | 门禁 | 10 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
-| CI | 4 个 job 定义，展开 21 个实例 | `.github/workflows/ci.yml`（A9） |
+| CI | 4 个 job 定义，展开 23 个实例 | `.github/workflows/ci.yml`（A9） |
 | 业务表 | 6 张 + 1 个 FTS5 虚表 + 4 个触发器 | 建表语句（A10） |
 | 公开端点限流 | 6 个端点按来源 IP 限速，每分钟 20 / 10 / 30 / 60 / 10 / 5 | `backend/ratelimit.py`（A19、ADR 0020） |
-| 设计决策 | 20 篇 ADR（19 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
+| 设计决策 | 23 篇 ADR（22 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
 | 受管理的 Markdown | 36 个 | `git ls-files '*.md'`（A12） |
 | 编码代理的工单 | 70 条（全部关闭） | `gh issue list --state all`（A13） |
 
@@ -258,10 +258,10 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 关卡 | 它证明什么 |
 | --- | --- | --- |
-| 1 | `backend: pytest` | 1308 条后端用例通过 |
+| 1 | `backend: pytest` | 1402 条后端用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
-| 4 | `frontend: npm test` | 505 条静态 / 契约断言通过 |
+| 4 | `frontend: npm test` | 517 条静态 / 契约断言通过 |
 | 5 | `frontend: npm run test:mount` | 199 条挂载用例通过 |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` 无类型错误 |
 | 7 | `frontend: npm run lint` | ESLint 无告警 |
@@ -460,24 +460,24 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A1 | 40 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
 | A2 | 29 | `get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3 | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/'` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -n 'EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1308 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
-| A5 | 505 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
+| A4 | 1402 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A5 | 517 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 199 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
-| A7 | 19 | `scripts/` 10 + `backend/tests/` 6 + `frontend/tests/` 3 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation-*.mjs` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
+| A7 | 23 | `scripts/` 10 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
 | A8 | 10 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
-| A9 | 4 个 job 定义 / 21 个实例 | 1 个门禁 job + 1 个生产构建 job + 16 个后端变异实例 + 3 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
+| A9 | 4 个 job 定义 / 23 个实例 | 1 个门禁 job + 1 个生产构建 job + 19 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
 | A10 | 6 表 + 1 虚表 + 4 触发器 | 建表 / 建虚表 / 建触发器语句 | `grep -rnE 'CREATE (VIRTUAL )?TABLE\|CREATE TRIGGER' backend --include=*.py` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
-| A11 | 20 | `docs/adr/` 下的文件数（19 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
-| A12 | 36 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
-| A13 | 70 | 工单总数（全部关闭） | `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
+| A11 | 23 | `docs/adr/` 下的文件数（22 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
+| A12 | 40 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
+| A13 | 76 | 工单总数（全部关闭） | `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A16 | 1800 | 覆盖闸门 TTL（秒） | `grep -n 'VIDEO_REGENERATE_TTL_SECONDS' backend/database.py` | `backend/database.py` | 常量可改 |
 | A17 | 7 / 4 / 7 / 1 | 四个端点的事件集合大小 | `backend/tests/test_sse_event_contract.py` 的期望表 | `backend/tests/test_sse_event_contract.py` + `frontend/src/api/summarize.ts` | 随事件增减 |
-| A18 | 54 / 8 / 21 | 前端 `.vue` 数 / `api/` 客户端数 / 后端 `.py` 模块数 | `find frontend/src -name '*.vue' \| wc -l`；`ls frontend/src/api/*.ts \| wc -l`；`ls backend/*.py \| wc -l` | 整个仓库 | 随文件增删 |
+| A18 | 54 / 8 / 22 | 前端 `.vue` 数 / `api/` 客户端数 / 后端 `.py` 模块数 | `find frontend/src -name '*.vue' \| wc -l`；`ls frontend/src/api/*.ts \| wc -l`；`ls backend/*.py \| wc -l` | 整个仓库 | 随文件增删 |
 | A19 | 20 / 10 / 30 / 60 / 10 / 5 | 六个公开端点的每分钟上限（解析 / 下载 / 直链 / 缩略图 / 登录 / 注册）；可用环境变量覆盖，0 表示不限流 | `grep -n 'VIDDIGEST_RATE_LIMIT' backend/ratelimit.py` | `backend/ratelimit.py`（ADR 0020） | 常量可改 |
 
-**两条口径说明**：①「10 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「4 个 job 定义，展开 21 个实例」与运维手册里的「四个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。③限流上限是「每个来源 IP 每个固定窗口」；计数在进程内，重启即清零，多实例部署时每个实例各算各的。
+**两条口径说明**：①「10 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「4 个 job 定义，展开 23 个实例」与运维手册里的「四个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。③限流上限是「每个来源 IP 每个固定窗口」；计数在进程内，重启即清零，多实例部署时每个实例各算各的。
 
 ---
 

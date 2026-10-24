@@ -46,7 +46,23 @@ def client_app(db):
 
 
 def _register(client, email, password):
-    return client.post("/api/auth/register", json={"email": email, "password": password})
+    """打注册端点。
+
+    工单 #99 之后注册必须带邀请码，所以这里每次现生成一枚一次性码带上。
+
+    为什么只改这个助手、不改下面那些断言：那些用例测的是**邮箱与密码的
+    校验规则**，邀请码是另一个维度。给助手铺一枚码，就把「注册能成功」
+    这条路重新铺好，断言的仍然是原来那件事。
+
+    为什么每次现生成而不是复用一枚：复用的话第一枚用完就废，后面那些
+    「重复邮箱」的用例会拿到「邀请码已被用完」而不是「该邮箱已注册」——
+    测的就不是原来那件事了。
+    """
+    code = database.create_invite_code(max_uses=1)["code"]
+    return client.post(
+        "/api/auth/register",
+        json={"email": email, "password": password, "invite_code": code},
+    )
 
 
 def _login(client, email, password):

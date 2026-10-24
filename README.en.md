@@ -52,7 +52,9 @@
 | 🕘 **Parse history** | Search, tag and favourite your own parse records | ✅ |
 | 🛠️ **Admin console** | Quota management, admin flags, community moderation, model catalogue | Admins only |
 
-> Parsing and downloading do not require an account; the AI features do. The free tier is
+> Parsing and downloading do not require an account; the AI features do.
+> **Registration needs an invite code — get one from an administrator.**
+> The free tier is
 > **two independent counters**: 3 parses per day (a parse yields summary + mind map + tags)
 > and 10 follow-up questions per day. Reading the community consumes neither. The numbers
 > come from `VIDDIGEST_DAILY_PARSE_LIMIT` / `VIDDIGEST_DAILY_CHAT_LIMIT`.
@@ -209,7 +211,7 @@ bash ./init.sh          # exit code 0 = verified
 
 Two properties make the gate trustworthy rather than decorative:
 
-- **Mutation testing.** 22 mutation scripts deliberately break one invariant at a time
+- **Mutation testing.** 23 mutation scripts deliberately break one invariant at a time
   (auth boundary, canonical URLs, database fixtures, payment webhooks, secret scanning,
   …) and assert that the gate turns red. A check that never turns red is not a check.
 - **The gate checks itself.** Checks 6 and 7 exist because the instructions, the ADRs,

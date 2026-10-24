@@ -218,6 +218,72 @@ const MUTANTS = [
     to: '    if (false) {',
     expect: /401 没被翻译成 needLogin/,
   },
+  // ── 工单 #99：邀请码注册的前端接线 ──
+  // 这几条破坏的是「注册要邀请码」「管理员要发码」这两处接线。
+  // 断了都不报错：输入框没了只是少一格，邀请码没进请求体只是后端说无效。
+  {
+    name: 'M23 注册表单的邀请码输入框没了（少一格，后端只说「需要邀请码」）',
+    file: join(FE, 'src/components/AuthModal.vue'),
+    from: 'v-model="inviteCode"',
+    to: 'v-model="email"',
+    expect: /注册模式有一格邀请码输入/,
+  },
+  {
+    name: 'M24 邀请码不进请求体（码填了也白填）',
+    file: join(FE, 'src/components/AuthModal.vue'),
+    from: 'invite_code: code',
+    to: "invite_code: ''",
+    expect: /请求体里多出 invite_code 这一键/,
+  },
+  {
+    name: 'M25 注册走的还是不带邀请码那条路（后端永远说「需要邀请码」）',
+    file: join(FE, 'src/components/AuthModal.vue'),
+    from: 'registerWithInviteCode(email.value, password.value, inviteCode.value.trim())',
+    to: 'register(email.value, password.value)',
+    expect: /注册走的是带邀请码的那条路/,
+  },
+  {
+    name: 'M26 失败提示不取后端 detail（四类失效原因被一句通用话盖住）',
+    file: join(FE, 'src/components/AuthModal.vue'),
+    from: 'e.response?.data?.detail',
+    to: "'注册失败'",
+    expect: /读的是后端给的 detail/,
+  },
+  {
+    name: 'M27 管理后台发码请求打错地址（管理员点了没反应）',
+    file: join(FE, 'src/components/AdminPage.vue'),
+    from: "post('/api/admin/invite-codes', {",
+    to: "post('/api/admin/invite-codes-mutant', {",
+    expect: /有发码入口/,
+  },
+  {
+    name: 'M28 管理后台列表请求打错地址（列表永远是空的）',
+    file: join(FE, 'src/components/AdminPage.vue'),
+    from: "get('/api/admin/invite-codes')",
+    to: "get('/api/admin/invite-codes-mutant')",
+    expect: /有列表入口/,
+  },
+  {
+    name: 'M29 管理后台作废请求打错地址（点了作废，码还能用）',
+    file: join(FE, 'src/components/AdminPage.vue'),
+    from: 'post(`/api/admin/invite-codes/${id}/revoke`)',
+    to: 'post(`/api/admin/invite-codes/${id}/revoke-mutant`)',
+    expect: /有作废入口/,
+  },
+  {
+    name: 'M30 列表改成显示完整码（明文只给一次这条规矩破了）',
+    file: join(FE, 'src/components/AdminPage.vue'),
+    from: '{{ row.codeMasked }}',
+    to: '{{ row.code }}',
+    expect: /列表只显示脱敏码/,
+  },
+  {
+    name: 'M31 展开区块时不加载列表（展开是一片空白）',
+    file: join(FE, 'src/components/AdminPage.vue'),
+    from: 'void loadInvites()',
+    to: 'void Promise.resolve()',
+    expect: /展开才加载列表/,
+  },
 ]
 
 let killed = 0

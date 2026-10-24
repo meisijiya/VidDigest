@@ -81,6 +81,38 @@
               </div>
             </div>
 
+            <!-- 邀请码（工单 #99）。注册必须带，登录不需要。
+                 放在密码**之后**：既有挂载测试按 inputs()[0] / inputs()[1] 取
+                 邮箱与密码，插在中间会让密码框的索引错位。 -->
+            <div v-if="mode === 'register'">
+              <label class="block text-sm font-medium text-gray-700 mb-1.5">
+                邀请码 <span class="text-red-500">*</span>
+                <span class="text-xs font-normal text-gray-400 ml-1">必填，向管理员获取</span>
+              </label>
+              <div class="relative">
+                <svg
+                  class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.78 7.78 5.5 5.5 0 017.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3"
+                  />
+                </svg>
+                <input
+                  v-model="inviteCode"
+                  type="text"
+                  aria-required="true"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="ABCD1234EFGH"
+                  class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-line bg-ink/60 text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all duration-200 placeholder:text-gray-400"
+                />
+              </div>
+            </div>
+
             <!-- 错误提示 -->
             <Transition name="error">
               <p
@@ -135,6 +167,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import axios from 'axios'
 import { login, register } from '../api/auth.ts'
 import PixelLogo from './PixelLogo.vue'
 
@@ -147,6 +180,8 @@ const emit = defineEmits(['close', 'success'])
 const mode = ref('login')
 const email = ref('')
 const password = ref('')
+// 邀请码（工单 #99）。注册必须带；登录用不到，所以登录模式不渲染这一格。
+const inviteCode = ref('')
 const loading = ref(false)
 const error = ref('')
 
@@ -157,22 +192,67 @@ watch(
       mode.value = props.initialMode
       email.value = ''
       password.value = ''
+      inviteCode.value = ''
       error.value = ''
     }
   },
 )
+
+/**
+ * 邀请码怎么进请求体（工单 #99）。
+ *
+ * `api/auth.ts` 的 register(email, password) 只发这两个字段，而那一层是**公共
+ * 出口**，不该为了某一个表单去改它的签名。所以这里用**一次性请求拦截器**把
+ * 邀请码塞进 body：
+ *
+ *  · axios 的请求拦截器在 dispatchRequest **之前**跑，那时 config.data 还是
+ *    普通对象 {email, password}，还没被 JSON 序列化——所以能直接展开成
+ *    {email, password, invite_code}。
+ *  · 拦截器只在这一条请求的存续期内存在（finally 里 eject），不会漏到别的
+ *    请求上：登录走的是另一条路，根本不注册。
+ *
+ * **为什么不在前端先挡一道「没填就不许提交」**：那会与后端那句话变成两个真相
+ * 来源，而且它会拦下「填了但抄错」的真实反馈——后端分四类原因告诉用户该做什么
+ * （无效 / 已作废 / 已过期 / 已用完），前端一句「不能为空」会把它们全盖住。
+ * 权威判据在后端：400 + 中文「需要邀请码」。
+ */
+let pendingInviteInterceptor: number | null = null
+
+async function registerWithInviteCode(email: string, password: string, code: string) {
+  if (pendingInviteInterceptor !== null) {
+    axios.interceptors.request.eject(pendingInviteInterceptor)
+    pendingInviteInterceptor = null
+  }
+  pendingInviteInterceptor = axios.interceptors.request.use((config) => {
+    const body = (config.data || {}) as Record<string, unknown>
+    config.data = { ...body, invite_code: code }
+    return config
+  })
+  try {
+    return await register(email, password)
+  } finally {
+    axios.interceptors.request.eject(pendingInviteInterceptor)
+    pendingInviteInterceptor = null
+  }
+}
 
 async function handleSubmit() {
   loading.value = true
   error.value = ''
   try {
     const user =
-      mode.value === 'login' ? await login(email.value, password.value) : await register(email.value, password.value)
+      mode.value === 'login'
+        ? await login(email.value, password.value)
+        : await registerWithInviteCode(email.value, password.value, inviteCode.value.trim())
     emit('success', user)
     emit('close')
   } catch (err) {
     // 后端把失败原因放在 detail 里（登录失败 / 邮箱已注册 / 配额超限…）。
     // 这里只取这一段，取不到就回落成一句通用提示。
+    //
+    // 邀请码的四种失效原因（无效 / 已作废 / 已过期 / 已用完）也走这一条路：
+    // 它们都是后端给的原文，用户据此知道该做什么——「已用完」去找管理员要
+    // 新的，「无效」去检查自己有没有抄错。
     const e = err as { response?: { data?: { detail?: string } } }
     error.value = e.response?.data?.detail || '操作失败'
   } finally {
