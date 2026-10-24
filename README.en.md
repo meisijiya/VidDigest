@@ -59,6 +59,23 @@
 
 ---
 
+## 🖼️ Interface preview
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/home.png" alt="Home: paste a link and parse" /><br><sub>Home</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/home-dark.png" alt="Dark theme" /><br><sub>Dark theme</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/features.png" alt="Core features" width="820" />
+</p>
+
+> Screenshots are taken from the current version running locally via `docker compose up -d --build` (1440×900).
+
+---
+
 ## 📦 Requirements
 
 | Tool | Minimum | Used for |
@@ -124,6 +141,8 @@ reads its secrets from `backend/.env` via `env_file`; no secret ever enters the 
 docker compose up -d --build
 curl http://127.0.0.1:8000/api/health     # → {"status":"ok"}
 # Frontend entry point: http://127.0.0.1:8080
+# The frontend port proxies /api/ to the same backend, health check included:
+#   http://127.0.0.1:8080/api/health
 docker compose down                       # stop and remove the containers
 ```
 

@@ -107,6 +107,7 @@ npm run dev                    # → http://localhost:5173
 docker compose up -d --build
 curl http://127.0.0.1:8000/api/health     # → {"status":"ok"}
 # 前端入口：http://127.0.0.1:8080
+# 前端端口把 /api/ 反代到同一个后端，健康检查也一样通：http://127.0.0.1:8080/api/health
 docker compose down                       # 停掉并删掉容器
 ```
 
