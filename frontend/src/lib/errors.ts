@@ -139,8 +139,7 @@ export function classifyError(err: unknown, action: 'parse' | 'download' | 'paym
       title: '同时在跑的任务太多',
       message: message,
       hint:
-        '服务器上你这个来源同时在跑的任务已经到上限了。' +
-        '等前面那个任务结束再试就好——不用换链接，也不用干等一分钟。',
+        '服务器上你这个来源同时在跑的任务已经到上限了。' + '等前面那个任务结束再试就好——不用换链接，也不用干等一分钟。',
     }
   }
 
