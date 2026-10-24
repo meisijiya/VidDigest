@@ -132,6 +132,7 @@
 - `frontend/src/stores/session.ts`：唯一的 store，持有登录态与管理员标志的内存镜像。
 - `frontend/src/lib/byok.ts`：用户自带 Key 的唯一真值出口。
 - `frontend/src/config/features.ts`：功能开关，`MEMBERSHIP_ENABLED = false`（会员入口按范围边界关着）。
+- `frontend/tsconfig.json`：不开 `baseUrl`、不设 `paths`——源码里没有 `@/` 之类的别名，而 `baseUrl` 从 TypeScript 7 起失效；`vue-tsc --noEmit` 是门禁第 6 关。
 
 ### 3.3 三个唯一真值出口
 
@@ -390,6 +391,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | P2 | SSE 真实断流、超时、重连无用例 | 前端测试用假流解析契约 |
 | P2 | OS 矩阵缺口 | CI 只有 ubuntu；Windows 仅本地，macOS 从未跑过 |
 | P2 | 保护规则与 CODEOWNERS 不在仓库内 | master 的保护设置只存在于 GitHub，仓库内没有任何机制会告警它漂移；`.github/CODEOWNERS` 目前只是声明（未开人工 approve：单人仓库里 PR 作者不能 approve 自己的 PR） |
+| P2 | 依赖的大版本升级没有人工评估的记录 | `.github/dependabot.yml` 放行补丁与次版本，`typescript >=6`、`vue-router >=5`、`@vueuse/core >=15` 三个大版本被 ignore 挡住——它们要进来得先读 changelog 并单独验一条链路 |
 
 ### 10.3 明确不做
 
