@@ -8,6 +8,7 @@ from auth import (
     validate_email, validate_password, verify_password,
 )
 from database import create_user, get_user_by_email
+from ratelimit import rate_limit
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -57,7 +58,12 @@ def _build_user_response(user: dict) -> dict:
 
 
 @router.post("/register")
-async def register(req: RegisterRequest):
+async def register(req: RegisterRequest, _rl: None = Depends(rate_limit("/api/register"))):
+    """注册
+
+    **限流**：注册是写库端点，每分钟同一来源最多 5 次。登录同理（10 次）——
+    这两个端点要算 bcrypt，是撞库面。
+    """
     if not validate_email(req.email):
         raise HTTPException(status_code=400, detail="邮箱格式不正确")
     err = validate_password(req.password)
@@ -80,7 +86,12 @@ async def register(req: RegisterRequest):
 
 
 @router.post("/login")
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, _rl: None = Depends(rate_limit("/api/login"))):
+    """登录
+
+    **限流**：登录要算 bcrypt（慢哈希），且是最典型的撞库面，每分钟同一
+    来源最多 10 次。
+    """
     user = get_user_by_email(req.email)
     if not user:
         raise HTTPException(status_code=400, detail="邮箱或密码错误")

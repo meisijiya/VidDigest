@@ -461,6 +461,15 @@ describe('错误分类器 · 每种失败都给出可执行的下一步', () => 
     assert.match(r.hint, /不是你的问题|等/, '限流时没说清不是用户的问题')
   })
 
+  test('自家限流 ≠ 平台风控：说清是服务器在限，别让他去怪视频站', () => {
+    const r = classifyError({
+      response: { data: { detail: { error: '请求过于频繁：服务器限流，请 42 秒后再试' } } },
+    })
+    assert.match(r.title, /频繁/, '自家限流没有单独分类')
+    assert.doesNotMatch(r.title, /平台/, '自家限流被说成平台风控 —— 用户会去怪视频站，而不是等一分钟')
+    assert.match(r.hint, /等/, '没告诉用户该等')
+  })
+
   test('拿不到响应 + 网络词 → 网络问题，让他检查网络', () => {
     const r = classifyError({ message: 'Network Error' })
     assert.match(r.title, /连不上/)

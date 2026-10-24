@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +22,7 @@ from downloader import VideoDownloader
 from douyin import AUDIO_FORMAT_ID, DouyinParser, is_douyin_url
 from database import init_db, seed_admin_emails_from_env
 from logging_setup import setup_logging
+from ratelimit import rate_limit
 
 # 全局单例
 downloader = VideoDownloader()
@@ -120,8 +121,12 @@ async def health():
 # ── 解析视频信息 ──────────────────────────────────────────
 
 @app.post("/api/parse")
-async def parse_video(req: ParseRequest):
-    """解析视频信息（自动识别抖音/其他平台）"""
+async def parse_video(req: ParseRequest, _rl: None = Depends(rate_limit("/api/parse"))):
+    """解析视频信息（自动识别抖音/其他平台）
+
+    **限流**：这个端点不挂鉴权，谁都能打，而成本全在服务器这边（出网抓取）。
+    每分钟同一个来源最多 20 次，超了回 429 并带 `Retry-After`。
+    """
     try:
         url = req.clean_url()
         loop = asyncio.get_event_loop()
@@ -140,8 +145,12 @@ async def parse_video(req: ParseRequest):
 # ── 服务端下载视频 ────────────────────────────────────────
 
 @app.post("/api/download")
-async def download_video(req: DownloadRequest):
-    """服务端下载视频后提供文件下载（自动识别抖音/其他平台）"""
+async def download_video(req: DownloadRequest, _rl: None = Depends(rate_limit("/api/download"))):
+    """服务端下载视频后提供文件下载（自动识别抖音/其他平台）
+
+    **限流**：下载要落盘，是这几个公开端点里最重的一个，每分钟同一来源
+    最多 10 次。
+    """
     try:
         url = req.clean_url()
         loop = asyncio.get_event_loop()
@@ -178,8 +187,11 @@ async def download_video(req: DownloadRequest):
 # ── 获取视频直链 ──────────────────────────────────────────
 
 @app.post("/api/direct-url")
-async def get_direct_url(req: DownloadRequest):
-    """获取视频直链"""
+async def get_direct_url(req: DownloadRequest, _rl: None = Depends(rate_limit("/api/direct-url"))):
+    """获取视频直链
+
+    **限流**：出网取直链，轻量但仍是出网，每分钟同一来源最多 30 次。
+    """
     try:
         url = req.clean_url()
         loop = asyncio.get_event_loop()
@@ -273,11 +285,14 @@ def _resolve_public_ips(host: str) -> list:
 
 
 @app.get("/api/proxy/thumbnail")
-async def proxy_thumbnail(url: str = Query(..., description="缩略图URL")):
+async def proxy_thumbnail(url: str = Query(..., description="缩略图URL"), _rl: None = Depends(rate_limit("/api/proxy/thumbnail"))):
     """代理获取视频缩略图，绕过防盗链。
 
     **刻意不挂鉴权依赖**：社区卡片要显示缩略图，公开可读是对的。要收紧的
     是「能代理哪些地址」，不是「谁能代理」。
+
+    **限流**：公开可读 + 出网抓取，所以仍按来源限速（每分钟同一来源 60 次）。
+    公开不等于不限速——这两件事不冲突。
 
     收紧了什么（工单 #46）：原实现对 ``url`` 零校验，于是任何人可让本服务
     GET 任意 URL 并把响应体原样吐回来——内网地址（含云环境的

@@ -153,10 +153,10 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 检查 | 它证明什么 |
 |---|------|-----------|
-| 1 | `backend: pytest` | 后端 1293 条用例通过 |
+| 1 | `backend: pytest` | 后端 1308 条用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件**与可达 git 历史**里没有凭据形态的字符串（`.gitignore` 只挡文件名，挡不住被抄进文档的口令） |
-| 4 | `frontend: npm test` | 前端 496 条静态 / 契约断言通过（node:test） |
+| 4 | `frontend: npm test` | 前端 497 条静态 / 契约断言通过（node:test） |
 | 5 | `frontend: npm run test:mount` | 前端 192 条挂载层用例通过（Vitest）——两套 runner 刻意分开，绿色的那一层遮不住红的那一层 |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` 无类型错误（`.js` 迁到 `.ts` 之后，类型检查比人眼审 53 个组件快得多） |
 | 7 | `frontend: npm run lint` | ESLint 无告警（未使用的变量、无用转义、模板可访问名缺失都在这一关现形） |
@@ -164,7 +164,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 9 | `refs: ADR 与路径引用一致性` | 文档与注释里提到的每个 `ADR NNNN`、每条源码路径都还指得到 |
 | 10 | `gate: 关卡数口径一致性` | 本节写的关卡数就是门禁真跑的关卡数（从 `init.sh` 里数出来，不硬编码） |
 
-关卡本身也要被验证：18 个变异脚本每次故意破坏一条不变量（鉴权边界、链接归一、
+关卡本身也要被验证：19 个变异脚本每次故意破坏一条不变量（鉴权边界、链接归一、
 数据库夹具、支付回调、敏感内容扫描……），断言门禁会转红。详见
 [docs/TESTING-STRATEGY.md](docs/TESTING-STRATEGY.md)。
 
