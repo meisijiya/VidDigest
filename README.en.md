@@ -234,7 +234,7 @@ section explains **what is required and what breaks if you get it wrong**.
 
 ### AI services (without a key you only get downloading)
 
-The process reads **three** keys, and they do different jobs:
+The process reads **three keys** plus two Bailian endpoint/model variables, and they do different jobs:
 
 | Variable | Purpose | Where to get it | If missing |
 |----------|---------|-----------------|------------|
