@@ -5,6 +5,7 @@ from typing import Optional
 
 import yt_dlp
 
+from download_artifacts import WrittenPaths
 from formats import make_format
 from url_canonical import url_for_ytdlp
 
@@ -223,12 +224,17 @@ class VideoDownloader:
         if not self.has_ffmpeg and "+" in format_id:
             format_id = "best"
 
+        # 记下这次下载自己写下了哪些文件：失败时按这份清单清半截文件，
+        # 不用去扫目录——扫目录会删掉别的请求正在写的在途文件。
+        written = WrittenPaths()
+
         ydl_opts = {
             "format": format_id,
             "outtmpl": os.path.join(self.DOWNLOAD_DIR, "%(title)s.%(ext)s"),
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
+            "progress_hooks": [written.track_progress],
         }
 
         if self.has_ffmpeg:
@@ -239,8 +245,15 @@ class VideoDownloader:
             if "+" in format_id:
                 ydl_opts["merge_output_format"] = "mp4"
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except Exception:
+            # 下载失败：把这次下载自己写下的半截文件清掉。
+            # 抖音那条通道也这么干（见 `backend/douyin.py`），
+            # 两边共用同一份清理口径（`backend/download_artifacts.py`）。
+            written.remove_all()
+            raise
 
         if not info:
             raise ValueError("下载失败")
