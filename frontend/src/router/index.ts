@@ -60,7 +60,7 @@ declare module 'vue-router' {
  * 取到当前页键，于是「URL」与「页键」不需要两处维护。
  *
  * `/admin/invite-codes` 是邀请码管理页（工单 #104 / ADR 0025）：它**不是**
- * 管理后台的第四个页签，而是一条自己的路径，页键也分开（`admin-invites`）——
+ * 管理后台的又一个页签，而是一条自己的路径，页键也分开（`admin-invites`）——
  * 页键分开才能给它接自己的「返回」动作（回管理后台，而不是回首页）。
  */
 export const routes: RouteRecordRaw[] = [

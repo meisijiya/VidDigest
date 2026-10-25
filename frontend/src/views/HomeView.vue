@@ -99,7 +99,8 @@
  * ## 为什么从 App.vue 里搬出来
  *
  * 引入 Vue Router 之后，**URL 与「现在显示哪一页」是同一件事**：
- * 路由表里有四条真实路径（`/`、`/history`、`/community`、`/admin`），
+ * 路由表里有五条真实路径（`/`、`/history`、`/community`、`/admin`、
+ * `/admin/invite-codes`），
  * 页面组件由 `<router-view>` 按路由渲染，而不是由 App.vue 里的
  * `v-if / v-else-if` 链自己挑。
  *

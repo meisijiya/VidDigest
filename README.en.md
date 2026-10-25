@@ -199,7 +199,7 @@ happen in one transaction, so a failed registration does not consume the code.
 browser (Vue 3 + Vite)
   │  relative /api calls — same origin in dev (Vite proxy) and in production (Nginx)
   ▼
-FastAPI (Uvicorn)                     44 REST endpoints, 29 of them behind an auth dependency
+FastAPI (Uvicorn)                     44 REST endpoints, 32 of them behind an auth dependency (3 take an optional token)
   ├─ api_auth / api_history / api_community / api_payment / admin_api
   ├─ api_summarize ──► SSE streaming (text/event-stream) for summary and Q&A
   ├─ downloader / douyin ──► yt-dlp and a dedicated Douyin module
@@ -274,7 +274,7 @@ gaps, mutation harness) and [docs/OPERATIONS.md](docs/OPERATIONS.md) (runtime fa
 Copy `backend/.env.example` to `backend/.env`. The template annotates every entry; this
 section explains **what is required and what breaks if you get it wrong**.
 
-### AI services (without a key you only get downloading)
+### AI services (no key ⇒ no AI features; parsing and downloading keep working)
 
 The platform model (summaries, mind maps, tags, follow-up chat) goes through **one**
 provider. Its credential, endpoint and model all come from environment variables:
