@@ -229,6 +229,13 @@ def get_db():
         conn.create_function(
             "canonical_url_of", 1, canonical_video_url, deterministic=True
         )
+        # 邀请码状态也注册成 SQL 可调用：状态筛选（WHERE invite_status(...)
+        # = ?）与列表投影（每行的 status）必须是**同一份算法**。
+        # 分成两份的话，筛出来的行和它显示的状态会对不上——而那种对不上
+        # 不报错，只是「筛了却看不到」「看到却筛不出来」。
+        conn.create_function(
+            "invite_status", 4, invite_code_status, deterministic=True
+        )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         _thread_local.conn = conn
@@ -3348,6 +3355,42 @@ def _invite_code_expired(expires_at: str | None, now: datetime | None = None) ->
     return deadline <= moment.astimezone(timezone.utc)
 
 
+# 邀请码的四种状态，互斥且穷尽。顺序即优先级：
+# 作废 > 过期 > 用尽 > 可用。
+INVITE_CODE_STATUSES = ("active", "exhausted", "expired", "revoked")
+
+# 一次最多发多少枚邀请码（工单 #104：批量发码）。
+# 上限存在的理由不是「数据库扛不住」，而是**明文只给一次**这件事：
+# 一次发 200 枚意味着管理员要手动复制 200 行，而绝大多数码根本没人要。
+INVITE_CODE_BATCH_MAX = 20
+
+
+def invite_code_status(expires_at: str | None, used_count: int, max_uses: int,
+                       revoked: int) -> str:
+    """这枚码现在的状态——**唯一一份算法**（工单 #104）。
+
+    两种坏值都按「保守」处理：坏日期算过期（放行等于把闸门敞开），
+    坏计数算用尽（多给一次名额就是多开一道门）。
+
+    这个函数被两处调用：列表投影（每行的 ``status``）与状态筛选
+    （注册成 SQL 的 ``invite_status``）。**两处必须是同一份算法**——
+    分成两份的话，筛选出来的行和它显示的状态会不一致，而那种不一致
+    不报错，只是「筛了却看不到」「看到却筛不出来」。
+    """
+    if revoked:
+        return "revoked"
+    if _invite_code_expired(expires_at):
+        return "expired"
+    try:
+        used = int(used_count)
+        limit = int(max_uses)
+    except (TypeError, ValueError):
+        return "exhausted"
+    if used >= limit:
+        return "exhausted"
+    return "active"
+
+
 def _invite_code_item(row, *, include_code: bool = False, code: str | None = None) -> dict:
     """邀请码的对外投影。
 
@@ -3363,17 +3406,17 @@ def _invite_code_item(row, *, include_code: bool = False, code: str | None = Non
     """
     expired = _invite_code_expired(row["expires_at"])
     exhausted = row["used_count"] >= row["max_uses"]
-    if row["revoked"]:
-        status = "revoked"
-    elif expired:
-        status = "expired"
-    elif exhausted:
-        status = "exhausted"
-    else:
-        status = "active"
+    # 状态只由 invite_code_status 算（工单 #104）：筛选与显示共用一份算法。
+    status = invite_code_status(
+        row["expires_at"], row["used_count"], row["max_uses"], row["revoked"]
+    )
     item = {
         "id": row["id"],
         "created_by": row["created_by"],
+        # 发放人邮箱：管理员要能看出「这枚码是谁发的」。
+        # 没 JOIN 到 users 时（老的 SELECT * 出口）就是 None。
+        "created_by_email": (row["created_by_email"]
+                             if "created_by_email" in row.keys() else None),
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
         "max_uses": row["max_uses"],
@@ -3403,43 +3446,69 @@ def invite_code_expiry(hours: int | None) -> str | None:
     return _iso_utc(datetime.now(timezone.utc) + timedelta(hours=hours))
 
 
-def create_invite_code(created_by: int | None = None, max_uses: int = 1,
-                        expires_at: str | None = None, note: str | None = None) -> dict:
-    """建一枚邀请码，返回**含明文码**的行。
+def create_invite_codes(count: int = 1, created_by: int | None = None, max_uses: int = 1,
+                         expires_at: str | None = None, note: str | None = None) -> list[dict]:
+    """建 **count** 枚邀请码，返回**含明文码**的行列表。
 
     明文只在这里给一次：之后所有列表出口都只给脱敏码。
 
     **库里只存哈希**（工单 #103）：落库的是 ``code_hash``（sha256）与
     ``code_hint``（脱敏提示），明文不出这个函数。
+
+    批量（工单 #104）为什么在这一层而不是管理端拼循环：一次事务里发多枚，
+    撞码重试也在同一个事务里，**不会出现「发到第 3 枚时前两枚已落库、
+    第 3 枚失败」这种半截状态**。
     """
+    if count < 1:
+        raise ValueError("至少要发 1 枚邀请码")
+    if count > INVITE_CODE_BATCH_MAX:
+        raise ValueError(f"一次最多发 {INVITE_CODE_BATCH_MAX} 枚")
     if max_uses < 1:
         raise ValueError("max_uses 至少是 1")
+    items: list[dict] = []
     with get_db() as conn:
-        for _ in range(8):
-            code = generate_invite_code()
-            try:
-                cursor = conn.execute(
-                    "INSERT INTO invite_codes (code_hash, code_hint, created_by, created_at,"
-                    " expires_at, max_uses, used_count, revoked, note)"
-                    " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)",
-                    (
-                        hash_invite_code(code),
-                        mask_invite_code(code),
-                        created_by,
-                        _iso_utc(),
-                        expires_at,
-                        max_uses,
-                        note,
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                # 撞上重复的码（概率极低）：换一枚重试。
-                continue
-            row = conn.execute(
-                "SELECT * FROM invite_codes WHERE id = ?", (cursor.lastrowid,)
-            ).fetchone()
-            return _invite_code_item(row, include_code=True, code=code)
-    raise RuntimeError("生成邀请码失败：连续多枚都撞上了重复的码")
+        for _ in range(count):
+            for _attempt in range(8):
+                code = generate_invite_code()
+                try:
+                    cursor = conn.execute(
+                        "INSERT INTO invite_codes (code_hash, code_hint, created_by, created_at,"
+                        " expires_at, max_uses, used_count, revoked, note)"
+                        " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)",
+                        (
+                            hash_invite_code(code),
+                            mask_invite_code(code),
+                            created_by,
+                            _iso_utc(),
+                            expires_at,
+                            max_uses,
+                            note,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    # 撞上重复的码（概率极低）：换一枚重试。
+                    continue
+                row = conn.execute(
+                    "SELECT i.*, u.email AS created_by_email FROM invite_codes i"
+                    " LEFT JOIN users u ON u.id = i.created_by WHERE i.id = ?",
+                    (cursor.lastrowid,),
+                ).fetchone()
+                items.append(_invite_code_item(row, include_code=True, code=code))
+                break
+            else:
+                raise RuntimeError("生成邀请码失败：连续多枚都撞上了重复的码")
+    return items
+
+
+def create_invite_code(created_by: int | None = None, max_uses: int = 1,
+                        expires_at: str | None = None, note: str | None = None) -> dict:
+    """建一枚邀请码，返回**含明文码**的行。
+
+    等价于批量发 1 枚——单枚出口是批量出口的薄封装，不是第二份实现。
+    """
+    return create_invite_codes(
+        1, created_by=created_by, max_uses=max_uses, expires_at=expires_at, note=note
+    )[0]
 
 
 def get_invite_code_by_id(invite_id: int) -> dict | None:
@@ -3451,19 +3520,41 @@ def get_invite_code_by_id(invite_id: int) -> dict | None:
     return _invite_code_item(row) if row else None
 
 
-def list_invite_codes(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0) -> dict:
+def list_invite_codes(limit: int = ADMIN_PAGE_SIZE_DEFAULT, offset: int = 0,
+                      status: str | None = None) -> dict:
     """邀请码列表（require_admin 保护）。返回 {items, total, limit, offset}。
 
     **不回显完整码**：这一层只给 code_masked（工单 #99）。
 
     按 id 降序：刚发的码排在最前，管理员不用翻页去找自己刚生成的那枚。
+
+    ## status 筛选（工单 #104）
+
+    筛选与每行显示的 ``status`` 用**同一份算法**：筛选走 SQL 里的
+    ``invite_status(...)``（注册的就是 ``invite_code_status`` 那个函数），
+    显示走同一个函数的直接调用。两处一旦漂移，症状是「筛了却看不到」
+    或「看到却筛不出来」——而且都不报错。
+
+    ``total`` 也按筛选后的集合算：分页器的总页数要跟列表对得上，
+    否则翻到最后一页会出现空页。
     """
     limit, offset = _clamp_limit_offset(limit, offset)
+    where = ""
+    params: list = []
+    if status:
+        if status not in INVITE_CODE_STATUSES:
+            raise ValueError(f"未知的邀请码状态：{status}")
+        where = (" WHERE invite_status(i.expires_at, i.used_count, i.max_uses, i.revoked) = ?")
+        params.append(status)
     with get_db() as conn:
-        total = conn.execute("SELECT count(*) FROM invite_codes").fetchone()[0]
+        total = conn.execute(
+            f"SELECT count(*) FROM invite_codes i{where}", params
+        ).fetchone()[0]
         rows = conn.execute(
-            "SELECT * FROM invite_codes ORDER BY id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            "SELECT i.*, u.email AS created_by_email FROM invite_codes i"
+            " LEFT JOIN users u ON u.id = i.created_by"
+            f"{where} ORDER BY i.id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         ).fetchall()
     return {
         "items": [_invite_code_item(r) for r in rows],

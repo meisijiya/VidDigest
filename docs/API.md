@@ -74,8 +74,8 @@ Token 有效期 **72 小时**，过期需重新登录。
 | PATCH | `/api/admin/community/{id}` | 改标签。**词表外 → 400 并点名被拒的标签**（不静默归入「其他」）；上限由服务端给 |
 | DELETE | `/api/admin/community/{id}` | 删条目。**只删 `videos` 那一行**，用户的解析历史一行不动 |
 | GET | `/api/admin/tags/vocabulary` | 标签词表（前端不抄第二份） |
-| GET | `/api/admin/invite-codes` | 邀请码列表（分页 `limit` / `offset`）。**不回显完整码**，只有脱敏提示 `code_masked`（前 4 后 4）——库里存的是 sha256 摘要，明文取不回来 |
-| POST | `/api/admin/invite-codes` | 发一枚邀请码。**明文码只在这一次响应里给**（`item.code`），之后只剩脱敏码。可带 `max_uses`（用几次，默认 1）、`expires_in_hours`（几小时后过期，缺省=永不过期）、`note` |
+| GET | `/api/admin/invite-codes` | 邀请码列表（分页 `limit` / `offset`，可按 `status` 筛 `active`/`exhausted`/`expired`/`revoked`）。**不回显完整码**，只有脱敏提示 `code_masked`（前 4 后 4）——库里存的是 sha256 摘要，明文取不回来。每行另给 `created_by_email`（发放人）与 `status` |
+| POST | `/api/admin/invite-codes` | 发邀请码。**明文码只在这一次响应里给**（`items[].code`，`item` 是第一枚），之后只剩脱敏码。可带 `count`（一次发几枚，默认 1，**最多 20**）、`max_uses`（用几次，默认 1）、`expires_in_hours`（几小时后过期，缺省=永不过期）、`note` |
 | POST | `/api/admin/invite-codes/{id}/revoke` | 作废一枚邀请码（已用完的不受影响） |
 
 ### 支付（会员制当前关闭）

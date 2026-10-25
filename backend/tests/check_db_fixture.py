@@ -92,6 +92,10 @@ DB_FUNCS = {
     # 真实 app.db。create_invite_code 与 revoke_invite_code 同理。
     "create_invite_code", "get_invite_code_by_id", "list_invite_codes",
     "revoke_invite_code", "register_with_invite_code",
+    # create_invite_codes 是批量发码（工单 #104），也是**写**出口。
+    # 漏掉它，这道门禁就对「测试直接调它批量建码」失明 ——
+    # 那会把一整批码写进开发机上的真实 app.db。
+    "create_invite_codes",
 }
 
 #: 取了这些参数就算拿到了 db 夹具（client_app 内部依赖 db）

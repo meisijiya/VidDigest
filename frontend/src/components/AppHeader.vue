@@ -111,7 +111,7 @@
           aria-label="管理后台"
           :class="[
             'p-2 sm:px-4 sm:py-1.5 rounded-lg transition-colors flex items-center gap-1.5',
-            page === 'admin'
+            page === 'admin' || page === 'admin-invites'
               ? 'text-blue-400 bg-blue-50 font-medium'
               : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100',
           ]"

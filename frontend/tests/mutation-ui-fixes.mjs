@@ -251,38 +251,41 @@ const MUTANTS = [
   },
   {
     name: 'M27 管理后台发码请求打错地址（管理员点了没反应）',
-    file: join(FE, 'src/components/AdminPage.vue'),
+    file: join(FE, 'src/api/admin.ts'),
     from: "post('/api/admin/invite-codes', {",
     to: "post('/api/admin/invite-codes-mutant', {",
     expect: /有发码入口/,
   },
   {
     name: 'M28 管理后台列表请求打错地址（列表永远是空的）',
-    file: join(FE, 'src/components/AdminPage.vue'),
-    from: "get('/api/admin/invite-codes')",
-    to: "get('/api/admin/invite-codes-mutant')",
+    file: join(FE, 'src/api/admin.ts'),
+    from: "get('/api/admin/invite-codes', {",
+    to: "get('/api/admin/invite-codes-mutant', {",
     expect: /有列表入口/,
   },
   {
     name: 'M29 管理后台作废请求打错地址（点了作废，码还能用）',
-    file: join(FE, 'src/components/AdminPage.vue'),
-    from: 'post(`/api/admin/invite-codes/${id}/revoke`)',
-    to: 'post(`/api/admin/invite-codes/${id}/revoke-mutant`)',
+    file: join(FE, 'src/api/admin.ts'),
+    from: 'post(`/api/admin/invite-codes/${inviteId}/revoke`)',
+    to: 'post(`/api/admin/invite-codes/${inviteId}/revoke-mutant`)',
     expect: /有作废入口/,
   },
   {
     name: 'M30 列表改成显示完整码（明文只给一次这条规矩破了）',
-    file: join(FE, 'src/components/AdminPage.vue'),
+    file: join(FE, 'src/components/InviteCodesPage.vue'),
     from: '{{ row.codeMasked }}',
     to: '{{ row.code }}',
     expect: /列表只显示脱敏码/,
   },
   {
-    name: 'M31 展开区块时不加载列表（展开是一片空白）',
-    file: join(FE, 'src/components/AdminPage.vue'),
-    from: 'void loadInvites()',
-    to: 'void Promise.resolve()',
-    expect: /展开才加载列表/,
+    name: 'M31 打开页面时不加载列表（页面是一片空白）',
+    file: join(FE, 'src/components/InviteCodesPage.vue'),
+    // 锚点带上 onMounted 的开头：`void loadCodes()` 在页面里出现三次
+    // （翻页、换筛选、挂载），只锚这一句的话，装置改的是翻页那处，
+    // 挂载那处照样在跑 —— 变异会「存活」，而它压根没碰到被测机制。
+    from: 'onMounted(() => {\n  void loadCodes()',
+    to: 'onMounted(() => {\n  void Promise.resolve()',
+    expect: /挂载即加载列表/,
   },
   // ── 工单 #105：总结模板选择 ──
   // 这几条破坏的是「用户在下拉框里选的模板真的被用上」。

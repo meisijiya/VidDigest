@@ -341,12 +341,13 @@ function loadFn(src, name) {
 }
 
 describe('路由 · 页面由 URL 决定（ADR 0018）', () => {
-  test('四条路径各带一个 meta.page', () => {
+  test('五条路径各带一个 meta.page', () => {
     const table = [
       ['/', 'home'],
       ['/history', 'history'],
       ['/community', 'community'],
       ['/admin', 'admin'],
+      ['/admin/invite-codes', 'admin-invites'],
     ]
     for (const [path, page] of table) {
       assert.match(
