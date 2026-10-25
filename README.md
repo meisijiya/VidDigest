@@ -191,7 +191,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件**与可达 git 历史**里没有凭据形态的字符串（`.gitignore` 只挡文件名，挡不住被抄进文档的口令） |
 | 4 | `frontend: npm test` | 前端全部静态 / 契约断言通过（node:test） |
-| 5 | `frontend: npm run test:mount` | 前端 199 条挂载层用例通过（Vitest）——两套 runner 刻意分开，绿色的那一层遮不住红的那一层 |
+| 5 | `frontend: npm run test:mount` | 前端 215 条挂载层用例通过（Vitest）——两套 runner 刻意分开，绿色的那一层遮不住红的那一层 |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` 无类型错误（`.js` 迁到 `.ts` 之后，类型检查比人眼审 53 个组件快得多） |
 | 7 | `frontend: npm run lint` | ESLint 无告警（未使用的变量、无用转义、模板可访问名缺失都在这一关现形） |
 | 8 | `frontend: npm run format:check` | Prettier 全部文件符合格式 |
