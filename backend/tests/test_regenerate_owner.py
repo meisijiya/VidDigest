@@ -243,7 +243,7 @@ class _ExplodingSummarizer(SeamStubSummarizer):
         super().__init__(**kw)
         self._fail_at = fail_at
 
-    def summarize_full_stream(self, text, language):
+    def summarize_full_stream(self, text, language, template=None):
         if self.calls_of("summarize_full_stream") + 1 == self._fail_at:
             self._calls["summarize_full_stream"] += 1
             raise RuntimeError("模型挂了")
@@ -322,7 +322,7 @@ class TestFailedOverwriteKeepsTheOldContent:
         entered, release = threading.Event(), threading.Event()
 
         class _Gated(SeamStubSummarizer):
-            def summarize_full_stream(self, text, language):
+            def summarize_full_stream(self, text, language, template=None):
                 entered.set()
                 assert release.wait(timeout=10), "门没被打开，测试会挂死"
                 yield from super().summarize_full_stream(text, language)
@@ -367,7 +367,7 @@ class TestRegenerationDoesNotBlankTheVideo:
         entered, release = threading.Event(), threading.Event()
 
         class _Gated(SeamStubSummarizer):
-            def summarize_full_stream(self, text, language):
+            def summarize_full_stream(self, text, language, template=None):
                 entered.set()
                 assert release.wait(timeout=10), "门没被打开，测试会挂死"
                 yield from super().summarize_full_stream(text, language)

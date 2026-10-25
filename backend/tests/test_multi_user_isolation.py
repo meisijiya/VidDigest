@@ -429,7 +429,7 @@ class TestQuotaIsPerUser:
         a, b, _c = trio
 
         class Boom(SeamStubSummarizer):
-            def summarize_full_stream(self, text, language):
+            def summarize_full_stream(self, text, language, template=None):
                 raise RuntimeError("模型挂了")
 
         wire(monkeypatch, Boom())
@@ -459,7 +459,7 @@ class TestConcurrentRegenerate:
         entered, release = threading.Event(), threading.Event()
 
         class _Gated(SeamStubSummarizer):
-            def summarize_full_stream(self, text, language):
+            def summarize_full_stream(self, text, language, template=None):
                 entered.set()
                 assert release.wait(timeout=10), "门没被打开，测试会挂死"
                 yield from super().summarize_full_stream(text, language)

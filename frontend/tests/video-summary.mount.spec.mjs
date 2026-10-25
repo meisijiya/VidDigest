@@ -48,6 +48,9 @@ vi.mock('../src/api/summarize.ts', () => ({
   summarizeVideo: vi.fn(),
   chatWithVideo: vi.fn(),
   fetchQuota: vi.fn(),
+  // 工单 #105 新增的清单端点。本文件不验模板选择，给一份空清单，
+  // 让新增的下拉框不渲染——这个文件的判据与模板无关，DOM 得保持原样。
+  fetchSummaryTemplates: vi.fn(),
 }))
 vi.mock('../src/api/history.ts', () => ({
   fetchChatSession: vi.fn(),
@@ -59,7 +62,7 @@ vi.mock('../src/lib/byok.ts', () => ({
 }))
 
 import VideoSummary from '../src/components/VideoSummary.vue'
-import { summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.ts'
+import { summarizeVideo, chatWithVideo, fetchQuota, fetchSummaryTemplates } from '../src/api/summarize.ts'
 import { fetchChatSession, saveHistory } from '../src/api/history.ts'
 
 // ── 造数据 ─────────────────────────────────────────────────
@@ -110,6 +113,7 @@ async function mountSummary(props = {}) {
     parse: { remaining: 3, limit: 3 },
     chat: { remaining: 10, limit: 10 },
   })
+  fetchSummaryTemplates.mockResolvedValue({ default: 'full', templates: [] })
   fetchChatSession.mockResolvedValue([])
 
   const w = mount(VideoSummary, {

@@ -284,6 +284,38 @@ const MUTANTS = [
     to: 'void Promise.resolve()',
     expect: /展开才加载列表/,
   },
+  // ── 工单 #105：总结模板选择 ──
+  // 这几条破坏的是「用户在下拉框里选的模板真的被用上」。
+  // 断了都不报错：请求照样发出去、后端照样返回总结，
+  // 症状是「选了精简摘要，拿回来的还是详尽总结」——用户只能靠字数去猜。
+  {
+    name: 'M32 选中的模板不进请求体（下拉框选了个寂寞）',
+    file: join(FE, 'src/api/summarize.ts'),
+    from: "summary_template: options.summaryTemplate || '',",
+    to: "summary_template: '',",
+    expect: /选中的模板没进请求体/,
+  },
+  {
+    name: 'M33 组件不把下拉框的选择传出去（选了也不生效）',
+    file: join(FE, 'src/components/VideoSummary.vue'),
+    from: 'summaryTemplate: selectedTemplate.value,',
+    to: "summaryTemplate: '',",
+    expect: /组件没有把用户选的模板传给请求/,
+  },
+  {
+    name: 'M34 总结正文里的表格没有排版（模型一输出表格就散架）',
+    file: join(FE, 'src/style.css'),
+    from: `.summary-content table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}`,
+    to: '',
+    expect: /总结正文里的表格没有排版/,
+  },
 ]
 
 let killed = 0
@@ -343,6 +375,11 @@ for (const m of MUTANTS) {
     }
     if (ran === 0) {
       survivors.push(`${m.name} —— 存活（${nRan} 条测试全绿，测试没在验这一条）`)
+    } else if (!out.includes('AssertionError')) {
+      // 转红但不是断言失败：多半是变异把源码改坏到**导入不了**（语法错误之类）。
+      // 那种红不证明任何东西——它证明的是「这个文件坏了」，不是「这条守卫在验这条约束」。
+      // 所以它既不算杀、也不算存活：算变异体自坏。
+      broken.push(`${m.name} —— 变异体自坏（转红但不是 AssertionError：源码可能被改坏到无法导入）`)
     } else {
       killed++
       const which = out.match(/✖ ([^\n(]+)/) || out.match(/^not ok \d+ - (.+)$/m)
