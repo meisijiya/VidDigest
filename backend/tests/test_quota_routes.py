@@ -32,7 +32,7 @@ class ExplodingSummarizer(StubSummarizer):
         super().__init__(**kwargs)
         self.fail_on = fail_on
 
-    def summarize_full_stream(self, text, language):
+    def summarize_full_stream(self, text, language, template=None):
         self._calls["summarize_full_stream"] += 1
         if self.fail_on == "before_any":
             raise RuntimeError("模型服务不可用")

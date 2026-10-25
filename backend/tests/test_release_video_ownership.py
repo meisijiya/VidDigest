@@ -67,7 +67,7 @@ class HandoverThenFailSummarizer(SeamStubSummarizer):
         super().__init__(**kw)
         self._takeover = takeover
 
-    def summarize_full_stream(self, text, language):
+    def summarize_full_stream(self, text, language, template=None):
         self._takeover()
         raise RuntimeError("模型挂死了")
         yield  # pragma: no cover —— 只为让它是个生成器
@@ -127,7 +127,7 @@ class TestReleaseOnlyDeletesWhatYouOwn:
 class FailingSummarizer(SeamStubSummarizer):
     """什么都不做就失败——用来验「自己的占位仍然会被还回去」。"""
 
-    def summarize_full_stream(self, text, language):
+    def summarize_full_stream(self, text, language, template=None):
         raise RuntimeError("模型挂了")
         yield  # pragma: no cover —— 只为让它是个生成器
 

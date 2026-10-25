@@ -72,7 +72,7 @@ class StubSummarizer:
         """被调用过的方法名集合。"""
         return {m for m, n in self._calls.items() if n > 0}
 
-    def summarize_full_stream(self, text, language):
+    def summarize_full_stream(self, text, language, template=None):
         self._calls["summarize_full_stream"] += 1
         for token in self._summary_tokens:
             yield ("summary", token)

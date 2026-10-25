@@ -22,8 +22,17 @@
 模板顶端的 ``<!-- ... -->`` 是写给改它的人看的，不是给模型的。
 不剥离的话，模型会先读到一段讲「$sentinel 是什么」的话——
 既烧 token，又可能让它把占位符名字当成要输出的内容。
+
+## 模板清单只有一份
+
+``prompts/templates.json`` 是「有哪些模板、哪个是默认、每个模板叫什么」
+的**唯一**真值。前端下拉框、后端校验、落库默认值都从它派生。
+
+清单里为什么不直接放提示词正文：正文在各自的 ``.md`` 里，清单只做索引。
+放两份的话，改了 ``.md`` 却忘了改清单，两边就会各说各话。
 """
 
+import json
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -33,8 +42,14 @@ from string import Template
 #: 未必是 backend/，按 CWD 找会得到一个"提示词文件不存在"而没人查得到原因。
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
+#: 模板清单。与提示词文件同目录——它索引的就是这个目录里的文件。
+MANIFEST_FILE = PROMPTS_DIR / "templates.json"
+
 #: 块注释可跨行。写成非贪婪，否则第一个 --> 之后的内容全被吞掉。
 _COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+#: 清单里每个模板必须有的字段。``file`` 是提示词文件名（不含扩展名）。
+_TEMPLATE_FIELDS = ("id", "name", "description", "file")
 
 
 class PromptError(RuntimeError):
@@ -90,3 +105,93 @@ def render_prompt(name: str, values: dict) -> str:
         raise PromptError(
             f"提示词 {name!r} 里有非法的 $ 用法（{e}）。字面量 $ 请写成 $$。"
         ) from None
+
+
+@lru_cache(maxsize=None)
+def load_manifest() -> dict:
+    """读模板清单（``prompts/templates.json``）。
+
+    **结果被缓存**，与 :func:`load_template` 同一口径：清单改了要重启后端，
+    否则进程里跑的还是旧清单。提示词正文也是这个规矩。
+
+    清单坏了要**立刻炸**，不返回半成品：一份缺了默认模板的清单会让
+    「不传模板」走到一个不存在的分支，而症状是模型收到了错的提示词——
+    不报错，只是慢慢错。
+    """
+    try:
+        raw = MANIFEST_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise PromptError(
+            f"模板清单不存在：{MANIFEST_FILE}。它必须与提示词文件一起提交。"
+        ) from None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise PromptError(f"模板清单不是合法 JSON：{e}") from None
+
+    templates = data.get("templates")
+    if not isinstance(templates, list) or not templates:
+        raise PromptError("模板清单里的 templates 必须是非空数组。")
+    ids: set[str] = set()
+    for item in templates:
+        if not isinstance(item, dict):
+            raise PromptError("模板清单里的每个模板必须是一个对象。")
+        missing = [f for f in _TEMPLATE_FIELDS if not str(item.get(f, "")).strip()]
+        if missing:
+            raise PromptError(
+                f"模板清单里的模板 {item.get('id')!r} 缺字段：{'、'.join(missing)}。"
+            )
+        if item["id"] in ids:
+            raise PromptError(f"模板清单里有重复的模板 id：{item['id']!r}。")
+        ids.add(item["id"])
+    default = data.get("default")
+    if default not in ids:
+        raise PromptError(
+            f"模板清单的 default={default!r} 不在 templates 里。"
+        )
+    return data
+
+
+def list_templates() -> list[dict]:
+    """对外的模板清单：**只给 id、展示名与一句说明**。
+
+    刻意不给 ``file``：那是仓库内部的文件名，暴露出去就等于把
+    「提示词从哪读」变成外部可依赖的约定。
+    """
+    return [
+        {
+            "id": item["id"],
+            "name": item["name"],
+            "description": item["description"],
+        }
+        for item in load_manifest()["templates"]
+    ]
+
+
+def default_template_id() -> str:
+    """默认模板 id。清单里的 ``default`` 说了算，代码里不再写第二份。"""
+    return load_manifest()["default"]
+
+
+def template_file(template_id: str) -> str:
+    """模板 id → 提示词文件名（不含扩展名）。
+
+    未知 id 抛 :class:`PromptError`：模板 id 会从请求体进来，
+    拼不出来的 id 必须在这里被挡住，而不是渲染出一个空提示词。
+    """
+    for item in load_manifest()["templates"]:
+        if item["id"] == template_id:
+            return item["file"]
+    raise PromptError(
+        f"未知的总结模板：{template_id!r}。可用的是："
+        f"{'、'.join(t['id'] for t in load_manifest()['templates'])}。"
+    )
+
+
+def is_known_template(template_id: str) -> bool:
+    """模板 id 是否在清单里。给请求体校验用——未知 id 要报 422，不能静默兜底。"""
+    try:
+        template_file(template_id)
+    except PromptError:
+        return False
+    return True

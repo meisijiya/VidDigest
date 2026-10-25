@@ -1,0 +1,29 @@
+{
+  "default": "full",
+  "templates": [
+    {
+      "id": "full",
+      "name": "详细总结",
+      "description": "完整分析：详实的总结正文、思维导图与标签。",
+      "file": "summarize_full"
+    },
+    {
+      "id": "brief",
+      "name": "精简摘要",
+      "description": "只留最关键的结论，一屏读完，适合先判断值不值得看。",
+      "file": "summarize_brief"
+    },
+    {
+      "id": "tutorial",
+      "name": "步骤教程",
+      "description": "把视频内容拆成能照着做的步骤，附前置条件与注意事项。",
+      "file": "summarize_tutorial"
+    },
+    {
+      "id": "analysis",
+      "name": "深度分析",
+      "description": "抽出论点、论据与反面观点，给出结论与可迁移的判断。",
+      "file": "summarize_analysis"
+    }
+  ]
+}

@@ -953,11 +953,17 @@ class VideoSummarizer:
 
     # ── 总结 + 思维导图 + 标签（一次调用）────────────────
 
-    def summarize_full_stream(self, subtitle_text: str, language: str = "zh"):
+    def summarize_full_stream(
+        self, subtitle_text: str, language: str = "zh", template: str | None = None
+    ):
         """一次模型调用产出三件事，yield ``(kind, payload)`` 事件。
 
         事件顺序：``("summary", token)`` 若干（逐 token，对应打字机效果），
         然后 ``("mindmap", markdown)`` 与 ``("tags", 模型给的原始标签)``。
+
+        ``template`` 是提示词模板 id（工单 #105 / ADR 0026），None = 默认模板。
+        它**显式**走这条接缝而不是藏在某个全局里：模板选错的后果是模型收到
+        另一份提示词，而那不会报错、只会安静地总结成另一个样子。
 
         思维导图在这里就洗过一遍（markmap 渲染要求唯一一级根标题）。
         标签**不校验**：词表是产品规则，由 api_summarize 在下发前用
@@ -967,7 +973,9 @@ class VideoSummarizer:
         （工单 #106）：降级发生在**写库那一刻**，不重建的话落库的就是
         一条光杆，前端救不回来。
         """
-        chunks = self._stream_chunks(self._build_full_prompt(subtitle_text, language))
+        chunks = self._stream_chunks(
+            self._build_full_prompt(subtitle_text, language, template)
+        )
         summary_parts: list[str] = []
         for kind, payload in parse_dual_output(chunks):
             if kind == EVENT_SUMMARY:
@@ -1038,13 +1046,15 @@ class VideoSummarizer:
 
     @staticmethod
 
-    def _build_full_prompt(subtitle_text: str, language: str) -> str:
+    def _build_full_prompt(
+        subtitle_text: str, language: str, template: str | None = None
+    ) -> str:
 
-        """渲染 prompts/summarize_full.md。
+        """渲染 ``prompts/`` 下的提示词模板。
 
 
 
-        提示词**不在代码里**，在 ``prompts/summarize_full.md``——
+        提示词**不在代码里**，在 ``prompts/summarize_*.md``——
 
         改措辞、改篇幅、改示例都是编辑那个文件，不需要动 Python。
 
@@ -1058,9 +1068,14 @@ class VideoSummarizer:
 
         prompt 全文做断言；改签名会同时打断它们。
 
+        模板 id → 文件名的映射在 ``prompt_template`` 里（工单 #105）：
+
+        清单 ``prompts/templates.json`` 是「有哪些模板、哪个是默认」的唯一真值，
+        这里不另写一份模板名单。
+
         """
 
-        from prompt_template import render_prompt
+        from prompt_template import default_template_id, render_prompt, template_file
 
 
 
@@ -1068,7 +1083,9 @@ class VideoSummarizer:
 
         lang_hint = "中文" if language.startswith("zh") else "与原文相同的语言"
 
-        return render_prompt("summarize_full", {
+        template_id = template or default_template_id()
+
+        return render_prompt(template_file(template_id), {
 
             "lang_hint": lang_hint,
 

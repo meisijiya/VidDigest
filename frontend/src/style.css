@@ -626,6 +626,98 @@ body {
   color: var(--color-info);
 }
 
+/* 四级及以下标题：模型偶尔会用 h4/h5，浏览器默认字号在深色底上偏小 */
+.summary-content h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-gray-700);
+  margin: 0.85rem 0 0.4rem;
+  line-height: 1.4;
+}
+.summary-content h5,
+.summary-content h6 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-gray-600);
+  margin: 0.75rem 0 0.35rem;
+  line-height: 1.4;
+}
+
+/* 表格：模型常用它对比参数与配置，浏览器默认样式在深色底上几乎不可读。
+   display:block + overflow-x:auto 让宽表横向滚动，而不是把整页撑破。 */
+.summary-content table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+.summary-content thead {
+  background: var(--color-gray-200);
+}
+.summary-content th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-gray-800);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-gray-300);
+  white-space: nowrap;
+}
+.summary-content td {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-gray-300);
+  color: var(--color-gray-600);
+  vertical-align: top;
+}
+.summary-content tbody tr:nth-child(even) {
+  background: var(--color-gray-100);
+}
+
+/* 引用块 */
+.summary-content blockquote {
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.9rem;
+  border-left: 4px solid var(--color-gray-400);
+  background: var(--color-gray-100);
+  border-radius: 0 6px 6px 0;
+  color: var(--color-gray-600);
+}
+.summary-content blockquote p {
+  margin: 0.25rem 0;
+  color: inherit;
+}
+
+/* 代码块：行内 code 的底色与边框不能漏进代码块里，
+   所以 pre 里的 code 要把 background/border/padding 全部清掉。 */
+.summary-content pre {
+  margin: 0.75rem 0;
+  padding: 0.85rem 1rem;
+  background: var(--color-panel);
+  border: 1px solid var(--color-gray-300);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+.summary-content pre code {
+  font-family: var(--font-pixel);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  font-size: inherit;
+  color: var(--color-gray-800);
+  white-space: pre;
+}
+
+/* 分隔线 */
+.summary-content hr {
+  margin: 1.25rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-gray-300);
+}
+
 /* Skeleton loading（同色相不同明度，视觉上是明度渐变而非彩色渐变） */
 .skeleton {
   background: linear-gradient(90deg, var(--c-skel-a) 25%, var(--c-skel-b) 50%, var(--c-skel-a) 75%);
