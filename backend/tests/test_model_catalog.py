@@ -31,7 +31,7 @@ EXPECTED = {
     "bailian": {
         "label": "阿里云百炼",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "default_model": "qwen-plus",
+        "default_model": "qwen3.7-flash",
         "hint": "阿里云百炼 OpenAI 兼容模式。",
         "is_real": 1,
     },
@@ -287,11 +287,15 @@ def test_platform_default_model_is_read_from_the_table(db, monkeypatch):
     assert _make_summarizer(monkeypatch).model == "qwen-max"
 
 
-def test_default_model_converged_on_qwen_plus(db, monkeypatch):
-    """前后端漂移的那一处，收敛到表里的 qwen-plus（= 改动前 byok.js 的取值）。"""
-    assert _by_id()["bailian"]["default_model"] == "qwen-plus"
-    assert _make_summarizer(monkeypatch).model == "qwen-plus"
-    assert summarizer._FALLBACK_BAILIAN_MODEL == "qwen-plus", (
+def test_default_model_converged_on_the_platform_model(db, monkeypatch):
+    """平台默认模型统一到 qwen3.7-flash（工单 #107 / ADR 0028）。
+
+    三处必须一致：清单表里的默认模型、summarizer 实际用的模型、读表失败时
+    的兜底值。少一处就意味着「换模型名要改三个地方」的老毛病回来了。
+    """
+    assert _by_id()["bailian"]["default_model"] == "qwen3.7-flash"
+    assert _make_summarizer(monkeypatch).model == "qwen3.7-flash"
+    assert summarizer._FALLBACK_BAILIAN_MODEL == "qwen3.7-flash", (
         "兜底值必须和表里的默认值一致，否则读表失败时会静默换回旧模型"
     )
 
@@ -317,7 +321,101 @@ def test_missing_provider_row_falls_back_with_a_warning(db, monkeypatch, caplog)
         f"读不到表却没有 warning：{[r.getMessage() for r in caplog.records]}"
     )
     # 兜底本身仍然可用——回落是明确发生的，不是彻底不可用
-    assert _make_summarizer(monkeypatch).model == "qwen-plus"
+    assert _make_summarizer(monkeypatch).model == "qwen3.7-flash"
+
+
+# ── 存量库的模型收敛（工单 #107 / ADR 0028）─────────────────
+
+#: 改动前的表结构。抄成字面量而不是 import 现在的 DDL：
+#: import 现在的结构等于「用新结构假装老库」，那样测的就不是老库了。
+_LEGACY_CATALOG_DDL = """
+CREATE TABLE IF NOT EXISTS model_providers (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    base_url TEXT NOT NULL DEFAULT '',
+    default_model TEXT NOT NULL DEFAULT '',
+    models TEXT NOT NULL DEFAULT '[]',
+    hint TEXT NOT NULL DEFAULT '',
+    is_real INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+"""
+
+
+def _seed_legacy_catalog_row(default_model: str, models: str):
+    """摆一张**老库**里的清单表：结构是老的，bailian 行的默认模型是旧的。"""
+    with database.get_db() as conn:
+        conn.execute(_LEGACY_CATALOG_DDL)
+        conn.execute(
+            "INSERT INTO model_providers (id, label, base_url, default_model, "
+            "models, hint, is_real, enabled, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "bailian",
+                "阿里云百炼",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                default_model,
+                models,
+                "阿里云百炼 OpenAI 兼容模式。",
+                1,
+                1,
+                10,
+            ),
+        )
+
+
+def test_legacy_catalog_row_is_migrated_to_the_platform_model(legacy_db):
+    """**从真老库启动**：那一行的旧默认模型必须被收敛到新模型。
+
+    播种用 ``ON CONFLICT(id) DO NOTHING``，只补**缺失**的行——所以光改
+    种子对存量库毫无作用，平台模型统一这件事在老部署上根本不会发生。
+    迁移是唯一让老库追上新口径的地方。
+    """
+    _seed_legacy_catalog_row("qwen-plus", '["qwen-plus","qwen-turbo"]')
+
+    database.init_db()
+
+    row = model_catalog.get_model_provider("bailian")
+    assert row["default_model"] == "qwen3.7-flash", (
+        f"老库启动后默认模型没收敛：{row['default_model']!r}"
+    )
+    assert "qwen3.7-flash" in row["models"], row["models"]
+    assert "qwen-plus" in row["models"], (
+        "迁移只改默认模型，不该把用户还能选的旧模型从可选列表里删掉"
+    )
+
+
+def test_migration_leaves_an_admin_chosen_model_alone(legacy_db):
+    """反向对照：管理员自己挑的模型名**不**被迁移改掉。
+
+    迁移只认「旧种子写下的那个值」。别的名字是人的选择，不是遗留值——
+    把所有行都刷成新模型，等于后台的写操作「改了也白改」。
+    """
+    _seed_legacy_catalog_row("qwen-max", '["qwen-max","qwen-turbo"]')
+
+    database.init_db()
+
+    row = model_catalog.get_model_provider("bailian")
+    assert row["default_model"] == "qwen-max", (
+        f"迁移把管理员挑的模型刷回了默认值：{row['default_model']!r}"
+    )
+    assert "qwen3.7-flash" not in row["models"], row["models"]
+
+
+def test_migration_is_idempotent(legacy_db):
+    """重复启动不产生额外改动。"""
+    _seed_legacy_catalog_row("qwen-plus", '["qwen-plus","qwen-turbo"]')
+
+    database.init_db()
+    first = model_catalog.get_model_provider("bailian")
+    database.init_db()
+    second = model_catalog.get_model_provider("bailian")
+
+    assert first["default_model"] == second["default_model"] == "qwen3.7-flash"
+    assert first["models"] == second["models"]
 
 
 def test_platform_default_model_is_none_for_unknown_provider(db):
@@ -359,7 +457,7 @@ def test_update_changes_the_row_and_rereads_it(db):
 
 def test_update_can_change_the_platform_default_model(db):
     """改 default_model 后，平台默认模型读到的就是新值。"""
-    assert model_catalog.platform_default_model("bailian") == "qwen-plus"
+    assert model_catalog.platform_default_model("bailian") == "qwen3.7-flash"
     out = model_catalog.update_model_provider("bailian", {"default_model": "qwen-turbo"})
     assert out["default_model"] == "qwen-turbo"
     assert model_catalog.platform_default_model("bailian") == "qwen-turbo", (
@@ -369,9 +467,9 @@ def test_update_can_change_the_platform_default_model(db):
 
 def test_update_can_extend_the_models_list(db):
     out = model_catalog.update_model_provider(
-        "bailian", {"models": ["qwen-plus", "qwen-turbo", "qwen-max"]})
-    assert out["models"] == ["qwen-plus", "qwen-turbo", "qwen-max"]
-    assert model_catalog.platform_default_model("bailian") == "qwen-plus", (
+        "bailian", {"models": ["qwen3.7-flash", "qwen-plus", "qwen-turbo", "qwen-max"]})
+    assert out["models"] == ["qwen3.7-flash", "qwen-plus", "qwen-turbo", "qwen-max"]
+    assert model_catalog.platform_default_model("bailian") == "qwen3.7-flash", (
         "只改 models 不该顺手改掉默认模型"
     )
 
@@ -382,7 +480,7 @@ def test_disabling_a_provider_drops_the_platform_default(db):
     这条连着 summarizer：它读不到表时会回落硬编码并打 warning，
     而「静默用一个已下架的模型名」正是工单 #13 要消灭的行为。
     """
-    assert model_catalog.platform_default_model("bailian") == "qwen-plus"
+    assert model_catalog.platform_default_model("bailian") == "qwen3.7-flash"
     out = model_catalog.update_model_provider("bailian", {"enabled": 0})
     assert out["enabled"] == 0
     assert model_catalog.platform_default_model("bailian") is None, (
@@ -391,7 +489,7 @@ def test_disabling_a_provider_drops_the_platform_default(db):
     # 重新上架要能恢复
     again = model_catalog.update_model_provider("bailian", {"enabled": 1})
     assert again["enabled"] == 1
-    assert model_catalog.platform_default_model("bailian") == "qwen-plus"
+    assert model_catalog.platform_default_model("bailian") == "qwen3.7-flash"
 
 
 def test_update_rejects_a_default_model_outside_the_list(db):

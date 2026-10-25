@@ -236,22 +236,63 @@ section explains **what is required and what breaks if you get it wrong**.
 
 ### AI services (without a key you only get downloading)
 
-The process reads **three keys** plus two Bailian endpoint/model variables, and they do different jobs:
+The platform model (summaries, mind maps, tags, follow-up chat) goes through **one**
+provider. Its credential, endpoint and model all come from environment variables:
 
 | Variable | Purpose | Where to get it | If missing |
 |----------|---------|-----------------|------------|
-| `ALIYUN_BAILIAN_API_KEY` | **Primary**: summaries, mind maps, tags, follow-up chat (Alibaba Bailian, OpenAI-compatible mode) | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) → API-KEY management | Falls back to the key below; with neither one the AI features raise an error |
+| `ALIYUN_BAILIAN_API_KEY` | **Required**: the platform model's credential (Alibaba Bailian, OpenAI-compatible mode) | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) → API-KEY management | The AI features raise an error — the platform side has **no fallback provider** (see "Provider configuration" below) |
 | `ALIYUN_BAILIAN_BASE_URL` | Endpoint, defaults to `https://dashscope.aliyuncs.com/compatible-mode/v1` | The workspace-specific address from the Bailian console | The default is used |
-| `ALIYUN_BAILIAN_MODEL` | Model, defaults to `bailian.default_model` in the model catalog (falling back to `qwen-plus` when the table has none) | Same as above | The default is used |
-| `DEEPSEEK_API_KEY` | **Fallback** for the key above | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | Same as above |
+| `ALIYUN_BAILIAN_MODEL` | Model; **leave it empty to take `bailian.default_model` from the model catalog** (currently `qwen3.7-flash`) | Same as above | The catalog value is used |
+| `ALIYUN_BAILIAN_PROTOCOL` | Protocol: `openai` (default) or `anthropic` | — | `openai` |
+| `ALIYUN_BAILIAN_ENABLE_THINKING` | Thinking switch, **off** by default | — | Off |
 | `OPENAI_API_KEY` | **Whisper ASR only**: transcribes audio when a video has no subtitles | [platform.openai.com](https://platform.openai.com/) | ASR is skipped; nothing else is affected |
 
-When both provider keys are present, Bailian wins — that is the order the backend reads
-them in (`backend/summarizer.py`). With a user-supplied credential (BYOK), the platform
-key is not used at all.
+> **Environment variables win over the model catalog.** As soon as
+> `ALIYUN_BAILIAN_MODEL` is set, it overrides the catalog's platform default. If a
+> deployment still carries `ALIYUN_BAILIAN_MODEL=qwen-turbo`, delete that line to
+> follow the platform model (that model name 404s on a Bailian workspace
+> endpoint).
 
-The template's `ALIYUN_BAILIAN_MODEL=qwen-turbo` is an **explicit choice**: leave it empty
-and the model comes from the `bailian.default_model` entry in the model catalog.
+> The platform side has **no fallback provider**: configuring only
+> `DEEPSEEK_API_KEY` does not count as configured, and the process stops with an
+> explicit error. See [ADR 0028](docs/adr/0028-platform-model-and-provider-protocols.md)
+> for why: swapping the model name without swapping the endpoint is a guaranteed
+> 404, and a fallback chain hides the first provider's real error.
+
+With a user-supplied credential (BYOK), the platform key is not used at all.
+
+### 🧩 Provider configuration
+
+The platform model talks to **one** provider, and that provider is four things:
+**protocol + endpoint + model + key**. All four come from environment variables
+(nothing is stored in the database or in the repository):
+
+| Part | Variable | Value |
+|------|----------|-------|
+| Protocol | `ALIYUN_BAILIAN_PROTOCOL` | `openai` (default, OpenAI-compatible) or `anthropic` (Anthropic Messages API) |
+| Endpoint | `ALIYUN_BAILIAN_BASE_URL` | OpenAI-compatible takes a **prefix** (`.../compatible-mode/v1`); Anthropic takes the **root** (`https://api.anthropic.com` — a trailing `/v1` is not doubled into `/v1/v1/messages`) |
+| Model | `ALIYUN_BAILIAN_MODEL` | Empty = the catalog's platform default (currently `qwen3.7-flash`) |
+| Key | `ALIYUN_BAILIAN_API_KEY` | The provider's credential |
+
+Both protocols are supported; **only Bailian is configured today** (OpenAI-compatible
+mode). The Anthropic path is a hand-written adapter on top of the `requests` package
+already in this repository (POST `/v1/messages` + `x-api-key` + `anthropic-version` +
+an SSE stream) — no anthropic SDK is installed.
+
+**Platform model vs. user-supplied credential (BYOK)**: BYOK is the **user's own**
+key and endpoint and only affects that user's own call; the platform model is the
+**service's** key driving the catalog's default model. The two never interact, and
+BYOK is not a way to switch providers.
+
+> **Never commit a key.** The real value lives in `backend/.env` (blocked by
+> `.gitignore`); but `.gitignore` blocks a file, not "someone pasting the secret into
+> a document", so gate 4 (`scripts/check_secrets.py`) also scans the working tree and
+> every reachable git history. The template `backend/.env.example` deliberately keeps
+> no concrete credential string.
+
+**Switching providers means editing environment variables and restarting**: protocol
+and endpoint are read once at startup.
 
 ### The other required entry
 
@@ -346,7 +387,7 @@ result of a real trade-off.
 - **"No subtitles available"** → the video has no subtitle track, so it cannot be summarised
 - **"Daily limit reached"** → 3 per account per day, reset at midnight
 - **"Please sign in first"** → register or sign in to use the AI features
-- **No response** → check the LLM key in `.env` (`ALIYUN_BAILIAN_API_KEY` or `DEEPSEEK_API_KEY`)
+- **No response** → check the LLM key in `.env` (`ALIYUN_BAILIAN_API_KEY`; the platform side has no fallback provider)
 </details>
 
 <details>

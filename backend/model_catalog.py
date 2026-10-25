@@ -41,13 +41,26 @@ TABLE = "model_providers"
 #   1. is_real —— platform 与 custom 不是真厂商（一个是平台自己，一个是
 #      「随便什么 OpenAI 兼容端点」）。不给标记的话，后台的真厂商列表会把
 #      这两行混进去，而它们的 base_url / default_model 本来就是空的。
-#   2. models —— byok.js 每家只给了一个默认模型，这里额外把后端原本写死的
-#      qwen-turbo 补进百炼的可选列表（summarizer.py 的文档串与报错文案
-#      至今还把它列为百炼的合法模型名）。**只补有仓库内证据的那个**，
-#      其余各家不编模型名——猜出来的清单会连同清单一长就过期这条一起烂掉。
+#   2. models —— byok.js 每家只给了一个默认模型，这里给百炼补成三个：平台默认的
+#      qwen3.7-flash、原来的 qwen-plus、后端原本写死的 qwen-turbo。
+#      **只补有仓库内证据的那些**，其余各家不编模型名——猜出来的清单会连同清单一长就过期这条一起烂掉。
 #
-# 平台默认模型由此**收敛到 qwen-plus**（前端 byok.js:50 的取值）：
-# 改动前后端写死的是 qwen-turbo，两边漂移正是本工单要消除的那件事。
+# 平台默认模型由此**收敛到 qwen3.7-flash**（工单 #107 / ADR 0028）：
+# 改动前收敛到的是 qwen-plus，现在统一到百炼的混合思考系列模型。
+# 存量库里那一行还留着旧值——`_seed` 只补**缺失**的行，所以存量库的收敛
+# 由 `_migrate_platform_default_model` 负责（见下）。
+
+#: 平台默认模型（工单 #107 / ADR 0028）。
+#:
+#: 改动前是 ``qwen-plus``。现在统一到百炼的 ``qwen3.7-flash``：混合思考系列，
+#: 上下文 1M、最大输入 991808、最大输出 131072。
+PLATFORM_DEFAULT_MODEL = "qwen3.7-flash"
+
+#: 旧种子写下的平台默认模型。
+#:
+#: 存量库里 bailian 行还留着这些值 → `_migrate_platform_default_model`
+#: 按这个名单识别「这是遗留值，不是管理员自己挑的」。
+LEGACY_PLATFORM_DEFAULT_MODELS = ("qwen-plus",)
 
 SEED_PROVIDERS = [
     {
@@ -64,8 +77,8 @@ SEED_PROVIDERS = [
         "id": "bailian",
         "label": "阿里云百炼",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "default_model": "qwen-plus",
-        "models": ["qwen-plus", "qwen-turbo"],
+        "default_model": PLATFORM_DEFAULT_MODEL,
+        "models": [PLATFORM_DEFAULT_MODEL, "qwen-plus", "qwen-turbo"],
         "hint": "阿里云百炼 OpenAI 兼容模式。",
         "is_real": 1,
         "sort_order": 10,
@@ -201,19 +214,80 @@ def _seed(conn) -> int:
     return inserted
 
 
+def _migrate_platform_default_model(conn) -> int:
+    """把存量库里的平台默认模型收敛到 :data:`PLATFORM_DEFAULT_MODEL`。
+
+    （工单 #107 / ADR 0028）
+
+    ## 为什么需要这一步
+
+    ``_seed`` 用 ``ON CONFLICT(id) DO NOTHING``：它只补**缺失**的行，
+    已经在库里的行**原样不动**。所以改种子只对**新库**生效——存量库启动后
+    那一行仍然是旧模型，平台模型统一这件事在存量部署上根本没发生。
+    这不是假设：线上库就是老库。
+
+    ## 只改「旧种子值」
+
+    判定条件是 ``default_model`` 仍等于**旧种子写下的那个值**。
+    管理员在后台显式改过的其它模型名**不动**——那是人的选择，不是遗留值。
+    把所有行都刷成新模型，等于后台的写操作「改了也白改」
+    （那正是 ``_seed`` 刻意不 upsert 的原因）。
+
+    ## 幂等
+
+    改写后 ``default_model`` 不再等于旧值，重复启动不再命中；``models`` 里的
+    新模型也只补一次。重复执行不产生额外改动。
+
+    :return: 改写了的行数。
+    """
+    placeholders = ", ".join("?" for _ in LEGACY_PLATFORM_DEFAULT_MODELS)
+    rows = conn.execute(
+        f"SELECT id, models FROM {TABLE} "
+        f"WHERE default_model IN ({placeholders})",
+        LEGACY_PLATFORM_DEFAULT_MODELS,
+    ).fetchall()
+    migrated = 0
+    for row in rows:
+        models = _parse_models(row["models"])
+        if PLATFORM_DEFAULT_MODEL not in models:
+            models = [PLATFORM_DEFAULT_MODEL] + models
+        conn.execute(
+            f"UPDATE {TABLE} SET default_model = ?, models = ?, "
+            f"updated_at = datetime('now') WHERE id = ?",
+            (
+                PLATFORM_DEFAULT_MODEL,
+                json.dumps(models, ensure_ascii=False),
+                row["id"],
+            ),
+        )
+        migrated += 1
+    if migrated:
+        logger.info(
+            "平台默认模型迁移：%s 行收敛到 %s", migrated, PLATFORM_DEFAULT_MODEL
+        )
+    return migrated
+
+
 def init_model_catalog(conn=None) -> int:
-    """建表 + 播种。幂等。返回新插入的行数。
+    """建表 + 播种 + 迁移。幂等。返回新插入的行数。
 
     由 ``database.init_db`` 在**同一份连接、同一批事务里**调用，所以
     「建表」与「播种」要么都成功要么都回滚，不会留下空表。
     单独调用时（测试、或将来别的入口）自己开一份连接。
+
+    迁移在播种**之后**跑：新库那一行已经是新模型，迁移扫到的是空的；
+    老库那一行是旧值，迁移把它收敛过去。两种库得到同一个结果。
     """
     if conn is not None:
         conn.executescript(_CREATE_DDL)
-        return _seed(conn)
+        inserted = _seed(conn)
+        _migrate_platform_default_model(conn)
+        return inserted
     with get_db() as own:
         own.executescript(_CREATE_DDL)
-        return _seed(own)
+        inserted = _seed(own)
+        _migrate_platform_default_model(own)
+        return inserted
 
 
 # ── 查询 ────────────────────────────────────────────────────

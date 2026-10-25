@@ -155,10 +155,11 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 
 | 变量                        | 必填  | 默认值                                                 | 用途                                      | 获取                                                                               |
 | ------------------------- | :---: | --------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------- |
-| `ALIYUN_BAILIAN_API_KEY`  | ✅   | —                                                   | AI 总结 / 导图 / 问答（推荐，最便宜）                 | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/)       |
+| `ALIYUN_BAILIAN_API_KEY`  | ✅   | —                                                   | AI 总结 / 导图 / 问答（平台 provider，**无兜底**）     | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/)       |
 | `ALIYUN_BAILIAN_BASE_URL` | —   | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼兼容模式端点                                | 用 workspace 专属地址                                                                 |
-| `ALIYUN_BAILIAN_MODEL`    | —   | 模型清单表里的 `bailian.default_model`（表里没配时回落 `qwen-plus`） | 模型名（`qwen-turbo` 最便宜，`qwen-plus` 性价比最高） | 百炼模型市场                                                                           |
-| `DEEPSEEK_API_KEY`        | ✅   | —                                                   | AI 总结 / 导图 / 问答（与百炼二选一）                  | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
+| `ALIYUN_BAILIAN_MODEL`    | —   | 模型清单表里的 `bailian.default_model`（当前 `qwen3.7-flash`） | 模型名（**这一项优先于清单表**）                      | 百炼模型市场                                                                           |
+| `ALIYUN_BAILIAN_PROTOCOL` | —   | `openai`                                             | provider 协议：`openai`（OpenAI 兼容）/ `anthropic`（Messages API） | ——                                                                        |
+| `ALIYUN_BAILIAN_ENABLE_THINKING` | — | `false`（关）                                        | 思考开关。平台模型**默认开着**思考，不关会先吃掉 `max_tokens` 预算 | ——                                                                        |
 | `JWT_SECRET`              | ✅   | 无默认值（缺失或纯空白则拒绝启动）                        | JWT 签名密钥                                | `openssl rand -hex 32`（32+ 位随机串）                                                  |
 | `VIDDIGEST_ADMIN_EMAILS`  | —   | 空（合法：没有管理员）                                    | 首个管理员播种，逗号分隔；见 §10.4          | 就是目标账号的邮箱，逗号分隔                                                           |
 | `VIDDIGEST_ALLOWED_ORIGINS` | — | 空（合法：**完全不允许**跨域，默认如此）                | 跨域白名单，逗号分隔                          | 按实际前端地址填                                                                        |
@@ -174,13 +175,16 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 ### 4.2 模板
 
 ```env
-# ─── AI（必填，配置任一组即可；阿里云百炼最便宜）──
+# ─── AI（必填）────────────────────────────────────────────
+# 平台模型走**一个** provider：协议 + 端点 + 模型 + key，全部在这里配。
+# 平台侧没有兜底 provider：只配 DeepSeek 的 key 不算配置好了（见 §4.3）。
 # 阿里云百炼：填写 ALIYUN_BAILIAN_API_KEY 即可。模型名留空就走模型清单表里的
-# bailian.default_model（表里没配时回落 qwen-plus）；写死 qwen-turbo 就是显式选它。
+# bailian.default_model（当前 qwen3.7-flash）；写死一个模型名就是显式选它，
+# 且**这一项优先于清单表**。
 ALIYUN_BAILIAN_API_KEY=sk-your-bailian-key
-ALIYUN_BAILIAN_MODEL=qwen-turbo
-# 或 DeepSeek（两组配任意一组即可，程序按非空的那组选用）
-DEEPSEEK_API_KEY=
+# ALIYUN_BAILIAN_MODEL=qwen3.7-flash
+# ALIYUN_BAILIAN_PROTOCOL=openai          # openai（默认）/ anthropic
+# ALIYUN_BAILIAN_ENABLE_THINKING=false    # 思考开关，默认关
 
 # ─── 安全（必填，缺失则进程拒绝启动）─────────────
 # JWT_SECRET 没有默认值。写死一个兜底常量等于让猜中常量的人
@@ -197,7 +201,58 @@ FRONTEND_URL=https://your-domain.com
 OPENAI_API_KEY=sk-your-openai-key
 ```
 
-### 4.3 配置生效
+### 4.3 提供商配置
+
+平台模型（摘要 / 导图 / 标签 / 追问）接的是**一个** provider。它由四件事决定，
+四件都来自环境变量——**不进数据库，也不进仓库**：
+
+| 要素 | 变量 | 取值 |
+| --- | --- | --- |
+| 协议 | `ALIYUN_BAILIAN_PROTOCOL` | `openai`（默认，OpenAI 兼容协议）/ `anthropic`（Anthropic Messages API） |
+| 端点 | `ALIYUN_BAILIAN_BASE_URL` | OpenAI 兼容协议填**前缀**（`.../compatible-mode/v1`，SDK 自己补 `/chat/completions`）；Anthropic 填**根**（`https://api.anthropic.com`，适配层自己补 `/v1/messages`） |
+| 模型 | `ALIYUN_BAILIAN_MODEL` | 留空 = 取模型清单表里的平台默认模型（当前 `qwen3.7-flash`） |
+| key | `ALIYUN_BAILIAN_API_KEY` | provider 的凭据 |
+
+**当前只配置百炼**（`openai` 兼容模式）。`anthropic` 那条路已经实现并有离线用例
+（`backend/provider_config.py` + `backend/tests/test_provider_config.py`），
+但**没有真实联调过**——真机验证由维护者做。
+
+#### 为什么协议不存进清单表
+
+清单表管的是「有哪些厂商、默认用哪个模型」，凭据与协议不归它管（ADR 0004 / ADR 0011）：
+管理后台的改字段入口是冻结的，加一个改不动的字段比不加更糟；而且 key 与协议本来就
+同属部署配置，分两处配同一件事更容易配漏。
+
+#### 三条容易踩的
+
+- **没有兜底链**。只配了 `DEEPSEEK_API_KEY` **不算配置好了**——进程会带着明确的
+  报错停下来。原因：只换模型名不换端点必然 404，而兜底链会把第一个 provider 的
+  真实错误盖住。见 [ADR 0028](adr/0028-platform-model-and-provider-protocols.md)。
+- **环境变量优先于清单表**。`.env` 里留着 `ALIYUN_BAILIAN_MODEL=qwen-turbo` 时，
+  清单表里的 `qwen3.7-flash` 就不生效，而那个模型名在百炼工作空间端点上是 404。
+  要跟着平台模型走就把那一行删掉。
+- **思考默认开着**。平台模型不显式关掉思考的话，思维链会先吃掉 `max_tokens` 的
+  预算（同一问句实测 845 vs 47 tokens），长总结于是提前截断。程序默认发
+  `enable_thinking: false`；要开就设 `ALIYUN_BAILIAN_ENABLE_THINKING=true`。
+
+#### key 不要提交进仓库
+
+真值只进 `backend/.env`（已被 `.gitignore` 挡住）。但 `.gitignore` 挡得住文件，
+挡不住「把口令抄进文档」——门禁第 4 关（`scripts/check_secrets.py`）扫**工作树与
+全部可达 git 历史**（含 commit message）。模板 `backend/.env.example` 里刻意不留
+任何具体凭据字符串，要值就现生成。
+
+#### 平台模型 vs 用户自带凭据（BYOK）
+
+BYOK 是**用户自己**的 key 与端点，只影响他自己那一次调用；平台模型是**服务方**的
+key，走清单表里的默认模型。两者互不影响，BYOK 也不是「换个 provider 的办法」。
+
+#### 换 provider
+
+协议与端点是**启动时读一次**的：改完环境变量要重启后端。清单表里的平台默认模型
+是运行时读的（改完不用重启），但 `ALIYUN_BAILIAN_MODEL` 会盖过它。
+
+### 4.4 配置生效
 
 
 | 方式                            | 是否需要重启                        |
@@ -616,7 +671,7 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 | uvicorn 端口被占                                     | 8000 被别的进程占            | `netstat -ano | grep 8000` 杀 PID 或换 `--port 8001`                        |
 | vite 端口跳到 5174/5175                              | 5173 被旧实例占             | `taskkill /F /PID <pid>` + 加 `--strictPort`                              |
 | hub 启动报 `CreateProcessW ... 不是有效的 Win32 应用程序`    | 中文 cwd + npx 触发 \0 bug | 用绝对路径 `node node_modules/vite/bin/vite.js`                               |
-| `未检测到 AI 服务 API Key，请配置以下任一组环境变量`（`ValueError`） | `.env` 缺失或没填           | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY`（推荐）或 `DEEPSEEK_API_KEY` → 重启 |
+| `未检测到 AI 服务 API Key，请配置环境变量`（`ValueError`） | `.env` 缺失或没填           | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY` → 重启（平台侧**没有兜底 provider**，只配 `DEEPSEEK_API_KEY` 不算） |
 | `RuntimeError: 缺少环境变量 JWT_SECRET`               | `.env` 漏配 / 配了纯空白 / 启动进程读不到 | `openssl rand -hex 32` 生成 64 位随机串，写进 `backend/.env` 后重启            |
 
 
@@ -1288,7 +1343,7 @@ docker run --rm -v "$PWD:/repo" -w /repo node:22-bookworm bash -c '
 | 服务挂了  | `hub ps` → `hub describe` → `hub logs --follow`                                                            |
 | 接口异常  | `curl -v` + 看 `hub logs --grep ERROR`                                                                      |
 | 平台兼容  | 升级 yt-dlp + 提交 Issue                                                                                       |
-| AI 不通 | 看 `ALIYUN_BAILIAN_API_KEY` / `DEEPSEEK_API_KEY` 是否过期 / 余额；百炼要确认 `ALIYUN_BAILIAN_BASE_URL` 是 workspace 专属地址 |
+| AI 不通 | 看 `ALIYUN_BAILIAN_API_KEY` 是否过期 / 余额；百炼要确认 `ALIYUN_BAILIAN_BASE_URL` 是 workspace 专属地址；确认 `ALIYUN_BAILIAN_MODEL` 没有被写成一个不存在的模型名（它**优先于**清单表） |
 | 数据丢失  | 从 `backup/app-*.db` 恢复                                                                                     |
 
 
