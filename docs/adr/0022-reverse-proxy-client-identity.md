@@ -72,8 +72,8 @@ date: 2026-10-25
   并把「头里只留一个权威地址」的责任分给边缘。0020 的决定段是历史记录，不改写。
   与 [ADR 0021](0021-public-endpoint-concurrency-gate.md) 共用同一个
   `client_identity` 判定——两道闸门的口径必须一致。
-- 行为由 `backend/tests/test_ratelimit.py`（21 条）与
-  `backend/tests/mutation_ratelimit.py`（10 个变异）钉住：其中一条变异专门把
+- 行为由 `backend/tests/test_ratelimit.py`（23 条）与
+  `backend/tests/mutation_ratelimit.py`（11 个变异）钉住：其中一条变异专门把
   后端改回取首段、另一条专门把边缘改回追加语义，两条都必须转红。
 - 端到端守卫是 `scripts/ops/check_xff_bypass.py`：从栈**外面**连打 25 次带唯一
   伪造头的请求，至少要出现一次 429（`detail.code == rate_limit`），否则退出码 1。

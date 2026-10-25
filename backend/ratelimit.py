@@ -20,6 +20,12 @@
 的语义一句话说得清（「一分钟内最多 N 次」），`Retry-After` 也能直接
 给出窗口剩余秒数。够用，且口径好解释。
 
+计数键是**「来源 + 桶」**：同一个来源在每个端点各有一个计数器，六个桶
+互不相干。为什么必须是两段：键里**只有来源**的话，六个桶会共用同一个
+计数器——判红时用的是**当前桶**的上限，累加的却是**所有桶**的总次数，
+于是打满解析桶（20 次）之后，**第一次**登录就会被拒（工单 #102）。
+两段用 `:` 隔开：来源那段自带 `ip:` 前缀，桶名以 `/` 开头，两者不撞。
+
 范围：这是**单机**限流。进程重启计数就清零，多实例之间各数各的——
 现在后端是单进程单 worker（`docs/TECHNICAL.md` §1.3），多实例部署那天
 再换成共享存储。
@@ -375,14 +381,19 @@ def client_identity(request: Request) -> str:
 
 
 def enforce(request: Request, bucket: str) -> None:
-    """超了就抛 429；放行就什么都不做。"""
+    """超了就抛 429；放行就什么都不做。
+
+    **计数键是「来源 + 桶」**：同一个来源在每个端点各有一个计数器，
+    桶与桶互不影响（工单 #102）。键里少了桶名的话，六个桶会共用一个
+    计数器——判红时用的是当前桶的上限，累加的却是所有桶的总次数。
+    """
     if not _enabled():
         return
     limit = _limit_for(bucket)
     if limit <= 0:
         return
     allowed, _remaining, retry_after = _counter.hit(
-        client_identity(request), limit, _window_seconds()
+        f"{client_identity(request)}:{bucket}", limit, _window_seconds()
     )
     if allowed:
         return
