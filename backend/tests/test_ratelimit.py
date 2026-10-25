@@ -74,6 +74,11 @@ def _download_body():
     return {"url": DEAD_URL, "format_id": "1"}
 
 
+def _login_body():
+    """登录请求体：库里不会有这个邮箱，所以走到处理函数就是 400。"""
+    return {"email": "nobody@example.com", "password": "whatever"}
+
+
 class TestThePublicEndpointsAreThrottled:
     """限流挂在哪些端点上——逐个端点证明，不靠读代码。"""
 
@@ -149,6 +154,18 @@ class TestThePublicEndpointsAreThrottled:
 
 
 class TestTheBucketsAreIndependent:
+    """每个来源每个端点各一个计数器：桶与桶互不影响（工单 #102）。
+
+    **为什么这条要单独钉**：计数键里少了桶名的话，六个桶会共用同一个
+    计数器——判红时用的是**当前桶**的上限，累加的却是**所有桶**的总次数。
+    症状是「打满解析桶之后，**第一次**登录就被拒」，而它长得跟登录面被
+    撞库一模一样，排查方向会被带偏。
+
+    **为什么用真实上限（解析 20、登录 10），不把上限改成 1**：把上限改成
+    1 时，两个桶的上限大小关系会反过来——被测的那个桶反而更大，缺陷就
+    藏进「另一个桶的上限更大」那一侧，看不出来。
+    """
+
     def test_being_throttled_on_parse_does_not_throttle_download(self, client, monkeypatch):
         """桶与桶各数各的：一个桶超了，另一个桶照常放行。"""
         monkeypatch.setenv("VIDDIGEST_RATE_LIMIT_PARSE", "1")
@@ -167,6 +184,89 @@ class TestTheBucketsAreIndependent:
         assert client.post("/api/parse", json=_parse_body()).status_code == 429
         # 解析桶已经爆了，下载桶是另一个桶——不该被连带。
         assert client.post("/api/download", json=_download_body()).status_code != 429
+
+    def test_a_full_parse_bucket_does_not_throttle_the_login_bucket(
+        self, client, db, monkeypatch
+    ):
+        """打满解析桶（20 次）之后，登录桶照常放行，额度一个没少。
+
+        判别法：先证明解析桶**真的满了**（第 21 次解析 429），再说登录
+        没被连带；最后再证明登录桶自己的额度还是满的 10 次。只发 20 次
+        解析、不看它们是不是 429，那这条断言可能什么都没测。
+        """
+        monkeypatch.setattr(
+            main_module.downloader,
+            "parse_video",
+            lambda url: (_ for _ in ()).throw(RuntimeError("probe")),
+        )
+        parse_codes = [
+            client.post("/api/parse", json=_parse_body()).status_code
+            for _ in range(20)
+        ]
+        assert 429 not in parse_codes, (
+            "解析桶的上限是 20，前 20 次不该被限流拦下：%r" % (parse_codes,)
+        )
+        assert client.post("/api/parse", json=_parse_body()).status_code == 429, (
+            "解析桶没有被打满 —— 下面那句「登录没被连带」就可能是空的"
+        )
+
+        # 登录是**另一个桶**，它一次都没被碰过：这次不该被拒。
+        login = client.post("/api/auth/login", json=_login_body())
+        assert login.status_code != 429, (
+            "打满解析桶之后，第一次登录就被拒了 —— 六个桶共用同一个计数器，"
+            "累加的是所有桶的总次数（工单 #102）"
+        )
+        assert login.status_code == 400, (
+            "登录请求应当真的走到登录处理函数（库里没有这个邮箱 ⇒ 400）；"
+            "拿到别的状态码说明请求没走完，「不是 429」就成了一句空话"
+        )
+        # 额度也没被连带：登录桶还是满的 10 次。
+        login_codes = [
+            client.post("/api/auth/login", json=_login_body()).status_code
+            for _ in range(9)
+        ]
+        assert 429 not in login_codes, (
+            "解析桶的 20 次不该吃掉登录桶的 10 次额度：%r" % (login_codes,)
+        )
+        assert client.post("/api/auth/login", json=_login_body()).status_code == 429
+
+    def test_a_full_login_bucket_does_not_throttle_the_parse_bucket(
+        self, client, db, monkeypatch
+    ):
+        """反向对照：打满登录桶（10 次）之后，解析桶照常放行，额度一个没少。
+
+        与上一条互为镜像：上一条抓「解析的流量污染了登录」，这条抓
+        「登录的流量污染了解析」。只写一条的话，缺陷有一半的方向没人守。
+        """
+        monkeypatch.setattr(
+            main_module.downloader,
+            "parse_video",
+            lambda url: (_ for _ in ()).throw(RuntimeError("probe")),
+        )
+        login_codes = [
+            client.post("/api/auth/login", json=_login_body()).status_code
+            for _ in range(10)
+        ]
+        assert 429 not in login_codes, (
+            "登录桶的上限是 10，前 10 次不该被限流拦下：%r" % (login_codes,)
+        )
+        assert client.post("/api/auth/login", json=_login_body()).status_code == 429, (
+            "登录桶没有被打满 —— 下面那句「解析没被连带」就可能是空的"
+        )
+
+        parse = client.post("/api/parse", json=_parse_body())
+        assert parse.status_code != 429, (
+            "打满登录桶之后，第一次解析就被拒了 —— 六个桶共用同一个计数器"
+        )
+        # 额度也没被连带：解析桶还是满的 20 次。
+        parse_codes = [
+            client.post("/api/parse", json=_parse_body()).status_code
+            for _ in range(19)
+        ]
+        assert 429 not in parse_codes, (
+            "登录桶的 10 次不该吃掉解析桶的 20 次额度：%r" % (parse_codes,)
+        )
+        assert client.post("/api/parse", json=_parse_body()).status_code == 429
 
 
 class TestTheWindowExpires:

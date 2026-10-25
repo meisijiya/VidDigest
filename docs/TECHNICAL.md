@@ -457,19 +457,19 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 数字 | 口径 | 复现命令 | 真值文件 | 变化时机 |
 | --- | --- | --- | --- | --- | --- |
-| A1 | 40 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
-| A2 | 29 | `get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3 | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/'` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
+| A1 | 43 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
+| A2 | 34 | `get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3 | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/'` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -n 'EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1402 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A4 | 1404 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 517 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 199 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
 | A7 | 23 | `scripts/` 10 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
 | A8 | 10 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
-| A9 | 4 个 job 定义 / 23 个实例 | 1 个门禁 job + 1 个生产构建 job + 19 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
-| A10 | 6 表 + 1 虚表 + 4 触发器 | 建表 / 建虚表 / 建触发器语句 | `grep -rnE 'CREATE (VIRTUAL )?TABLE\|CREATE TRIGGER' backend --include=*.py` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
+| A9 | 4 个 job 定义 / 25 个实例 | 1 个门禁 job + 1 个生产构建 job + 19 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
+| A10 | 7 表 + 1 虚表 + 4 触发器 | 建表 / 建虚表 / 建触发器语句 | `grep -rnE 'CREATE (VIRTUAL )?TABLE\|CREATE TRIGGER' backend --include=*.py` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
 | A11 | 23 | `docs/adr/` 下的文件数（22 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
 | A12 | 40 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
-| A13 | 76 | 工单总数（全部关闭） | `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
+| A13 | 82 | 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A16 | 1800 | 覆盖闸门 TTL（秒） | `grep -n 'VIDEO_REGENERATE_TTL_SECONDS' backend/database.py` | `backend/database.py` | 常量可改 |
