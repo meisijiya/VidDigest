@@ -3529,10 +3529,18 @@ def create_invite_code(created_by: int | None = None, max_uses: int = 1,
 
 
 def get_invite_code_by_id(invite_id: int) -> dict | None:
-    """按 id 读一枚码（脱敏投影）。没有则 None。"""
+    """按 id 读一枚码（脱敏投影）。没有则 None。
+
+    与列表用**同一个 JOIN 投影**：发放人邮箱是列表和单枚读都要给的字段，
+    两个出口的形状必须一致——作废接口回的单枚若少这个字段，调用方会
+    以为「这枚码没人发过」。
+    """
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM invite_codes WHERE id = ?", (invite_id,)
+            "SELECT i.*, u.email AS created_by_email FROM invite_codes i"
+            " LEFT JOIN users u ON u.id = i.created_by"
+            " WHERE i.id = ?",
+            (invite_id,),
         ).fetchone()
     return _invite_code_item(row) if row else None
 
