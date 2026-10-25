@@ -248,11 +248,57 @@ MUTATIONS = [
     ),
     (
         # 口径 5：存量导图的写迁移空转，老库里的光杆永远重建不了。
+        # 锚点是迁移里的**判定那一行**——工单 #111 把它从「不是退化就跳过」
+        # 改写成了三分支（退化 / 超限 / 其余跳过），锚点跟着改写，
+        # 否则模式串不命中，脚本会把「没跑到」当成「存活」。
         "M6 存量导图重建迁移空转（退化行不被重建）",
         DATABASE_FILE,
         MIGRATION_TARGET,
-        [('            if not is_degenerate(row["mindmap_md"]):\n                continue\n',
-          "            continue\n")],
+        [("            if is_degenerate(md):\n", "            if False:\n")],
+        {
+            "mode": "KILLED",
+            # 转红的必须正好是这三条：退化行重建不了（videos / parse_history
+            # / 新库里的退化行）。同组里另外几条（没有正文保持原样 /
+            # 已有层级保持原样 / 超限行照常被收拾 / 幂等 / 行数不变）
+            # 必须**保持绿**——它们是对照组，变异越权也得放行。
+            "failed": [
+                "test_a_fresh_library_rebuilds_a_degenerate_row_without_adding_rows",
+                "test_the_stored_degenerate_map_is_rebuilt_on_upgrade",
+                "test_the_stored_degenerate_map_in_parse_history_is_rebuilt_too",
+            ],
+            "kept_green": [
+                "test_a_row_without_a_summary_keeps_its_map",
+                "test_a_row_that_already_has_levels_is_left_alone",
+                "test_a_row_over_the_limits_is_truncated_on_upgrade",
+                "test_the_migration_is_idempotent",
+                "test_the_migration_keeps_the_row_count",
+            ],
+        },
+    ),
+    (
+        # 工单 #111 口径 3：层级够但超上限的存量行也得被收拾。
+        # 迁移不再走这条分支 → 超限行原样留在库里，前端照样渲染一棵
+        # 几十个节点的导图，规则形同虚设。
+        "M7 迁移不再收拾超上限的行（超限行原样留在库里）",
+        DATABASE_FILE,
+        MIGRATION_TARGET,
+        [("            elif exceeds_limits(md):\n", "            elif False:\n")],
+        {
+            "mode": "KILLED",
+            # 只该转红这一条；同组的反向对照（退化行照常被重建 / 已有层级
+            # 的行保持原样 / 没有正文的行保持原样 / 幂等 / 行数不变）
+            # 必须保持绿。
+            "failed": ["test_a_row_over_the_limits_is_truncated_on_upgrade"],
+            "kept_green": [
+                "test_a_fresh_library_rebuilds_a_degenerate_row_without_adding_rows",
+                "test_the_stored_degenerate_map_is_rebuilt_on_upgrade",
+                "test_the_stored_degenerate_map_in_parse_history_is_rebuilt_too",
+                "test_a_row_without_a_summary_keeps_its_map",
+                "test_a_row_that_already_has_levels_is_left_alone",
+                "test_the_migration_is_idempotent",
+                "test_the_migration_keeps_the_row_count",
+            ],
+        },
     ),
     # ── 工单 #107 的 provider 口径 ───────────────────────────────
     (
@@ -354,7 +400,31 @@ def parse_counts(out):
 
 
 def failed_names(out):
-    return re.findall(r"(?:FAILED\s+\S+::\S+|_+ Test\S+)", out)
+    """转红的用例名（不带模块前缀，只留 `::` 后那段）。
+
+    用来核对「这几条必须转红、那几条必须保持绿」：少一条 = 变异没被
+    真正杀掉，多一条 = 变异伤了别的地方（或者断言越权）。
+    """
+    return [m.split("::")[-1] for m in re.findall(r"FAILED\s+(\S+::\S+)", out)]
+
+
+def strict_mismatch(strict, out):
+    """严格期望不符时返回一句话，相符时返回 None。
+
+    两头都要盯：
+      * `failed` —— 这些必须转红（少了 = 变异没被真正杀掉）；
+      * `kept_green` —— 这些必须**保持绿**（红了 = 守卫越权，比变异存活更严重）。
+    """
+    got = set(failed_names(out))
+    want_failed = set(strict.get("failed") or [])
+    want_green = set(strict.get("kept_green") or [])
+    missing = want_failed - got
+    if missing:
+        return f"该转红的用例没红：{sorted(missing)}"
+    over = want_green & got
+    if over:
+        return f"不该转红的用例转红了（守卫越权）：{sorted(over)}"
+    return None
 
 
 def main():
@@ -386,8 +456,15 @@ def main():
     for entry in MUTATIONS:
         # 第 5 个元素是**期望**：默认 "KILLED"（必须转红）；
         # "GREEN" 是反向对照（必须**不**转红——守卫越权比变异存活更严重）。
+        # 也可以给一个 dict：{"mode": "KILLED", "failed": [...],
+        # "kept_green": [...]}——后者额外要求「列出的用例必须转红」
+        # 「列出的反向对照必须保持绿」。
         name, path, target, pairs = entry[:4]
         expect = entry[4] if len(entry) > 4 else "KILLED"
+        strict = {}
+        if isinstance(expect, dict):
+            strict = expect
+            expect = strict.get("mode", "KILLED")
         original = read_source(path)
         mutated = mutate_bytes(original, pairs)
         if mutated == original:
@@ -413,20 +490,31 @@ def main():
                         f"{name} —— 反向对照转红了（守卫越权）：{summary}"
                     )
                 else:
-                    killed += 1
                     names = failed_names(out)
+                    problem = strict_mismatch(strict, out)
+                    if problem:
+                        broken.append(f"{name} —— {problem}")
+                        continue
+                    killed += 1
                     print(f"KILLED  {name}")
-                    print(f"        转红于: {', '.join(n.strip('_ ') for n in names[:4])}")
+                    print(f"        转红于: {', '.join(names[:4])}")
+                    if strict.get("failed"):
+                        print("        同组其余用例保持绿（对照组没被误伤）")
         finally:
             write_source(path, original)
             if read_source(path) != original:
                 print(f"  [还原失败] {name} —— 文件没能字节级还原")
                 restore_failed.append(name)
 
-    expect_killed = sum(
-        1 for e in MUTATIONS
-        if (e[4] if len(e) > 4 else "KILLED") == "KILLED"
-    )
+    # 期望值也得按「第 5 个元素可能是 dict」来算，否则带严格期望的变异
+    # 会被漏计，报出来的「x/y 杀」就自相矛盾了。
+    def _mode(entry):
+        expect = entry[4] if len(entry) > 4 else "KILLED"
+        if isinstance(expect, dict):
+            return expect.get("mode", "KILLED")
+        return expect
+
+    expect_killed = sum(1 for e in MUTATIONS if _mode(e) == "KILLED")
     expect_green = len(MUTATIONS) - expect_killed
     print("=" * 72)
     print(f"变异结果：{killed}/{expect_killed} 杀，"

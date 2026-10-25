@@ -508,6 +508,7 @@ export interface AdminInviteCode {
  * `code` 与 `code_masked` 只会有一个存在（创建给明文、列表给脱敏码），
  * 缺的读成空串——不是 undefined，因为模板里直接显示它。
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
 function toAdminInviteCode(r: Record<string, any>): AdminInviteCode {
   return {
     id: num(r.id),

@@ -25,11 +25,7 @@ vi.mock('../src/api/admin.ts', () => ({
 }))
 
 import InviteCodesPage from '../src/components/InviteCodesPage.vue'
-import {
-  fetchAdminInviteCodes,
-  createAdminInviteCodes,
-  revokeAdminInviteCode,
-} from '../src/api/admin.ts'
+import { fetchAdminInviteCodes, createAdminInviteCodes, revokeAdminInviteCode } from '../src/api/admin.ts'
 
 // ── 造数据 ─────────────────────────────────────────────────
 

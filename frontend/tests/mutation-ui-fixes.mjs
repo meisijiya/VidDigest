@@ -3,9 +3,10 @@
  * 变异验证：新测试是否真的在验。
  *
  * 全绿不等于在验 —— 只有「把功能破坏掉，测试转红」才证明它有鉴别力。
- * 每条变异改一处真实实现，跑一次 node --test，确认：
+ * 每条变异改一处真实实现，跑一次对应的测试套件，确认：
  *   1) 真的跑了测试（ran > 0，不把「0 条测试」当通过）
  *   2) 真的转红
+ *   3) 转红是**断言**转红（AssertionError），不是变异体自己坏了
  * 改完立刻还原，绝不留下变异体。
  */
 import { readFileSync, writeFileSync, existsSync, copyFileSync, unlinkSync } from 'node:fs'
@@ -16,6 +17,55 @@ import { dirname, join } from 'node:path'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FE = join(HERE, '..')
 const BE = join(FE, '..', 'backend')
+
+/**
+ * 变异体：工单 #111 之前，前端**自己**洗一遍导图 markdown 的那份复制品
+ * （现在 VideoSummary.vue 里已经没有了，backend/mindmap.py 是唯一真源）。
+ *
+ * 这里原样写一遍，是为了让「前端恢复复制品」这条变异**可复现**：
+ * 写进脚本文本就得把正则和模板串再转义一遍，转义错了，变异体测的
+ * 就不再是那件事。用 toString() 取自己的源码文本，绕开这层转义。
+ */
+function legacySanitizeMindmap(md) {
+  let text = (md || '').trim()
+  if (!text) return '# 视频思维导图\n- 暂无内容'
+
+  // 1. 去除代码块围栏
+  text = text.replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/i, '')
+
+  // 2. 截掉第一个任意级别标题之前的内容
+  const headingMatch = text.match(/^#{1,6}\s+\S/m)
+  if (headingMatch) {
+    const idx = text.indexOf(headingMatch[0])
+    text = text.slice(idx)
+    // 3. 保证存在 `# ` 一级根标题
+    if (!/^#\s+\S/m.test(text)) {
+      const firstH2 = text.match(/^##\s+(.+)$/m)
+      if (firstH2) {
+        text = `# ${firstH2[1].trim()}\n${text.slice(text.indexOf(firstH2[0]) + firstH2[0].length)}`
+      } else {
+        text = `# 视频思维导图\n${text}`
+      }
+    }
+    return text.trim()
+  }
+
+  // 4. 兜底：没有任何 Markdown 标题时，把非空文本行转为根节点下的列表
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+  const items = lines
+    .map((l) => l.replace(/^[-*•#\d.、\s]+/, '').trim())
+    .filter(Boolean)
+    .slice(0, 50)
+    .map((l) => `- ${l}`)
+    .join('\n')
+  return items ? `# 视频思维导图\n${items}` : '# 视频思维导图\n- 暂无内容'
+}
+
+/** 装回 VideoSummary.vue 时用的源码文本（函数名改回当年那个）。 */
+const LEGACY_SANITIZE_SOURCE = legacySanitizeMindmap.toString().replace('legacySanitizeMindmap', 'sanitizeMindmap')
 
 /** 每个变异：破坏什么、期望哪条测试转红 */
 // 空白宽松匹配：模式串的每个字符之间都允许插入任意空白。
@@ -319,6 +369,28 @@ const MUTANTS = [
     to: '',
     expect: /总结正文里的表格没有排版/,
   },
+  {
+    // 工单 #111 判据 1 + 2：前端不再有第二份清洗规则，导图结构由
+    // backend/mindmap.py 说了算。这条变异把当年那份复制品**原样装回去**：
+    // 它把首个 `##` 提升成 `# ` 却不把后代同步下移，于是 `###` 变成
+    // 「比根深两级」的孤儿标题，markmap 建树时把父节点的孩子整个清掉 ——
+    // 第三级节点凭空消失。挂载用例必须为此转红。
+    name: 'M35 前端把导图再洗一遍（旧复制品被恢复）',
+    file: join(FE, 'src/components/VideoSummary.vue'),
+    edits: [
+      { from: 'function renderMindmap() {', to: `${LEGACY_SANITIZE_SOURCE}\n\nfunction renderMindmap() {` },
+      {
+        from: 'transformer.transform(mindmapMd.value)',
+        to: 'transformer.transform(sanitizeMindmap(mindmapMd.value))',
+      },
+    ],
+    runner: 'vitest',
+    spec: 'tests/video-summary.mount.spec.mjs',
+    // 转红必须是断言转红（不是变异体自己坏了），且只该转红这一条：
+    // 同文件里那两条反向对照（后端形状的导图 / 空态）必须保持绿。
+    failedTests: ['后端交来的 markdown 原样渲染：第三级节点不会在前端这一层消失'],
+    keptGreen: ['对照组：后端形状的导图（# 根）第三级照样在第三层', '没有导图时是空态，一个节点都不画'],
+  },
 ]
 
 let killed = 0
@@ -343,35 +415,70 @@ for (const m of MUTANTS) {
   // 而这两件事的处置完全相反。
   // 但「重排版」（prettier 改了换行与缩进）不算代码变了：
   // 先精确匹配，再退到空白宽松（只改空白，非空白字符仍逐字相同）。
-  const mutation = replaceLoose(src, m.from, m.to)
-  if (!mutation.matched) {
+  // 一条变异可以有多处改动（`edits`）；每处都必须命中。
+  const edits = m.edits || [{ from: m.from, to: m.to }]
+  let mutated = src
+  let matchedAll = true
+  for (const e of edits) {
+    const r = replaceLoose(mutated, e.from, e.to)
+    if (!r.matched) {
+      matchedAll = false
+      break
+    }
+    mutated = r.out
+  }
+  if (!matchedAll) {
     broken.push(`${m.name} —— 锚点没命中（代码已变或换行符不符？先更新变异脚本，别跳过）`)
     continue
   }
 
   copyFileSync(m.file, backup)
   try {
-    writeFileSync(m.file, mutation.out, 'utf8')
+    writeFileSync(m.file, mutated, 'utf8')
     let out = ''
     let ran = -1
-    try {
-      out = execFileSync(
-        process.execPath,
-        // 必须用与 `npm test` 相同的 glob：传单个文件路径时 node --test
-        // 不产出 TAP 计数，于是「变异后测试跑不起来」和「测试全过」长得
-        // 一模一样，12 条变异会假性全部存活。
-        ['--test', '--test-timeout=10000', 'tests/**/*.test.mjs'],
-        { cwd: FE, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      )
-      ran = 0
-    } catch (e) {
-      out = (e.stdout || '') + (e.stderr || '')
-      ran = 1
+    let nRan = 0
+    let failedTests = []
+    if (m.runner === 'vitest') {
+      // 挂载用例走 vitest（`npm run test:mount`）。node --test 那条 glob
+      // 只收 .test.mjs，收不到 .spec.mjs —— 挂载用例必须走这一条。
+      try {
+        out = execFileSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', m.spec], {
+          cwd: FE,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        ran = 0
+      } catch (e) {
+        out = (e.stdout || '') + (e.stderr || '')
+        ran = 1
+      }
+      const mRan = out.match(/Tests\s+[^\n]*\((\d+)\)/)
+      nRan = mRan ? Number(mRan[1]) : 0
+      failedTests = out
+        .split('\n')
+        .filter((l) => l.trimStart().startsWith('FAIL '))
+        .map((l) => l.split(' > ').pop().trim())
+    } else {
+      try {
+        out = execFileSync(
+          process.execPath,
+          // 必须用与 `npm test` 相同的 glob：传单个文件路径时 node --test
+          // 不产出 TAP 计数，于是「变异后测试跑不起来」和「测试全过」长得
+          // 一模一样，12 条变异会假性全部存活。
+          ['--test', '--test-timeout=10000', 'tests/**/*.test.mjs'],
+          { cwd: FE, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+        )
+        ran = 0
+      } catch (e) {
+        out = (e.stdout || '') + (e.stderr || '')
+        ran = 1
+      }
+      // 判据必须看**实际跑了多少条**：
+      // 变异可能把源码改坏到测试导入失败，那不是「测试通过」。
+      const mRan = out.match(/#\s*tests\s+(\d+)/) || out.match(/tests (\d+)/)
+      nRan = mRan ? Number(mRan[1]) : 0
     }
-    // 判据必须看**实际跑了多少条**：
-    // 变异可能把源码改坏到测试导入失败，那不是「测试通过」。
-    const mRan = out.match(/#\s*tests\s+(\d+)/) || out.match(/tests (\d+)/)
-    const nRan = mRan ? Number(mRan[1]) : 0
     if (nRan === 0) {
       survivors.push(`${m.name} —— NO-TESTS-RAN（ran=0，判据无效；变异可能把源码改坏到无法导入）`)
       continue
@@ -383,11 +490,22 @@ for (const m of MUTANTS) {
       // 那种红不证明任何东西——它证明的是「这个文件坏了」，不是「这条守卫在验这条约束」。
       // 所以它既不算杀、也不算存活：算变异体自坏。
       broken.push(`${m.name} —— 变异体自坏（转红但不是 AssertionError：源码可能被改坏到无法导入）`)
+    } else if (m.failedTests && !m.failedTests.every((t) => failedTests.includes(t))) {
+      // 该转红的没转红 = 变异没被真正杀掉（护栏够不着它）。
+      const missing = m.failedTests.filter((t) => !failedTests.includes(t))
+      broken.push(`${m.name} —— 该转红的用例没红：${missing.join(' / ')}`)
+    } else if (m.keptGreen && m.keptGreen.some((t) => failedTests.includes(t))) {
+      // 反向对照转红了 = 守卫越权（它管了不该管的事），比变异存活更严重。
+      const over = m.keptGreen.filter((t) => failedTests.includes(t))
+      broken.push(`${m.name} —— 反向对照转红了（守卫越权）：${over.join(' / ')}`)
     } else {
       killed++
-      const which = out.match(/✖ ([^\n(]+)/) || out.match(/^not ok \d+ - (.+)$/m)
+      const which =
+        m.runner === 'vitest'
+          ? failedTests[0]
+          : (out.match(/✖ ([^\n(]+)/) || out.match(/^not ok \d+ - (.+)$/m) || [])[1]
       console.log(`KILLED  ${m.name}  (ran=${nRan})`)
-      console.log(`        被杀于: ${which ? which[1].trim() : '(见输出)'}`)
+      console.log(`        被杀于: ${which ? which.trim() : '(见输出)'}`)
     }
   } finally {
     copyFileSync(backup, m.file)

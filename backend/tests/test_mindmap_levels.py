@@ -22,6 +22,7 @@ from mindmap import (
     MAX_HEADING_LEVEL,
     MAX_TOTAL_NODES,
     clean_mindmap_markdown,
+    exceeds_limits,
     is_degenerate,
     mindmap_depth,
     rebuild_mindmap_from_summary,
@@ -176,6 +177,46 @@ class TestLimitsAreEnforced:
         md = "# 主题\n## 分支\n### 细\n- 叶子"
         out = clean_mindmap_markdown(md)
         assert total_nodes(out) == total_nodes(md)
+
+
+class TestExceedsLimitsDetection:
+    """`exceeds_limits` 是存量导图写迁移的判据（工单 #111）。
+
+    它只回答一件事：**这份导图按当前规则洗一遍会不会少东西**。
+    少 = 超限；不少 = 已经在上限之内。
+    """
+
+    def test_a_map_inside_the_limits_is_not_over_limit(self):
+        md = "# 主题\n## 分支\n### 细\n- 叶子"
+        assert exceeds_limits(md) is False
+
+    def test_a_wide_branch_is_over_limit(self):
+        md = "# 主题\n" + "".join(f"## 分支{i}\n" for i in range(8))
+        assert exceeds_limits(md) is True
+
+    def test_a_branch_of_exactly_seven_children_is_not_over_limit(self):
+        md = "# 主题\n" + "".join(f"## 分支{i}\n" for i in range(MAX_CHILDREN))
+        assert exceeds_limits(md) is False
+
+    def test_too_many_nodes_in_total_is_over_limit(self):
+        # 每支 6 个孩子（没超 7），但全图 36 个节点（超了 30）
+        md = "# 主题\n" + "".join(
+            f"## 分支{i}\n" + "".join(f"### 细{i}_{j}\n" for j in range(6))
+            for i in range(5)
+        )
+        assert total_nodes(md) > MAX_NODES
+        assert exceeds_limits(md) is True
+
+    def test_a_branch_deeper_than_three_levels_is_over_limit(self):
+        md = "# 主题\n## 分支\n### 细\n#### 太深"
+        assert exceeds_limits(md) is True
+
+    def test_a_single_heading_map_is_not_over_limit(self):
+        # 只有一根光杆：退化，但不是「超限」——退化归重建管
+        assert exceeds_limits("# 视频思维导图") is False
+
+    def test_empty_input_is_not_over_limit(self):
+        assert exceeds_limits("") is False
 
 
 class TestTheLimitsAreTheOnesWeDecided:

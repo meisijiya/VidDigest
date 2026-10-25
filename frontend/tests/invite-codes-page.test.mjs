@@ -67,22 +67,13 @@ describe('邀请码管理页的路由与入口', () => {
   })
 
   test('这一页的「返回」回管理后台，不是回首页', () => {
-    const branch = sliceBetween(
-      appSrc,
-      "case 'admin-invites':",
-      'default:',
-      'App.vue 的 admin-invites 接线',
-    )
+    const branch = sliceBetween(appSrc, "case 'admin-invites':", 'default:', 'App.vue 的 admin-invites 接线')
     assert.match(branch, /back: openAdmin/, '这一页的返回动作没有接 openAdmin')
     assert.match(appSrc, /function openAdmin\(\)[\s\S]{0,120}router\.push\('\/admin'\)/, 'openAdmin 没有去 /admin')
   })
 
   test('管理后台里有一个去这一页的入口', () => {
-    assert.match(
-      adminPageSrc,
-      /@click="emit\('open-invite-codes'\)"/,
-      '管理后台里没有去邀请码管理页的按钮',
-    )
+    assert.match(adminPageSrc, /@click="emit\('open-invite-codes'\)"/, '管理后台里没有去邀请码管理页的按钮')
     assert.match(
       appSrc,
       /case 'admin':[\s\S]{0,200}'open-invite-codes': openInviteCodes/,
@@ -129,11 +120,7 @@ describe('api 层的三个出口', () => {
   test('作废出口打对了地址', () => {
     // 整串比到收尾的反引号与右括号：只比前缀的话，地址后面多挂一截
     // （比如 /revoke-mutant）照样能匹配，判据就成了一条摆设。
-    assert.match(
-      apiSrc,
-      /post\(`\/api\/admin\/invite-codes\/\$\{inviteId\}\/revoke`\)/,
-      '作废请求打错了地址',
-    )
+    assert.match(apiSrc, /post\(`\/api\/admin\/invite-codes\/\$\{inviteId\}\/revoke`\)/, '作废请求打错了地址')
   })
 
   test('组件只从 api 层取数据，形状转换不在组件里', () => {
@@ -149,10 +136,7 @@ describe('api 层的三个出口', () => {
       ['createAdminInviteCodes', 'fetchAdminInviteCodes', 'revokeAdminInviteCode'],
       '邀请码管理页从 api 层取的名字变了 —— 组件不许自己拼出口',
     )
-    assert.ok(
-      !names.some((n) => /^to[A-Z]/.test(n)),
-      '组件不许 import 形状转换函数 —— 转换只该在 api 层有一份',
-    )
+    assert.ok(!names.some((n) => /^to[A-Z]/.test(n)), '组件不许 import 形状转换函数 —— 转换只该在 api 层有一份')
   })
 })
 

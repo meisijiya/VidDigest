@@ -231,11 +231,7 @@
  * 组件一次都不自己翻（与 AdminPage 同纪律）。
  */
 import { ref, reactive, computed, onMounted } from 'vue'
-import {
-  fetchAdminInviteCodes,
-  createAdminInviteCodes,
-  revokeAdminInviteCode,
-} from '../api/admin'
+import { fetchAdminInviteCodes, createAdminInviteCodes, revokeAdminInviteCode } from '../api/admin'
 
 /** 一行邀请码。类型从 api 层的出口推出来，不另写一份形状。 */
 type InviteRow = Awaited<ReturnType<typeof fetchAdminInviteCodes>>['items'][number]
@@ -339,9 +335,7 @@ async function issueCodes(): Promise<void> {
       expiresInHours: hours,
       note: String(draft.note ?? '').trim(),
     })
-    issuedCodes.value = res.items
-      .map((item) => ({ code: item.code ?? '' }))
-      .filter((item) => item.code !== '')
+    issuedCodes.value = res.items.map((item) => ({ code: item.code ?? '' })).filter((item) => item.code !== '')
     draft.note = ''
     issueFeedback.kind = 'ok'
     issueFeedback.text = `已发放 ${issuedCodes.value.length} 枚。明文只给这一次，列表里只看得见脱敏码。`
