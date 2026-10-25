@@ -83,7 +83,7 @@
 
           <!-- 三个状态：加载中 / 故障 / 空。放在内容**之前**——
              否则一次 500 会被渲染成「没有数据」，用户会以为该换个关键词再搜，
-             真正的原因被吞掉了。四个页签共用这一块（每个页签有自己的一份状态）。 -->
+             真正的原因被吞掉了。三个页签共用这一块（每个页签有自己的一份状态）。 -->
           <div v-if="view.loading" class="space-y-3" role="status" aria-live="polite">
             <span class="sr-only">正在加载{{ tabLabel }}</span>
             <div v-for="n in 5" :key="n" class="skeleton h-16 rounded-2xl"></div>
@@ -789,7 +789,7 @@
         </div>
 
         <!-- 邀请码管理：独立路由 `/admin/invite-codes`（工单 #104 / ADR 0025）。
-             不做成第四个页签：页签是「同一批数据的不同视图」，邀请码是另一件事。
+             不做成后台里的又一个页签：页签是「同一批数据的不同视图」，邀请码是另一件事。
              这一页只留入口——发放、筛选、分页都在那一页做。 -->
         <section class="mt-8 rounded-2xl border border-line bg-panel p-5">
           <div class="flex flex-wrap items-center gap-2">
@@ -919,7 +919,7 @@ const TABS = [
   { key: 'models', label: 'AI 服务' },
 ] as const
 
-/** 每个页签的空闲态文案。四份都在这里，空状态就不会只给某一页写。 */
+/** 每个页签的空闲态文案。三份都在这里，空状态就不会只给某一页写。 */
 const EMPTY = {
   users: { text: '没有匹配的用户', hint: '换个邮箱关键词，或清空搜索看全部注册用户' },
   community: { text: '社区还是空的', hint: '第一个解析视频的人会把它放进来' },
