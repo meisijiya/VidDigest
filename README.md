@@ -229,8 +229,9 @@ bash ./init.sh          # 退出码 0 = 已验证
 > **环境变量优先于模型清单表。** `ALIYUN_BAILIAN_MODEL` 一旦写了，就盖过清单表里的
 > 平台默认模型；不写就用清单表里的 `qwen3.7-flash`。
 
-> 平台侧**没有兜底 provider**：缺 `ALIYUN_BAILIAN_API_KEY` 时，进程会带着明确的报错
-> 停下来，而不是悄悄降级到别家模型。原因见
+> 平台侧**没有兜底 provider**：缺 `ALIYUN_BAILIAN_API_KEY` 时进程照常启动，
+> 解析与下载照常工作，首次调用 AI 接口返回 500 并点名要配哪个变量，
+> 而不是悄悄降级到别家模型。原因见
 > [ADR 0028](docs/adr/0028-platform-model-and-provider-protocols.md)：
 > 兜底链会把第一个 provider 的真实错误盖住。
 

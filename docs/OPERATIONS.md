@@ -155,7 +155,7 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 
 | 变量                        | 必填  | 默认值                                                 | 用途                                      | 获取                                                                               |
 | ------------------------- | :---: | --------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------- |
-| `ALIYUN_BAILIAN_API_KEY`  | ✅   | —                                                   | AI 总结 / 导图 / 问答（平台 provider，**无兜底**）     | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/)       |
+| `ALIYUN_BAILIAN_API_KEY`  | ✅   | —                                                   | AI 总结 / 导图 / 问答（平台 provider，**无兜底**；缺失时进程照常启动，首次 AI 调用返回 500 并点名该变量）     | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/)       |
 | `ALIYUN_BAILIAN_BASE_URL` | —   | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼兼容模式端点                                | 用 workspace 专属地址                                                                 |
 | `ALIYUN_BAILIAN_MODEL`    | —   | 模型清单表里的 `bailian.default_model`（当前 `qwen3.7-flash`） | 模型名（**这一项优先于清单表**）                      | 百炼模型市场                                                                           |
 | `ALIYUN_BAILIAN_PROTOCOL` | —   | `openai`                                             | provider 协议：`openai`（OpenAI 兼容）/ `anthropic`（Messages API） | ——                                                                        |
@@ -177,7 +177,8 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 ```env
 # ─── AI（必填）────────────────────────────────────────────
 # 平台模型走**一个** provider：协议 + 端点 + 模型 + key，全部在这里配。
-# 平台侧没有兜底 provider：缺 key 时进程会带着明确的报错停下来（见 §4.3）。
+# 平台侧没有兜底 provider：缺 key 时进程照常启动，解析与下载照常工作，
+# 首次调用 AI 接口会返回 500 并指名要配 ALIYUN_BAILIAN_API_KEY（见 §4.3）。
 # 阿里云百炼：填写 ALIYUN_BAILIAN_API_KEY 即可。模型名留空就走模型清单表里的
 # bailian.default_model（当前 qwen3.7-flash）；写死一个模型名就是显式选它，
 # 且**这一项优先于清单表**。
@@ -225,10 +226,10 @@ OPENAI_API_KEY=sk-your-openai-key
 
 #### 三条容易踩的
 
-- **没有兜底链**。缺 `ALIYUN_BAILIAN_API_KEY` 时，进程会带着明确的报错停下来，
-  而不是悄悄降级到别家模型。原因：兜底链会把第一个 provider 的真实错误盖住，
-  排查时看到的是一个与原因无关的报文。见
-  [ADR 0028](adr/0028-platform-model-and-provider-protocols.md)。
+- **没有兜底链**。缺 `ALIYUN_BAILIAN_API_KEY` 时，进程照常启动（解析与下载照常工作），
+  首次调用 AI 接口返回 500，报错里点名要配哪个环境变量，而不是悄悄降级到别家模型。
+  原因：兜底链会把第一个 provider 的真实错误盖住，排查时看到的是一个与原因无关的
+  报文。见 [ADR 0028](adr/0028-platform-model-and-provider-protocols.md)。
 - **环境变量优先于清单表**。`.env` 里写了 `ALIYUN_BAILIAN_MODEL` 时，清单表里的
   `qwen3.7-flash` 就不生效。想跟着平台走就把那一行留空。
 - **思考默认开着**。平台模型不显式关掉思考的话，思维链会先吃掉 `max_tokens` 的
@@ -671,7 +672,7 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 | uvicorn 端口被占                                     | 8000 被别的进程占            | `netstat -ano | grep 8000` 杀 PID 或换 `--port 8001`                        |
 | vite 端口跳到 5174/5175                              | 5173 被旧实例占             | `taskkill /F /PID <pid>` + 加 `--strictPort`                              |
 | hub 启动报 `CreateProcessW ... 不是有效的 Win32 应用程序`    | 中文 cwd + npx 触发 \0 bug | 用绝对路径 `node node_modules/vite/bin/vite.js`                               |
-| `未检测到 AI 服务 API Key，请配置环境变量`（`ValueError`） | `.env` 缺失或没填           | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY` → 重启（平台侧**没有兜底 provider**，只配 `DEEPSEEK_API_KEY` 不算） |
+| `未检测到 AI 服务 API Key，请配置环境变量`（`ValueError`） | `.env` 缺失或没填；首次调用 AI 接口时抛出（HTTP 500） | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY` → 重启（平台侧**没有兜底 provider**） |
 | `RuntimeError: 缺少环境变量 JWT_SECRET`               | `.env` 漏配 / 配了纯空白 / 启动进程读不到 | `openssl rand -hex 32` 生成 64 位随机串，写进 `backend/.env` 后重启            |
 
 

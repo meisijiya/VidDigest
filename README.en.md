@@ -293,7 +293,8 @@ provider. Its credential, endpoint and model all come from environment variables
 > empty to use the catalog's `qwen3.7-flash`.
 
 > The platform side has **no fallback provider**: without `ALIYUN_BAILIAN_API_KEY` the
-> process stops with an explicit error instead of silently degrading to another
+> process still starts — parsing and downloading keep working — and the first AI call
+> returns 500 naming the variable to set, instead of silently degrading to another
 > provider. See [ADR 0028](docs/adr/0028-platform-model-and-provider-protocols.md)
 > for why: a fallback chain hides the first provider's real error.
 
