@@ -13,6 +13,7 @@ daily_summary_count 在工单 #4 之后已无生产写入者，拿它断言等�
 """
 import asyncio
 import json
+import re
 
 import pytest
 
@@ -36,6 +37,23 @@ def chat_count_of(uid):
     with database.get_db() as c:
         row = c.execute("SELECT daily_chat_count FROM users WHERE id=?", (uid,)).fetchone()
     return row["daily_chat_count"]
+
+
+def heading_levels_of(md):
+    """一段 Markdown 里的标题层级（列表叶子不占层级）。"""
+    levels = []
+    for line in md.splitlines():
+        m = re.match(r"^(#{1,6})\s+\S", line.strip())
+        if m:
+            levels.append(len(m.group(1)))
+    return levels
+
+
+def leaf_count_of(md):
+    """一段 Markdown 里的列表叶子（`- xxx`）数量。"""
+    return sum(
+        1 for line in md.splitlines() if re.match(r"^[-*+•]\s+\S", line.strip())
+    )
 
 
 class StubExtractor:
@@ -637,6 +655,141 @@ class TestSummaryPromptContentDemand:
         assert summarizer.MINDMAP_TAGS_SENTINEL in p, "哨兵行没了 —— 导图和标签会整个消失"
         assert tags.vocabulary_prompt_text() in p, "词表没了 —— 模型只能自创标签"
         assert "字幕正文" in p, "字幕正文没进 prompt"
+
+    def test_the_mindmap_examples_are_really_multi_level(self):
+        """工单 #106：few-shot 的**形状**权重远高于散文规则。
+
+        样例只有一根分支时，模型被教出来的导图就只有一层。所以判据是
+        **解析**样例里的 JSON——提示词怎么改写都行，只要样例本身还是
+        一棵多层的树（≥2 根分支、有第三层、节点数在上限内）。
+        """
+        p = self.prompt()
+        samples = re.findall(r'\{"mindmap":[^}]*\}', p)
+        assert samples, "提示词里没有可解析的 mindmap 样例"
+
+        for sample in samples:
+            md = json.loads(sample)["mindmap"]
+            levels = heading_levels_of(md)
+            assert levels, f"样例不是标题结构：{md!r}"
+            assert levels.count(1) == 1, f"样例的根标题不唯一：{md!r}"
+            assert max(levels) >= 3, f"样例最深只有 {max(levels)} 级：{md!r}"
+            assert levels.count(2) >= 2, f"样例只有一根分支：{md!r}"
+            nodes = len(levels) + leaf_count_of(md)
+            assert nodes <= 30, f"样例有 {nodes} 个节点，超出上限：{md!r}"
+
+    def test_the_mindmap_section_states_the_structure_limits(self):
+        """导图段必须写明层级与节点数上限（工单 #106）。
+
+        上限没人写，模型就不知道能有多深、能挂多少节点；上限没人执行，
+        清洗时又只能靠截断。阿拉伯数字与中文数字都认。
+        """
+        p = self.prompt()
+        seg = p.split("【第二部分：思维导图】")[-1].split("【第三部分：标签】")[0]
+
+        assert re.search(r"3\s*级|三级", seg), "导图段没写明层级上限（3 级）"
+        assert re.search(r"7\s*个|七个", seg), "导图段没写明每支子节点上限（7 个）"
+        assert re.search(r"30\s*个|三十个", seg), "导图段没写明总节点上限（30 个）"
+
+
+class TestDegenerateMindmapIsRebuiltFromTheSummary:
+    """工单 #106：模型给的导图退化时，用总结正文重建（工单口径 4）。
+
+    ## 判据读的是落库的内容
+
+    退化发生在**写库那一刻**：只看 SSE 证明不了写进去的是什么。所以这里
+    断言 `videos` 那行的 `mindmap_md`——它必须有多于一层。
+
+    ## 真的走生产那条路
+
+    这里的桩只换掉**模型那一段**（`_stream_chunks`），解析、清洗、兜底
+    重建、SSE、落库全是生产代码。把 `summarize_full_stream` 整个 stub
+    掉的话，被验的就不是那条路了。
+    """
+
+    SUMMARY = (
+        "# 视频主题\n"
+        "## 视频概述\n"
+        "- 本期实测三款扫地机器人\n"
+        "## 吸力表现\n"
+        "### 甲机地毯残留最少\n"
+    )
+
+    class CannedModel(summarizer.VideoSummarizer):
+        """真的走 summarize_full_stream，只把模型那一段换成罐头。
+
+        不调 `super().__init__()`：那一步要 API Key，而这里根本不联网。
+        """
+
+        def __init__(self, chunks):
+            self.chunks = chunks
+
+        def _stream_chunks(self, prompt):
+            return iter(self.chunks)
+
+    def _run(self, monkeypatch, make_user, chunks):
+        monkeypatch.setattr(
+            api_summarize, "_get_extractor", lambda: StubExtractor(has_subtitle=True)
+        )
+        monkeypatch.setattr(
+            api_summarize, "_get_summarizer", lambda: self.CannedModel(chunks)
+        )
+        uid = make_user("rebuild@example.com")
+        return collect(api_summarize.summarize_video(
+            summarize_req(), user={"id": uid}
+        )), uid
+
+    @staticmethod
+    def _stored_mindmap(url="https://example.com/v"):
+        with database.get_db() as c:
+            row = c.execute(
+                "SELECT mindmap_md FROM videos WHERE video_url = ?", (url,)
+            ).fetchone()
+        return row["mindmap_md"] if row else None
+
+    def test_a_single_level_mindmap_is_rebuilt_before_it_is_stored(
+        self, db, make_user, monkeypatch
+    ):
+        chunks = [
+            self.SUMMARY,
+            SENTINEL,
+            json.dumps({"mindmap": "# 视频思维导图", "tags": ["编程"]}),
+        ]
+        events, _ = self._run(monkeypatch, make_user, chunks)
+
+        stored = self._stored_mindmap()
+        assert stored is not None, "这次解析没能写库"
+        assert max(heading_levels_of(stored)) >= 2, (
+            f"落库的导图只有 {heading_levels_of(stored)} 级：{stored!r}"
+        )
+        assert "## 视频概述" in stored, stored
+
+    def test_an_empty_mindmap_is_rebuilt_before_it_is_stored(
+        self, db, make_user, monkeypatch
+    ):
+        """模型连导图都没给（JSON 里没有 mindmap）：也一样重建。"""
+        chunks = [
+            self.SUMMARY,
+            SENTINEL,
+            json.dumps({"tags": ["编程"]}),
+        ]
+        events, _ = self._run(monkeypatch, make_user, chunks)
+
+        stored = self._stored_mindmap()
+        assert stored is not None, "这次解析没能写库"
+        assert max(heading_levels_of(stored)) >= 2, stored
+
+    def test_the_client_gets_the_same_rebuilt_map(self, db, make_user, monkeypatch):
+        """下发与落库是同一份：SSE 里的导图必须也是重建过的那份。"""
+        chunks = [
+            self.SUMMARY,
+            SENTINEL,
+            json.dumps({"mindmap": "# 视频思维导图", "tags": ["编程"]}),
+        ]
+        events, _ = self._run(monkeypatch, make_user, chunks)
+
+        (payload,) = [p for kind, p in events if kind == "mindmap"]
+        assert payload["markdown"] == self._stored_mindmap()
+        assert max(heading_levels_of(payload["markdown"])) >= 2
 
 
 class TestChatQuota:

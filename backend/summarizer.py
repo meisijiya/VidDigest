@@ -18,6 +18,10 @@ from credentials import UserCredential
 from tags import vocabulary_prompt_text
 from url_canonical import url_for_ytdlp
 import model_catalog
+# 思维导图的结构规则（工单 #106 / ADR 0027）。mindmap 不 import 本项目的
+# 任何东西，所以顶层引入不会绕成环——与 model_catalog 那个刻意延迟的
+# import 不同（同样的话见 database.py 顶部）。
+import mindmap
 
 logger = logging.getLogger("summarizer")
 
@@ -891,11 +895,25 @@ class VideoSummarizer:
         思维导图在这里就洗过一遍（markmap 渲染要求唯一一级根标题）。
         标签**不校验**：词表是产品规则，由 api_summarize 在下发前用
         ``tags.validate_tags`` 兜住——模型自创的词到不了线上。
+
+        导图退化（为空或只有一级）时，会用已经收到的总结正文重建一份
+        （工单 #106）：降级发生在**写库那一刻**，不重建的话落库的就是
+        一条光杆，前端救不回来。
         """
         chunks = self._stream_chunks(self._build_full_prompt(subtitle_text, language))
+        summary_parts: list[str] = []
         for kind, payload in parse_dual_output(chunks):
-            if kind == EVENT_MINDMAP:
+            if kind == EVENT_SUMMARY:
+                # 攒着总结正文：导图退化时它是现成的结构来源
+                summary_parts.append(payload)
+            elif kind == EVENT_MINDMAP:
                 payload = self.clean_mindmap_markdown(payload)
+                if mindmap.is_degenerate(payload):
+                    rebuilt = mindmap.rebuild_mindmap_from_summary(
+                        "".join(summary_parts)
+                    )
+                    if rebuilt:
+                        payload = rebuilt
             yield kind, payload
 
     def _stream_chunks(self, prompt: str):
@@ -921,38 +939,13 @@ class VideoSummarizer:
 
     @staticmethod
     def clean_mindmap_markdown(md: str) -> str:
-        """清洗 LLM 输出的思维导图 Markdown：
-        1. 去除代码块围栏；2. 截掉第一个标题前的说明文字；
-        3. 确保存在唯一的 `# ` 一级根标题（markmap 渲染必需）。
+        """清洗 LLM 输出的思维导图 Markdown。
+
+        规则本体在 `mindmap` 模块（工单 #106 / ADR 0027）：唯一一级根标题、
+        深度 ≤3 级、每支 ≤7 个子节点、全图 ≤30 个节点，超限的按文档顺序
+        截断。这里只做转发——同一套规则不该在两个文件里各写一份。
         """
-        if not md or not md.strip():
-            return md or ""
-        text = md.strip()
-        # 1. 去除代码块围栏
-        text = re.sub(r"^```(?:markdown|md)?\s*\n?", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\n?```\s*$", "", text)
-        # 2. 截掉第一个标题之前的前导说明文字
-        m = re.search(r"^#{1,6}\s+\S", text, flags=re.MULTILINE)
-        if m:
-            text = text[m.start():]
-            # 3. 确保存在 `# ` 一级根标题
-            if not re.search(r"^#\s+\S", text, flags=re.MULTILINE):
-                first_h2 = re.search(r"^##\s+(.+)$", text, flags=re.MULTILINE)
-                if first_h2:
-                    # 将第一个二级标题提升为一级根标题
-                    text = f"# {first_h2.group(1).strip()}\n" + text[first_h2.end():]
-                else:
-                    text = "# 视频思维导图\n" + text
-            return text.strip()
-        # 4. 兜底：没有任何 Markdown 标题时，把非空文本行转为根节点下的列表
-        items = []
-        for line in text.splitlines():
-            clean = re.sub(r"^[-*•#\d.、\s]+", "", line.strip()).strip()
-            if clean:
-                items.append(f"- {clean}")
-        if items:
-            return "# 视频思维导图\n" + "\n".join(items[:50])
-        return "# 视频思维导图\n- 暂无内容"
+        return mindmap.clean_mindmap_markdown(md)
 
     # ── AI 问答 ────────────────────────────────────────
 

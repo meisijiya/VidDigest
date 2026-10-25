@@ -4,6 +4,10 @@
 
 注意 ``summarizer.py`` 是**混合行尾**文件（工单 #36 实测过），
 所以这里按字节数读出真实行尾做成常量，而不是用 `"\\r\\n" in src` 猜。
+
+工单 #106 把导图清洗规则搬到了 ``backend/mindmap.py``（单一真源），
+``summarizer.py`` 只留一层薄委托 ⇒ M3 的锚点跟着搬了家（**锚点要指向
+代码现在住的地方**，否则预检会报「0 命中」，那不是变异失败，是锚点过期）。
 """
 import io
 import subprocess
@@ -15,6 +19,7 @@ PY = venv_python()
 TARGET = "backend/tests/test_summarizer_pure.py"
 SUMMARIZER = "backend/summarizer.py"
 DOUYIN = "backend/douyin.py"
+MINDMAP = "backend/mindmap.py"
 
 
 def read(path):
@@ -42,6 +47,7 @@ def run_tests():
 
 NL_S = eol_of(SUMMARIZER)
 NL_D = eol_of(DOUYIN)
+NL_M = eol_of(MINDMAP)
 
 
 def n(*lines, nl=NL_S):
@@ -66,10 +72,10 @@ MUTATIONS = [
         "replace": n('    parts = ts.replace(",", "").split(":")'),
     },
     {
-        "id": "M3", "expect": "KILLED", "file": SUMMARIZER, "hits": 1,
-        "why": "clean_mindmap_markdown 不截掉首个标题前的说明文字",
-        "find": n("        text = text[m.start():]"),
-        "replace": n("        text = text  # 变异：不截断"),
+        "id": "M3", "expect": "KILLED", "file": MINDMAP, "hits": 1,
+        "why": "首个标题之前的说明文字漏进导图：模型爱写「以下是思维导图：」",
+        "find": n("            if stack:", "                stack[-1][1].children.append(block)", "            continue", nl=NL_M),
+        "replace": n("            if stack:", "                stack[-1][1].children.append(block)", "            else:", "                roots.append(block)", nl=NL_M),
     },
     {
         "id": "M4", "expect": "KILLED", "file": SUMMARIZER, "hits": 1,
