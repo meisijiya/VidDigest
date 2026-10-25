@@ -265,7 +265,7 @@ class TestSecondParseReusesInsteadOfParsing:
         collect(summarize(uid=uid))
 
         class Exploding(SeamStubSummarizer):
-            def summarize_full_stream(self, text, language):
+            def summarize_full_stream(self, text, language, template=None):
                 raise AssertionError("复用路径碰了模型")
 
         wire(monkeypatch, Exploding())
@@ -558,7 +558,7 @@ class TestPlaceholderIsAlwaysReleased:
         这个链接从此再也没人能解析。
         """
         class Exploding(SeamStubSummarizer):
-            def summarize_full_stream(self, text, language):
+            def summarize_full_stream(self, text, language, template=None):
                 self._calls["summarize_full_stream"] += 1
                 yield ("summary", "半个总结")
                 raise RuntimeError("模型服务不可用")
@@ -580,7 +580,7 @@ class TestPlaceholderIsAlwaysReleased:
     ):
         """前一任失败后，换个人必须能立刻解析同一个链接。"""
         class Exploding(SeamStubSummarizer):
-            def summarize_full_stream(self, text, language):
+            def summarize_full_stream(self, text, language, template=None):
                 raise RuntimeError("模型服务不可用")
 
         s, _ = wire(monkeypatch, Exploding())
@@ -670,7 +670,7 @@ class _GatedSummarizer(SeamStubSummarizer):
         self.entered = entered
         self.released = released
 
-    def summarize_full_stream(self, text, language):
+    def summarize_full_stream(self, text, language, template=None):
         # 注意这个方法**不是**生成器（里面没有 yield）：它只拦住
         # 「进入模型调用」这一刻，然后把接缝桩自己的生成器原样交回去。
         self.entered.set()

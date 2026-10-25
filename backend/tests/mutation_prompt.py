@@ -16,6 +16,9 @@
      自己坏了，不是护栏在生效。
   4. 每个变异跑完立刻**字节级**还原，并做一次还原自检（比对原始字节），
      绝不留下变异体。
+
+工单 #105 再加一条同口径的：**模板选择被忽略**（永远用默认模板）要能变红。
+接口、提示词渲染、落库三处都各守一次——只守一处，另外两处坏了照样绿。
 """
 import os
 import re
@@ -35,9 +38,14 @@ DATABASE_FILE = BACKEND / "database.py"
 PROVIDER_FILE = BACKEND / "provider_config.py"
 SUMMARIZER_FILE = BACKEND / "summarizer.py"
 CATALOG_FILE = BACKEND / "model_catalog.py"
+#: 工单 #105：模板选择的入口（请求体进 api_summarize 的那一步）。
+API_SUMMARIZE_FILE = BACKEND / "api_summarize.py"
 
 #: 提示词契约那组用例（工单 #106 口径 3）。
 PROMPT_TARGET = ["tests/test_summarize_routes.py", "-k", "TestSummaryPromptContentDemand"]
+
+#: 模板清单与模板选择那组用例（工单 #105 口径 1、2）。
+TEMPLATE_TARGET = ["tests/test_summary_templates.py"]
 
 #: 清洗与上限那组用例（工单 #106 口径 1、2）。
 LEVELS_TARGET = ["tests/test_mindmap_levels.py"]
@@ -349,6 +357,27 @@ MUTATIONS = [
         [("DEFAULT_TIMEOUT = 120.0", "DEFAULT_TIMEOUT = 180.0")],
         "GREEN",
     ),
+    # ── 工单 #105 的模板选择 ──────────────────────────────────────────
+    (
+        # 口径 1：请求里选的模板被忽略（永远用 full）。这一处是选择的
+        # **入口**：请求体里的 summary_template 到这里被丢掉，模型拿到
+        # 的永远是默认那份，落库的也是默认那份——症状是「下拉框选了没用」。
+        "T1 请求里选的模板被忽略（永远用默认模板）",
+        API_SUMMARIZE_FILE,
+        TEMPLATE_TARGET,
+        [("template_id = req.summary_template or default_template_id()",
+          "template_id = default_template_id()")],
+    ),
+    (
+        # 口径 1 的另一半：入口收下了选择，但渲染提示词时又扔掉。这一处
+        # 更阴——落库的 template 列写着 brief，发给模型的却是 full 的
+        # 提示词，界面上完全看不出错。
+        "T2 渲染提示词时又把模板选择扔掉（id 映射被短路）",
+        SUMMARIZER_FILE,
+        TEMPLATE_TARGET,
+        [("template_id = template or default_template_id()",
+          "template_id = default_template_id()")],
+    ),
 ]
 
 
@@ -406,6 +435,7 @@ def main():
         ("存量重建", MIGRATION_TARGET),
         ("provider 协议与平台口径", PROVIDER_TARGET),
         ("模型清单与迁移", CATALOG_TARGET),
+        ("模板选择", TEMPLATE_TARGET),
     ):
         code, out = run(list(target))
         p, f, summary = parse_counts(out)

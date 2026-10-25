@@ -9,7 +9,7 @@ from collections.abc import AsyncIterable
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.sse import ServerSentEvent, EventSourceResponse
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, field_validator
 
 from auth import get_optional_user
 from credentials import CredentialError, UserCredential
@@ -30,6 +30,7 @@ from database import (
     release_video,
     reserve_video,
 )
+from prompt_template import default_template_id, is_known_template, list_templates
 from tags import validate_tags
 
 logger = logging.getLogger("api_summarize")
@@ -118,6 +119,23 @@ def _quota_payload(user_id: int, primary: str = "parse") -> dict:
     }
 
 
+@router.get("/summary-templates")
+async def list_summary_templates():
+    """可用的总结提示词模板清单（工单 #105 / ADR 0026）。
+
+    只读、匿名可读：清单是产品目录，不是用户数据，登录与否都该拿得到
+    ——前端的下拉框要在用户点「开始解析」之前就把它填好。
+
+    清单真值只有一份（``prompts/templates.json``），这里不复制第二份。
+    响应**刻意不含**提示词文件名：那是仓库内部的事，暴露出去就等于让
+    外部依赖「提示词从哪个文件读」这个本该自由改动的实现细节。
+    """
+    return {
+        "default": default_template_id(),
+        "templates": list_templates(),
+    }
+
+
 #: 端点覆盖为什么不是白名单，只写在下面第一处（两个模型字段完全相同，
 #: 逐个抄一遍注释的代价是它们迟早会漂移——那正是本文件反复出问题的地方）。
 #: 简述：用户自建服务无法被提前枚举，风险由「只出网到用户自己指定的
@@ -145,6 +163,20 @@ class SummarizeRequest(BaseModel):
     user_api_key: SecretStr = SecretStr("")
     base_url: str = ""
     model: str = ""
+    # 提示词模板 id（工单 #105 / ADR 0026）。空串 = 用默认模板，
+    # 于是「不传」与「传默认」走同一条路，行为与加这一列之前完全一致。
+    #
+    # 校验放在模型这一层：模板 id 会进提示词文件的名字，一个拼错的 id
+    # 早该在入口就被挡住（422），而不是渲染出一个空提示词发给模型。
+    summary_template: str = ""
+
+    @field_validator("summary_template")
+    @classmethod
+    def _check_summary_template(cls, value: str) -> str:
+        value = (value or "").strip()
+        if value and not is_known_template(value):
+            raise ValueError(f"未知的总结模板：{value!r}")
+        return value
 
 
 class ChatRequest(BaseModel):
@@ -493,6 +525,11 @@ async def summarize_video(
     # 自带凭据时不消耗平台额度——钱是用户自己出的（ADR 0004）。
     using_byok = credential is not None
 
+    # 这次用哪份提示词（工单 #105 / ADR 0026）。空串 = 清单里的默认模板，
+    # 于是「不传模板」与「加这个字段之前」是同一条路。放在占位之前算，
+    # 是因为模板 id 后面要跟着写进社区视频表那一行。
+    template_id = req.summary_template or default_template_id()
+
     # 覆盖自己的那一份（ADR 0007）。判定放在**抢占位之前**：
     # 覆盖路径根本没有占位可言，先抢位再判断会凭空造出一行 pending。
     regenerate = False
@@ -632,7 +669,9 @@ async def summarize_video(
         summarizer = (
             _build_user_summarizer(credential) if using_byok else _get_summarizer()
         )
-        for kind, payload in summarizer.summarize_full_stream(full_text, req.language):
+        for kind, payload in summarizer.summarize_full_stream(
+            full_text, req.language, template_id
+        ):
             if kind == "summary":
                 summary_parts.append(payload)
                 yield ServerSentEvent(
@@ -676,6 +715,7 @@ async def summarize_video(
                 mindmap_md=mindmap_md,
                 tags=tags_payload,
                 subtitle_text=full_text,
+                template=template_id,
             ) == 0:
                 logger.warning("社区视频 %r 已不属于 %r，未能覆盖", req.url, user["id"])
                 async for event in fail("重新解析没能写回社区，这份总结已被别人改动"):
@@ -687,6 +727,7 @@ async def summarize_video(
             mindmap_md=mindmap_md,
             tags=tags_payload,
             subtitle_text=full_text,
+            template=template_id,
         ) == 0:
             # 落库失败与覆盖失败同权：不能装作成功。
             #

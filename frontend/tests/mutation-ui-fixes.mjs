@@ -334,6 +334,38 @@ const MUTANTS = [
     to: 'void Promise.resolve()',
     expect: /展开才加载列表/,
   },
+  // ── 工单 #105：总结模板选择 ──
+  // 这几条破坏的是「用户在下拉框里选的模板真的被用上」。
+  // 断了都不报错：请求照样发出去、后端照样返回总结，
+  // 症状是「选了精简摘要，拿回来的还是详尽总结」——用户只能靠字数去猜。
+  {
+    name: 'M32 选中的模板不进请求体（下拉框选了个寂寞）',
+    file: join(FE, 'src/api/summarize.ts'),
+    from: "summary_template: options.summaryTemplate || '',",
+    to: "summary_template: '',",
+    expect: /选中的模板没进请求体/,
+  },
+  {
+    name: 'M33 组件不把下拉框的选择传出去（选了也不生效）',
+    file: join(FE, 'src/components/VideoSummary.vue'),
+    from: 'summaryTemplate: selectedTemplate.value,',
+    to: "summaryTemplate: '',",
+    expect: /组件没有把用户选的模板传给请求/,
+  },
+  {
+    name: 'M34 总结正文里的表格没有排版（模型一输出表格就散架）',
+    file: join(FE, 'src/style.css'),
+    from: `.summary-content table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}`,
+    to: '',
+    expect: /总结正文里的表格没有排版/,
+  },
   {
     // 工单 #111 判据 1 + 2：前端不再有第二份清洗规则，导图结构由
     // backend/mindmap.py 说了算。这条变异把当年那份复制品**原样装回去**：
@@ -353,7 +385,6 @@ const MUTANTS = [
     spec: 'tests/video-summary.mount.spec.mjs',
     // 转红必须是断言转红（不是变异体自己坏了），且只该转红这一条：
     // 同文件里那两条反向对照（后端形状的导图 / 空态）必须保持绿。
-    requireAssertion: true,
     failedTests: ['后端交来的 markdown 原样渲染：第三级节点不会在前端这一层消失'],
     keptGreen: ['对照组：后端形状的导图（# 根）第三级照样在第三层', '没有导图时是空态，一个节点都不画'],
   },
@@ -451,14 +482,17 @@ for (const m of MUTANTS) {
     }
     if (ran === 0) {
       survivors.push(`${m.name} —— 存活（${nRan} 条测试全绿，测试没在验这一条）`)
-    } else if (m.requireAssertion && !/AssertionError/.test(out)) {
-      // 转红必须是**断言**转红。语法错、导入失败都属于「变异体自己坏了」，
-      // 那种红证明不了护栏在生效。
-      broken.push(`${m.name} —— 用例红了但没有 AssertionError（变异体自坏，不是护栏在生效）`)
+    } else if (!out.includes('AssertionError')) {
+      // 转红但不是断言失败：多半是变异把源码改坏到**导入不了**（语法错误之类）。
+      // 那种红不证明任何东西——它证明的是「这个文件坏了」，不是「这条守卫在验这条约束」。
+      // 所以它既不算杀、也不算存活：算变异体自坏。
+      broken.push(`${m.name} —— 变异体自坏（转红但不是 AssertionError：源码可能被改坏到无法导入）`)
     } else if (m.failedTests && !m.failedTests.every((t) => failedTests.includes(t))) {
+      // 该转红的没转红 = 变异没被真正杀掉（护栏够不着它）。
       const missing = m.failedTests.filter((t) => !failedTests.includes(t))
       broken.push(`${m.name} —— 该转红的用例没红：${missing.join(' / ')}`)
     } else if (m.keptGreen && m.keptGreen.some((t) => failedTests.includes(t))) {
+      // 反向对照转红了 = 守卫越权（它管了不该管的事），比变异存活更严重。
       const over = m.keptGreen.filter((t) => failedTests.includes(t))
       broken.push(`${m.name} —— 反向对照转红了（守卫越权）：${over.join(' / ')}`)
     } else {

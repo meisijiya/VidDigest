@@ -109,6 +109,24 @@
           解析视频字幕，生成总结摘要、思维导图，并支持针对视频内容的 AI 问答
         </p>
         <p class="text-xs text-gray-500 mt-1.5 mb-6">仅下载视频的话，无需启动此功能</p>
+        <!-- 总结模板（工单 #105）：选项从服务端清单读，前端不硬编码名单 -->
+        <div v-if="templateOptions.length || templateLoadFailed" class="w-full max-w-sm mb-6">
+          <label for="summary-template-select" class="block text-xs font-medium text-gray-600 mb-1.5"> 总结模板 </label>
+          <select
+            v-if="templateOptions.length"
+            id="summary-template-select"
+            v-model="selectedTemplate"
+            class="w-full px-3 py-2 rounded-xl border border-line bg-ink/60 text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+          >
+            <option v-for="tpl in templateOptions" :key="tpl.id" :value="tpl.id">
+              {{ tpl.name }}
+            </option>
+          </select>
+          <p v-if="templateLoadFailed" class="text-[11px] text-gray-400 mt-1.5">模板清单没取到，这次用默认模板。</p>
+          <p v-else-if="selectedTemplateDescription" class="text-[11px] text-gray-400 mt-1.5">
+            {{ selectedTemplateDescription }}
+          </p>
+        </div>
         <!-- 显式括号是必须的：写成 @click="startSummarize" 会把 MouseEvent
              当成 overwrite 传进去，于是「开始 AI 解析」会静默地变成一次覆盖。 -->
         <button
@@ -470,8 +488,8 @@ import type { ByokPublicState } from '../lib/byok.ts'
 import { marked } from 'marked'
 import { Transformer } from 'markmap-lib'
 import { Markmap } from 'markmap-view'
-import { summarizeVideo, chatWithVideo, fetchQuota } from '../api/summarize.ts'
-import type { SseStream, SubtitlePayload } from '../api/summarize.ts'
+import { summarizeVideo, chatWithVideo, fetchQuota, fetchSummaryTemplates } from '../api/summarize.ts'
+import type { SseStream, SubtitlePayload, SummaryTemplate } from '../api/summarize.ts'
 import { fetchChatSession, saveHistory } from '../api/history.ts'
 import type { ChatMessage } from '../api/history.ts'
 import { describeQuota, quotaBadgeClass as quotaBadgeClassOf } from '../lib/quota.ts'
@@ -592,6 +610,37 @@ async function refreshQuota() {
     quotaInfo.value = await fetchQuota()
   } catch {
     quotaInfo.value = null
+  }
+}
+
+// ── 总结模板（工单 #105）──────────────────────────────────
+//
+// 模板清单只有**一份**真值，在服务端（prompts/templates.json）。这里只读不存：
+// 存一份本地副本就等于把「有哪些模板」复制成第二份，名单一改本地那份就过期，
+// 而过期的症状是「下拉框里选了个后端不认的模板」——服务端会报 422，
+// 但没人说得清是自己选错了还是清单不同步。
+//
+// 拿不到清单**不该**挡住解析：服务端本来就会用默认模板，那才是多数用户要的。
+// 所以这里失败时只留一句说明，不弹错、不拦按钮。
+const templateOptions = ref<SummaryTemplate[]>([])
+const selectedTemplate = ref('')
+const templateLoadFailed = ref(false)
+const selectedTemplateDescription = computed(
+  () => templateOptions.value.find((t) => t.id === selectedTemplate.value)?.description || '',
+)
+
+async function loadTemplates() {
+  try {
+    const list = await fetchSummaryTemplates()
+    templateOptions.value = list.templates || []
+    // 默认模板以**服务端**说的为准。已经选过的（还在清单里）保留——
+    // 用户刚选过就被改掉，比默认错更让人恼火。
+    const stillThere = templateOptions.value.some((t) => t.id === selectedTemplate.value)
+    if (!stillThere) selectedTemplate.value = list.default || ''
+    templateLoadFailed.value = false
+  } catch {
+    templateOptions.value = []
+    templateLoadFailed.value = true
   }
 }
 
@@ -808,6 +857,9 @@ function startSummarize(overwrite = false) {
       // 而社区卡片那一列叫 cover_url，两个名字指的是同一个东西。
       videoTitle: props.videoTitle || '',
       coverUrl: props.videoData?.thumbnail || '',
+      // 提示词模板 id（工单 #105）。空串 = 服务端用它自己的默认模板；
+      // 这里不猜、不兜底——猜错一次的症状是「选了 A 拿到 B 的总结」。
+      summaryTemplate: selectedTemplate.value,
     },
   )
 }
@@ -959,6 +1011,8 @@ function exportSubtitle(format: 'srt' | 'txt') {
 // ── 生命周期 ──────────────────────────────────────────────
 onMounted(() => {
   refreshQuota()
+  // 模板清单：只读、不消耗额度。失败不拦解析（服务端会用默认模板）。
+  loadTemplates()
 })
 
 onUnmounted(() => {

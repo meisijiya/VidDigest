@@ -74,7 +74,7 @@ class StubSummarizer:
     def __init__(self):
         self.calls = 0
 
-    def summarize_full_stream(self, text, language):
+    def summarize_full_stream(self, text, language, template=None):
         self.calls += 1
         yield ("summary", "tok-a")
         yield ("summary", "tok-b")
@@ -421,7 +421,7 @@ class TestSingleCallThreeArtifacts:
         """模型失败不白扣：工单 #4 的唯一 finally 回滚点仍然生效。"""
 
         class Exploding(SeamStubSummarizer):
-            def summarize_full_stream(self, text, language):
+            def summarize_full_stream(self, text, language, template=None):
                 self._calls["summarize_full_stream"] += 1
                 yield ("summary", "半个总结")
                 raise RuntimeError("模型服务不可用")

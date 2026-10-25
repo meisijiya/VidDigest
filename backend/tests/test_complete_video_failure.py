@@ -79,7 +79,7 @@ class RowVanishingSummarizer(SeamStubSummarizer):
         self._db = db
         self._url = url
 
-    def summarize_full_stream(self, text, language):
+    def summarize_full_stream(self, text, language, template=None):
         with self._db.get_db() as conn:
             conn.execute("DELETE FROM videos WHERE video_url = ?", (self._url,))
         yield from super().summarize_full_stream(text, language)

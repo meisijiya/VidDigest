@@ -23,6 +23,11 @@ from mindmap import (
     rebuild_mindmap_from_summary,
 )
 
+# 总结模板的默认 id（工单 #105 / ADR 0026）。同样不 import 本项目的任何
+# 东西（只读一个 JSON 清单），所以顶层引入不会绕成环——而列的默认值
+# 必须跟着清单走，另写一份 'full' 就是两份真值。
+from prompt_template import default_template_id
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
 
 # 线程本地连接缓存（uvicorn 线程池复用线程，连接随之复用）
@@ -362,6 +367,12 @@ def init_db():
                 mindmap_md TEXT DEFAULT '',
                 tags TEXT DEFAULT '[]',
                 subtitle_text TEXT DEFAULT '',
+                -- 这次总结用的提示词模板 id（工单 #105 / ADR 0026）。
+                --
+                -- 解析完成时才写：占位行在完成之前还不知道用哪份模板，
+                -- 那时它是 NULL，而不是一个假装确定的默认值。
+                -- 老库由 _migrate_videos_template_column 补列并回填成默认模板。
+                template TEXT,
                 parsed_by INTEGER,
                 -- 覆盖闸门（工单 #20）。NULL = 此刻没人正在覆盖。
                 -- 为什么落在 videos 上而不是单开一张锁表：抢锁要判的条件是
@@ -430,6 +441,10 @@ def init_db():
         _migrate_quota_override_columns(conn)
         _migrate_video_card_columns(conn)
         _migrate_regenerate_columns(conn)
+        # template 列（工单 #105）：补列 + 把老行回填成默认模板。
+        # 排在 _migrate_regenerate_columns 之后即可——它只碰 videos 一张表，
+        # 与其它迁移没有先后依赖。
+        _migrate_videos_template_column(conn)
         _migrate_admin_column(conn)
         # canonical_url（工单 #25）：补列 + 回填 + 建普通索引。
         # 排在 executescript 之后是因为表得先存在（全新库那一刻还没建）；
@@ -746,6 +761,26 @@ def _migrate_video_card_columns(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+def _migrate_videos_template_column(conn) -> None:
+    """给 videos 补上 template 列（工单 #105 / ADR 0026）。
+
+    与 _migrate_video_card_columns 同一套路：`CREATE TABLE IF NOT EXISTS`
+    对已存在的表是空操作，老库里不会凭空多出列，不补列则代码一 SELECT 就报
+    `no such column`。
+
+    老行回填成**默认模板**：那批总结是在「还没有模板这回事」的时候解析出来的，
+    它们用的就是默认那份。留 NULL 会让「这一份是哪种模板」变成两义——
+    NULL 既可能是「默认」，也可能是「还没解析完」，两者混在一起没法读。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
+    if "template" not in existing:
+        conn.execute("ALTER TABLE videos ADD COLUMN template TEXT")
+    conn.execute(
+        "UPDATE videos SET template = ? WHERE template IS NULL OR template = ''",
+        (default_template_id(),),
+    )
 
 
 #: 合并时逐列取「最新的非空值」。空 = '' 或 None 两种形态都算空，
@@ -3011,6 +3046,7 @@ def complete_video(
     mindmap_md: str = "",
     tags: list | None = None,
     subtitle_text: str = "",
+    template: str | None = None,
 ) -> int:
     """占位者把解析结果写回**自己占的那一行**，返回更新的行数。
 
@@ -3018,6 +3054,9 @@ def complete_video(
     任何人改写」这条承诺的落地点——已 ready 的行谁都改不了，包括
     后来的解析者。返回 0 说明这一行已经不是 pending（正常流程下不会
     发生），由调用方报警而不是静默当作成功。
+
+    ``template`` 是这次用的提示词模板 id（工单 #105）。不传 = 默认模板，
+    取自 ``prompts/templates.json``——列的默认值不能另写一份。
     """
     now = datetime.now(timezone.utc).isoformat()
     payload = json.dumps(list(tags) if tags else [], ensure_ascii=False)
@@ -3025,11 +3064,12 @@ def complete_video(
         cursor = conn.execute(
             """UPDATE videos
                SET status = ?, summary_md = ?, mindmap_md = ?, tags = ?,
-                   subtitle_text = ?, updated_at = ?
+                   subtitle_text = ?, template = ?, updated_at = ?
                WHERE canonical_url = ? AND status = ?""",
             (
                 VIDEO_STATUS_READY, summary_md, mindmap_md, payload,
-                subtitle_text, now, canonical_video_url(video_url),
+                subtitle_text, template or default_template_id(), now,
+                canonical_video_url(video_url),
                 VIDEO_STATUS_PENDING,
             ),
         )
@@ -3044,6 +3084,7 @@ def regenerate_video(
     summary_md: str = "",
     mindmap_md: str = "",
     tags: list | None = None,
+    template: str | None = None,
 ) -> int:
     """作者本人改写**自己那份**已完成的总结，返回更新的行数（ADR 0007）。
 
@@ -3073,6 +3114,9 @@ def regenerate_video(
     **不可达**——``api_summarize.py:540`` 的 ``if not has_subtitle: return``
     早就把空字幕挡在外面，:642 是唯一调用点且必传刚判定过非空的值。）
 
+    ``template`` 是这次用的提示词模板 id（工单 #105）。不传 = 默认模板，
+    取自 ``prompts/templates.json``——与 complete_video 同一口径。
+
     返回 0 有两种含义，调用方必须区分：这一行不存在 / 不是 ready（被并发释放或
     从未完成），或者它属于别人。两种都不该被静默当成成功。
     """
@@ -3082,11 +3126,12 @@ def regenerate_video(
         cursor = conn.execute(
             """UPDATE videos
                SET summary_md = ?, mindmap_md = ?, tags = ?,
-                   subtitle_text = ?, updated_at = ?
+                   subtitle_text = ?, template = ?, updated_at = ?
                WHERE canonical_url = ? AND status = ? AND parsed_by IS ?""",
             (
                 summary_md, mindmap_md, payload,
-                subtitle_text, now, canonical_video_url(video_url),
+                subtitle_text, template or default_template_id(), now,
+                canonical_video_url(video_url),
                 VIDEO_STATUS_READY, user_id,
             ),
         )

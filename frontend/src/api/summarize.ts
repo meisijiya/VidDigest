@@ -270,6 +270,28 @@ export interface SummarizeOptions {
   /** 平台元数据（工单 #17 第 2 项）。 */
   videoTitle?: string
   coverUrl?: string
+  /**
+   * 提示词模板 id（工单 #105）。
+   *
+   * 空串 = 让服务端用它自己的默认模板。**不传**与**传默认那个 id**
+   * 在服务端是同一件事，所以这里不做任何本地兜底：本地猜一个 id 出来，
+   * 症状是「选了 A 却拿到 B 的总结」，界面上完全看不出错。
+   */
+  summaryTemplate?: string
+}
+
+/** 一份总结模板（工单 #105）。`id` 是服务端清单里的真值。 */
+export interface SummaryTemplate {
+  id: string
+  name: string
+  description: string
+}
+
+/** 模板清单端点的响应形状（工单 #105）。 */
+export interface SummaryTemplateList {
+  /** 服务端默认用哪一份。不传模板时就用它。 */
+  default: string
+  templates: SummaryTemplate[]
 }
 
 /** `chatWithVideo` 的可选项。 */
@@ -302,6 +324,9 @@ export interface ChatOptions {
  * undefined 更麻烦：JSON.stringify 会把它悄悄丢掉，于是请求体的形状
  * 取决于调用方写了什么。`videoData` 来自历史记录里存下来的 JSON，
  * 老数据里出现 `"thumbnail": null` 是完全可能的。
+ *
+ * `options.summaryTemplate` 是提示词模板 id（工单 #105）。同样归一成空串：
+ * 空串在服务端就是「用默认模板」，而请求体的形状不该取决于调用方写了什么。
  */
 export function summarizeVideo(
   url: string,
@@ -315,6 +340,7 @@ export function summarizeVideo(
     overwrite: !!options.overwrite,
     video_title: options.videoTitle || '',
     cover_url: options.coverUrl || '',
+    summary_template: options.summaryTemplate || '',
   }
   const cred = options.credential
   if (cred) {
@@ -371,4 +397,23 @@ export async function fetchQuota(): Promise<QuotaPayload> {
   })
   if (!res.ok) throw new Error('获取额度失败')
   return (await res.json()) as QuotaPayload
+}
+
+/**
+ * 拉一次总结模板清单（工单 #105）。
+ *
+ * 清单只有**一份**真值，在服务端（`prompts/templates.json`）。前端不硬编码
+ * 模板名单：名单一改，硬编码的那份就会悄悄过期——下拉框里多出一个后端
+ * 没配过的选项，或者少一个后端已经支持的选项，而界面不会报任何错。
+ *
+ * 只读、不消耗额度。这个端点匿名可读：清单里没有用户相关的东西。
+ */
+export async function fetchSummaryTemplates(): Promise<SummaryTemplateList> {
+  const token = localStorage.getItem(TOKEN_KEY)
+  const res = await fetch('/api/summary-templates', {
+    method: 'GET',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) throw new Error('获取总结模板失败')
+  return (await res.json()) as SummaryTemplateList
 }
