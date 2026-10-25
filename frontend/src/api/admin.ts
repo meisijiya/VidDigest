@@ -470,3 +470,131 @@ export async function deleteAdminUser(userId: number): Promise<{ deleted: number
   const res = await client().delete(`/api/admin/users/${userId}`)
   return { deleted: res.data?.deleted ?? userId }
 }
+
+// ── 邀请码（工单 #99 / #103 / #104）──────────────────────────
+//
+// 注册的闸门钥匙由管理员发。库里只存 sha256 摘要（工单 #103），
+// **明文只在创建那一次响应里给**——之后任何出口都拿不回来。
+//
+// 这一节把三件事收进 api 层：取列表、批量发码、作废。
+// 组件拿到的永远是 camelCase，自己一次都不翻（与本文件其余出口同纪律）。
+
+/** 邀请码的一行（camelCase 形态）。 */
+export interface AdminInviteCode {
+  id: number
+  /** 脱敏码（前 4 后 4）。**列表出口才有**；创建响应里给的是明文。 */
+  codeMasked: string
+  /** 明文码：**只在创建响应里给一次**，之后任何出口都拿不到。 */
+  code?: string
+  createdBy: number | null
+  /** 发放人邮箱：管理员要能看出「这枚码是谁发的」（工单 #104）。 */
+  createdByEmail: string | null
+  createdAt: string
+  expiresAt: string | null
+  maxUses: number
+  usedCount: number
+  revoked: number
+  note: string | null
+  expired: boolean
+  exhausted: boolean
+  /** 状态词：active / exhausted / expired / revoked。 */
+  status: string
+}
+
+/**
+ * 后端原文（snake_case）→ 前端的邀请码行。
+ *
+ * 与本文件其余转换同一个纪律：**只在 api 层翻一次**。
+ * `code` 与 `code_masked` 只会有一个存在（创建给明文、列表给脱敏码），
+ * 缺的读成空串——不是 undefined，因为模板里直接显示它。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
+function toAdminInviteCode(r: Record<string, any>): AdminInviteCode {
+  return {
+    id: num(r.id),
+    codeMasked: String(r.code_masked ?? ''),
+    ...(r.code ? { code: String(r.code) } : {}),
+    createdBy: r.created_by === null || r.created_by === undefined ? null : num(r.created_by),
+    createdByEmail: r.created_by_email ? String(r.created_by_email) : null,
+    createdAt: String(r.created_at ?? ''),
+    expiresAt: r.expires_at ? String(r.expires_at) : null,
+    maxUses: num(r.max_uses),
+    usedCount: num(r.used_count),
+    revoked: num(r.revoked),
+    note: r.note ? String(r.note) : null,
+    expired: !!r.expired,
+    exhausted: !!r.exhausted,
+    status: String(r.status ?? ''),
+  }
+}
+
+/** 邀请码列表的查询参数。`status` 空串 = 不筛。 */
+export interface AdminInviteCodeQuery {
+  page?: number
+  pageSize?: number
+  status?: string
+}
+
+/**
+ * 邀请码列表。**需管理员。**
+ *
+ * 列表里**没有明文**——后端在数据层就把完整码拿掉了，只给脱敏提示。
+ * 筛选按状态走 `status` 参数（active / exhausted / expired / revoked），
+ * 留空 = 全部。
+ */
+export async function fetchAdminInviteCodes({
+  page = 1,
+  pageSize = 20,
+  status = '',
+}: AdminInviteCodeQuery = {}): Promise<AdminPage<AdminInviteCode>> {
+  const { limit, offset } = toLimitOffset(page, pageSize)
+  const res = await client().get('/api/admin/invite-codes', {
+    params: { limit, offset, ...(status ? { status } : {}) },
+  })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
+  const p = toPage<Record<string, any>>(res.data, '邀请码列表')
+  return { ...p, items: p.items.map(toAdminInviteCode) }
+}
+
+/**
+ * 批量发邀请码。**需管理员。**
+ *
+ * 每次发几枚由 `count` 决定（服务端有上界，超了回 400）。
+ * **明文只在这次响应里给**：每枚码各给一次，之后列表里只有脱敏码。
+ *
+ * 键名翻成 snake_case：服务端是 `extra="forbid"`，多带一个键会整个 422。
+ */
+export async function createAdminInviteCodes({
+  count = 1,
+  maxUses = 1,
+  expiresInHours = null,
+  note = '',
+}: {
+  count?: number
+  maxUses?: number
+  expiresInHours?: number | null
+  note?: string
+} = {}): Promise<{ items: AdminInviteCode[] }> {
+  const res = await client().post('/api/admin/invite-codes', {
+    count,
+    max_uses: maxUses,
+    expires_in_hours: expiresInHours,
+    note: note || null,
+  })
+  const raw = res.data?.items
+  if (!Array.isArray(raw)) {
+    throw new Error('发邀请码响应形状不对')
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
+  return { items: (raw as Record<string, any>[]).map(toAdminInviteCode) }
+}
+
+/** 作废一枚邀请码。**需管理员。** */
+export async function revokeAdminInviteCode(inviteId: number): Promise<{ item: AdminInviteCode }> {
+  const res = await client().post(`/api/admin/invite-codes/${inviteId}/revoke`)
+  if (!res.data?.item || typeof res.data.item !== 'object') {
+    throw new Error('作废邀请码响应形状不对')
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
+  return { item: toAdminInviteCode(res.data.item as Record<string, any>) }
+}

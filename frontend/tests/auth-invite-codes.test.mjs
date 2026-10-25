@@ -3,9 +3,13 @@
  *
  * ## 这份文件断的是什么
  *
- * 「注册要邀请码」「管理员要能发码」在前端各有一处接线，坏了都不会报错：
+ * 「注册要邀请码」在注册表单里有一处接线，坏了不会报错：
  * 输入框没了只是「少一格」，邀请码没进请求体只是「后端说无效」。
  * 所以这里把接线本身钉住。
+ *
+ * 管理侧（发码、列表、作废、脱敏码）在工单 #104 里搬去了独立路由
+ * `/admin/invite-codes`，那些判据在 tests/invite-codes-page.test.mjs
+ * （静态接线）与 tests/invite-codes-page.mount.spec.mjs（真挂载）里。
  *
  * ## 为什么是源码断言
  *
@@ -46,7 +50,6 @@ function stripComments(src) {
 }
 
 const authModalSrc = stripComments(read('../src/components/AuthModal.vue'))
-const adminPageSrc = stripComments(read('../src/components/AdminPage.vue'))
 
 /**
  * AuthModal 的模板段。
@@ -55,17 +58,8 @@ const adminPageSrc = stripComments(read('../src/components/AdminPage.vue'))
  */
 const authTemplate = authModalSrc.slice(0, authModalSrc.indexOf('</template>'))
 
-/**
- * AdminPage 的模板段。
- *
- * 模板里有 <template v-for>，所以必须取**最后**一个 </template>——
- * 取第一个会把后面的内容整段切掉，断言就在一个缩小的范围里判了。
- */
-const adminTemplate = adminPageSrc.slice(0, adminPageSrc.lastIndexOf('</template>'))
-
-/** 两个组件的 <script setup> 段 */
+/** AuthModal 的 <script setup> 段 */
 const authScript = authModalSrc.slice(authModalSrc.indexOf('<script setup'))
-const adminScript = adminPageSrc.slice(adminPageSrc.indexOf('<script setup'))
 
 /**
  * 注册表单里那一格邀请码。
@@ -85,32 +79,6 @@ const injectCode = sliceBetween(
 
 /** 提交处理（含失败分支） */
 const submitHandler = sliceBetween(authScript, 'async function handleSubmit(', '</script>', 'AuthModal 的提交处理')
-
-/** 管理后台的四个动作，各自一段 */
-const listInvites = sliceBetween(
-  adminScript,
-  'async function loadInvites(',
-  'function toggleInvites(',
-  'AdminPage 的邀请码列表',
-)
-const toggleInvites = sliceBetween(
-  adminScript,
-  'function toggleInvites(',
-  'async function createInvite(',
-  'AdminPage 的邀请码区块展开',
-)
-const createInvite = sliceBetween(
-  adminScript,
-  'async function createInvite(',
-  'async function revokeInvite(',
-  'AdminPage 的发码',
-)
-const revokeInvite = sliceBetween(
-  adminScript,
-  'async function revokeInvite(',
-  'async function copyIssuedCode(',
-  'AdminPage 的作废',
-)
 
 describe('注册表单的邀请码格', () => {
   test('注册模式有一格邀请码输入', () => {
@@ -163,36 +131,7 @@ describe('注册失败把后端那句话显示出来', () => {
   })
 })
 
-describe('管理后台的邀请码区块', () => {
-  test('有发码入口', () => {
-    assert.match(createInvite, /post\('\/api\/admin\/invite-codes'/, '发码请求打错了地址')
-    assert.match(createInvite, /max_uses/, '发码请求没有带上可用次数')
-    assert.match(createInvite, /expires_in_hours/, '发码请求没有带上有效期')
-  })
-
-  test('有列表入口', () => {
-    assert.match(listInvites, /get\('\/api\/admin\/invite-codes'\)/, '列表请求打错了地址')
-  })
-
-  test('有作废入口', () => {
-    // 整串比到收尾的反引号与右括号：只比前缀的话，地址后面多挂一截
-    // （比如 /revoke-mutant）照样能匹配，判据就成了一条摆设。
-    assert.match(revokeInvite, /post\(`\/api\/admin\/invite-codes\/\$\{id\}\/revoke`\)/, '作废请求打错了地址')
-    assert.match(adminTemplate, /@click="revokeInvite\(row\.id\)"/, '列表里没有那一行的作废按钮')
-  })
-
-  test('列表只显示脱敏码', () => {
-    assert.match(adminTemplate, /\{\{ row\.codeMasked \}\}/, '列表没有显示脱敏码')
-    // 完整码只在刚生成的那一格里出现一次（明文只给一次）。
-    // 列表这一段不许碰完整码字段 —— 后端在列表出口就没给。
-    assert.doesNotMatch(adminTemplate, /row\.code\b/, '列表里读了完整码字段')
-    assert.match(adminTemplate, /\{\{ issuedCode \}\}/, '刚生成的明文码没地方显示')
-    assert.match(adminTemplate, /@click="copyIssuedCode"/, '明文码没有复制按钮')
-  })
-
-  test('展开才加载列表', () => {
-    assert.match(toggleInvites, /loadInvites\(\)/, '展开区块时没有加载列表')
-    const mounted = sliceBetween(adminScript, 'onMounted(', '</script>', 'AdminPage 的 onMounted')
-    assert.doesNotMatch(mounted, /loadInvites/, '列表在挂载时就加载了 —— 进后台就打一次接口')
-  })
-})
+// 管理侧（发码、列表、作废、脱敏码）的判据搬到
+// tests/invite-codes-page.test.mjs 与 tests/invite-codes-page.mount.spec.mjs：
+// 邀请码管理在工单 #104 里从管理后台的折叠区块搬成了独立路由
+// `/admin/invite-codes`，那一段的接线与渲染都不在 AdminPage 里了。

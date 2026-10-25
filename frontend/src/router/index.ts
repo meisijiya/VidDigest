@@ -16,14 +16,17 @@
  * 页面组件由 `<router-view>` 按路由渲染，App.vue 里那条
  * `v-if / v-else-if` 链删掉。
  *
- * ## 四条真实路径
+ * ## 五条真实路径
  *
  * 之前只认 `/admin` 一个真实路径，主页/历史/社区都留在 `/`——
  * 理由是「这三个页签之间来回跳时 URL 变化对用户没有信息量」。
  * 这个判断在只有三个页签时成立，但它带来的代价是：
  * 分享一个历史页链接收不到、浏览器后退要靠手工同步、
- * 刷新后不知道自己在哪一页。现在四条路径各自有名字，
+ * 刷新后不知道自己在哪一页。现在五条路径各自有名字，
  * 链接可以直接发出去，后退也交给路由。
+ *
+ * 第五条 `/admin/invite-codes` 是邀请码管理页（工单 #104）：它有自己的
+ * 页键，所以「返回」能回到管理后台而不是首页。
  *
  * ## 守卫为什么是空的
  *
@@ -38,9 +41,10 @@ import HomeView from '../views/HomeView.vue'
 import HistoryPage from '../components/HistoryPage.vue'
 import CommunityPage from '../components/CommunityPage.vue'
 import AdminPage from '../components/AdminPage.vue'
+import InviteCodesPage from '../components/InviteCodesPage.vue'
 
 /** 页面键。模板与事件里用它指代「现在是哪一页」。 */
-export type PageKey = 'home' | 'history' | 'community' | 'admin'
+export type PageKey = 'home' | 'history' | 'community' | 'admin' | 'admin-invites'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -50,16 +54,26 @@ declare module 'vue-router' {
 }
 
 /**
- * 四条路由。
+ * 五条路由。
  *
  * `meta.page` 是这份路由表给模板的唯一接口：App.vue 从 `route.meta.page`
  * 取到当前页键，于是「URL」与「页键」不需要两处维护。
+ *
+ * `/admin/invite-codes` 是邀请码管理页（工单 #104 / ADR 0025）：它**不是**
+ * 管理后台的第四个页签，而是一条自己的路径，页键也分开（`admin-invites`）——
+ * 页键分开才能给它接自己的「返回」动作（回管理后台，而不是回首页）。
  */
 export const routes: RouteRecordRaw[] = [
   { path: '/', name: 'home', component: HomeView, meta: { page: 'home' } },
   { path: '/history', name: 'history', component: HistoryPage, meta: { page: 'history' } },
   { path: '/community', name: 'community', component: CommunityPage, meta: { page: 'community' } },
   { path: '/admin', name: 'admin', component: AdminPage, meta: { page: 'admin' } },
+  {
+    path: '/admin/invite-codes',
+    name: 'admin-invite-codes',
+    component: InviteCodesPage,
+    meta: { page: 'admin-invites' },
+  },
 ]
 
 /**
@@ -68,7 +82,7 @@ export const routes: RouteRecordRaw[] = [
  * `scrollBehavior` 统一把换页后的滚动位置回到顶部：原来这件事分散在
  * `goHome` / `openHistory` / `openCommunity` 四处各写一遍
  * `window.scrollTo`，而浏览器后退时不归它们管——后退回到上一页时
- * 滚动位置会停在最底。现在由路由统一处理，四条路径行为一致。
+ * 滚动位置会停在最底。现在由路由统一处理，五条路径行为一致。
  */
 export function createAppRouter() {
   return createRouter({

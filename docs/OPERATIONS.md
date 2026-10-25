@@ -863,8 +863,11 @@ VIDDIGEST_ADMIN_EMAILS=you@example.com,other@example.com
 
 发码有两条路：
 
-- **界面**：管理后台 → 展开「邀请码」区块 → 生成。**明文码只在创建成功的那一刻显示一次**，
-  之后列表里只有脱敏码（前 4 后 4）。**没复制下来就作废重发**——明文不再取回。
+- **界面**：管理后台 →「管理邀请码」→ 独立页面 `/admin/invite-codes`（ADR 0025）。
+  页面能**批量发**（一次 1–20 枚，每枚的明文各给一次）、能按状态筛选
+  （可用 / 已用完 / 已过期 / 已作废）、能翻页，每行还回显**发放人**。
+  **明文码只在创建成功的那一刻显示一次**，之后列表里只有脱敏码（前 4 后 4）。
+  **没复制下来就作废重发**——明文不再取回。
 - **命令行**（脚本化发放）：
 
   ```bash
@@ -877,11 +880,26 @@ VIDDIGEST_ADMIN_EMAILS=you@example.com,other@example.com
   curl -s -X POST http://127.0.0.1:8000/api/admin/invite-codes \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
     -d '{"max_uses":1,"expires_in_hours":24,"note":"给某某"}'
+
+  # 批量发 5 枚（一次最多 20 枚）
+  curl -s -X POST http://127.0.0.1:8000/api/admin/invite-codes \\
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
+    -d '{"count":5,"max_uses":1,"expires_in_hours":24}'
+
+  # 只看还能用的：GET 带 status 筛选
+  curl -s 'http://127.0.0.1:8000/api/admin/invite-codes?status=active&limit=20&offset=0' \\
+    -H "Authorization: Bearer $TOKEN"
   ```
 
-  响应里的 `item.code` 是**明文**，只给这一次。**`item.code_masked` 不在创建响应里**——
+  响应里的 `items[].code` 是**明文**，只给这一次（`item` 是第一枚）。
+  **`item.code_masked` 不在创建响应里**——
   它是列表项的字段（`GET /api/admin/invite-codes` 的每一行），值形如 `ABCD****WXYZ`，
   由建码那一刻存下的 `code_hint` 给出，**不是明文、不能用来注册**。
+
+**筛选与显示用同一份判定**：服务端把状态判定注册成 SQLite UDF，列表的 `WHERE` 与
+返回项的 `status` 调的是同一个函数——两处各判一次，就会在「快过期」这类边界上分叉
+（筛出来是可用、点进去却写着已过期）。`status` 可取 `active`/`exhausted`/`expired`/
+`revoked`，写别的值会得到 400 并列出可选值。
 
 库里存的是 sha256 摘要，**没有明文**：库被读走不等于在用的码被用掉。代价是明文取不回来
 ——复制走之后立刻发给对方，发漏了只能作废重发。老库（存明文的那种）在后端重启时

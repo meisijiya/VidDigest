@@ -5,6 +5,11 @@ date: 2026-10-25
 
 # ADR 0023：注册改为邀请码注册
 
+> **修正（2026-10-25）**：本 ADR「后果」里「管理后台的邀请码区块是折叠的独立区块」
+> 那一条已被 [ADR 0025](0025-invite-codes-management-page.md) 取代——邀请码管理
+> 改成了独立路由 `/admin/invite-codes`。本 ADR 关于**注册语义**的部分
+> （码怎么发、怎么消费、怎么失效、库里存什么）仍然有效。
+
 ## 决定
 
 公开注册端点 `/api/auth/register` **必须带邀请码**。邀请码由管理员在管理后台发放，
@@ -94,8 +99,8 @@ date: 2026-10-25
   `backend/tests/mutation_invite_codes.py` 确认能变红；前端接线由
   `frontend/tests/auth-invite-codes.test.mjs` 钉住，变异追加在
   `frontend/tests/mutation-ui-fixes.mjs` 末尾。
-- 管理后台的邀请码区块是**折叠的独立区块**，不是第四个页签：页签是同一批数据的不同
-  视图，邀请码是另一件事；挂成页签会给「页签 key / 每页一份状态槽」那份冻结契约再加
-  一份。
-- 列表**展开时才加载**：进后台就替管理员打一次邀请码接口没有意义。
+- 邀请码的管理界面是**独立路由 `/admin/invite-codes`**（见
+  [ADR 0025](0025-invite-codes-management-page.md)），管理后台里只留一个入口按钮。
+  页面提供批量发放、状态筛选、分页与发放人回显；**明文只在刚发放的那一块出现**，
+  列表里只有脱敏码。
 - 管理员怎么发码、码的生命周期与常见失败原因，见 `docs/INVITE-CODES.md`。

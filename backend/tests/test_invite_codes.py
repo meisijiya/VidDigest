@@ -1080,3 +1080,175 @@ class TestTheExistingBehaviourIsIntact:
         allowed, remaining = database.check_quota_kind(admin_id, "chat")
         assert allowed is True
         assert remaining == database.DAILY_CHAT_LIMIT
+
+
+class TestBatchIssuingAndStatusFiltering:
+    """管理页要的那几件事（工单 #104）。
+
+    批量发码、状态筛选、发放人回显——三件都是**管理员在这个页面上
+    真正要做的动作**，不是给接口看的花活。
+
+    断言只钉外部可观察的东西：HTTP 状态码、响应体的形状与内容、
+    数据库里的真实行。不钉私有函数名，不钉内部调用顺序。
+    """
+
+    def test_a_batch_of_codes_is_issued_at_once(self, client_app):
+        client, _, _ = client_app
+        r = client.post(
+            "/api/admin/invite-codes",
+            json={"count": 3, "note": "给三位测试同学"},
+            headers=_admin_hdr(client_app),
+        )
+        assert r.status_code == 200, f"实得 {r.status_code}：{r.text}"
+        body = r.json()
+        assert len(body["items"]) == 3, f"批量发的数量不对：{body}"
+        codes = [item["code"] for item in body["items"]]
+        assert len(set(codes)) == 3, f"批量发出来的码有重复：{codes}"
+        for item in body["items"]:
+            assert item["note"] == "给三位测试同学"
+            assert item["max_uses"] == 1
+            assert item["used_count"] == 0
+
+    def test_the_batch_response_gives_each_plaintext_once(self, client_app):
+        """批量也遵守「明文只给一次」：列表里拿不回任何一枚明文。"""
+        client, _, _ = client_app
+        created = client.post(
+            "/api/admin/invite-codes",
+            json={"count": 2},
+            headers=_admin_hdr(client_app),
+        ).json()["items"]
+
+        r = client.get("/api/admin/invite-codes", headers=_admin_hdr(client_app))
+        assert r.status_code == 200, f"实得 {r.status_code}：{r.text}"
+        assert r.json()["total"] == 2
+        for item in created:
+            assert item["code"] not in r.text, "列表里出现了完整码"
+            row = next(x for x in r.json()["items"] if x["id"] == item["id"])
+            assert "code" not in row, f"列表项里回显了完整码：{row}"
+            assert row["code_masked"] == item["code"][:4] + "****" + item["code"][-4:]
+
+    def test_the_batch_size_is_capped(self, client_app):
+        """一次最多发 20 枚：明文只给一次，多了管理员根本来不及复制。"""
+        client, _, _ = client_app
+        hdr = _admin_hdr(client_app)
+        r = client.post("/api/admin/invite-codes", json={"count": 21}, headers=hdr)
+        assert r.status_code == 400, f"实得 {r.status_code}：{r.text}"
+        assert "最多" in r.json()["detail"]
+
+        zero = client.post("/api/admin/invite-codes", json={"count": 0}, headers=hdr)
+        assert zero.status_code == 400, f"实得 {zero.status_code}：{zero.text}"
+
+        boolean = client.post("/api/admin/invite-codes", json={"count": True}, headers=hdr)
+        assert boolean.status_code == 400, f"实得 {boolean.status_code}：{boolean.text}"
+
+        with database.get_db() as conn:
+            assert conn.execute("SELECT count(*) FROM invite_codes").fetchone()[0] == 0
+
+    def test_the_list_can_be_filtered_by_status(self, client_app):
+        """四种状态各自筛出各自那一枚，且 total 跟着筛选走。"""
+        client, _, _ = client_app
+        spent = database.create_invite_code(max_uses=1)
+        _register(client, email="used@example.com", code=spent["code"])
+        revoked = database.create_invite_code(max_uses=1)
+        database.revoke_invite_code(revoked["id"])
+        expired = database.create_invite_code(max_uses=1, expires_at=_past_timestamp())
+        active = database.create_invite_code(max_uses=1)
+
+        expected = {
+            "active": active["id"],
+            "exhausted": spent["id"],
+            "expired": expired["id"],
+            "revoked": revoked["id"],
+        }
+        for status, want_id in expected.items():
+            r = client.get(
+                "/api/admin/invite-codes",
+                params={"status": status},
+                headers=_admin_hdr(client_app),
+            )
+            assert r.status_code == 200, f"实得 {r.status_code}：{r.text}"
+            body = r.json()
+            assert body["total"] == 1, f"{status} 筛出来的条数不对：{body}"
+            assert body["items"][0]["id"] == want_id, f"{status} 筛错了行：{body}"
+
+    def test_the_filter_and_the_display_agree(self, client_app):
+        """筛选与每行显示的 status 必须是**同一份算法**。
+
+        这条是「一份真相」的守卫：筛选走 SQL 里的 invite_status(...)，
+        显示走同一个函数的直接调用。两处一旦漂移，症状是「筛了却看不到」
+        或「看到却筛不出来」——而且都不报错。
+
+        所以这里比对**两边的 id 集合**：筛出来的必须是显示成那个状态的。
+        """
+        client, _, _ = client_app
+        spent = database.create_invite_code(max_uses=1)
+        _register(client, email="used@example.com", code=spent["code"])
+        revoked = database.create_invite_code(max_uses=1)
+        database.revoke_invite_code(revoked["id"])
+        expired = database.create_invite_code(max_uses=1, expires_at=_past_timestamp())
+        active = database.create_invite_code(max_uses=1)
+
+        everything = client.get(
+            "/api/admin/invite-codes", headers=_admin_hdr(client_app)
+        ).json()["items"]
+        by_display = {}
+        for row in everything:
+            by_display.setdefault(row["status"], set()).add(row["id"])
+
+        for status in ("active", "exhausted", "expired", "revoked"):
+            filtered = client.get(
+                "/api/admin/invite-codes",
+                params={"status": status},
+                headers=_admin_hdr(client_app),
+            ).json()["items"]
+            assert {row["id"] for row in filtered} == by_display.get(status, set()), (
+                f"{status}：筛出来的与显示成这个状态的不是同一批"
+            )
+        assert {active["id"]} == by_display["active"]
+        assert {spent["id"]} == by_display["exhausted"]
+        assert {expired["id"]} == by_display["expired"]
+        assert {revoked["id"]} == by_display["revoked"]
+
+    def test_an_unknown_status_filter_is_refused(self, client_app):
+        """给错的状态词要 400，而不是「当成没筛选」。
+
+        静默忽略会让管理员以为筛过了，而列表其实没筛——那比报错更难查。
+        """
+        client, _, _ = client_app
+        r = client.get(
+            "/api/admin/invite-codes",
+            params={"status": "bogus"},
+            headers=_admin_hdr(client_app),
+        )
+        assert r.status_code == 400, f"实得 {r.status_code}：{r.text}"
+        assert "状态" in r.json()["detail"]
+
+    def test_the_list_tells_who_issued_the_code(self, client_app):
+        """发放人邮箱要回显：管理员要能看出「这枚码是谁发的」。"""
+        client, admin_id, _ = client_app
+        client.post(
+            "/api/admin/invite-codes", json={}, headers=_admin_hdr(client_app)
+        )
+        r = client.get("/api/admin/invite-codes", headers=_admin_hdr(client_app))
+        assert r.status_code == 200, f"实得 {r.status_code}：{r.text}"
+        row = r.json()["items"][0]
+        assert row["created_by"] == admin_id
+        assert row["created_by_email"] == "boss@example.com", (
+            f"发放人邮箱没回显：{row}"
+        )
+
+    def test_the_list_still_pages(self, client_app):
+        """分页没被筛选挤掉：翻页与筛选各走各的。"""
+        client, _, _ = client_app
+        for _ in range(3):
+            database.create_invite_code(max_uses=1)
+        r = client.get(
+            "/api/admin/invite-codes",
+            params={"limit": 2, "offset": 0},
+            headers=_admin_hdr(client_app),
+        )
+        body = r.json()
+        assert body["total"] == 3
+        assert len(body["items"]) == 2
+        assert body["limit"] == 2
+        assert body["offset"] == 0

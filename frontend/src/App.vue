@@ -225,6 +225,17 @@ function openAdmin() {
   router.push('/admin')
 }
 
+/**
+ * 去邀请码管理页（工单 #104 / ADR 0025）。
+ *
+ * 它是**独立路径**而不是后台里的第四个页签，所以后台页自己发一个事件出来，
+ * 由这里路由过去。页面组件里不直接用 router —— 社区页的 `need-login`
+ * 也是这个口径：组件只声明「我要去某处」，去哪儿由 App.vue 决定。
+ */
+function openInviteCodes() {
+  router.push('/admin/invite-codes')
+}
+
 /** URL 规范化：剥离跟踪参数，提取平台视频 ID 作为历史/缓存的 key，提升命中率 */
 function canonicalUrl(raw: string): string {
   let url = (raw || '').trim()
@@ -615,7 +626,11 @@ function listenersFor(page: PageKey): Record<string, (...args: never[]) => void>
         'open-video': openCommunityVideo,
       }
     case 'admin':
-      return { back: goHome }
+      return { back: goHome, 'open-invite-codes': openInviteCodes }
+    case 'admin-invites':
+      // 邀请码管理页的「返回」回**管理后台**：它是从后台进去的独立路径，
+      // 回首页会把管理员丢在最外面一层。
+      return { back: openAdmin }
     default:
       return {
         parse: handleParse,

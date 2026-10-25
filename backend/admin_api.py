@@ -16,8 +16,8 @@
 | `PATCH /api/admin/community/{video_id}` | require_admin | **写**（只改标签） |
 | `DELETE /api/admin/community/{video_id}` | require_admin | **写**（只删 videos 一行） |
 | `GET /api/admin/tags/vocabulary` | require_admin | 只读 |
-| `GET /api/admin/invite-codes` | require_admin | 只读（码已脱敏） |
-| `POST /api/admin/invite-codes` | require_admin | **写**（发码，明文只给一次） |
+| `GET /api/admin/invite-codes` | require_admin | 只读（码已脱敏；可按 status 筛选） |
+| `POST /api/admin/invite-codes` | require_admin | **写**（发码，可批量；明文只给一次） |
 | `POST /api/admin/invite-codes/{id}/revoke` | require_admin | **写**（作废） |
 
 ## 为什么 `/api/models` 是公开的
@@ -56,11 +56,14 @@ from database import (
     admin_user_detail,
     create_admin_user,
     create_invite_code,
+    create_invite_codes,
     delete_user,
     delete_video_record,
     get_invite_code_by_id,
     get_user_by_email,
     invite_code_expiry,
+    INVITE_CODE_BATCH_MAX,
+    INVITE_CODE_STATUSES,
     is_vip_active,
     list_admin_community,
     list_admin_users,
@@ -634,6 +637,29 @@ class InviteCodeCreateRequest(BaseModel):
     max_uses: Any = None
     expires_in_hours: Any = None
     note: str | None = None
+    count: Any = None
+
+
+def _normalize_invite_count(raw: Any) -> int:
+    """一次发几枚（工单 #104 的批量发码）。默认 1。
+
+    区间是 1..INVITE_CODE_BATCH_MAX：上界存在的理由是**明文只给一次**，
+    一次发几百枚意味着管理员要手动复制几百行，而绝大多数码根本没人要。
+
+    bool 显式拒绝（``True == 1``），与 max_uses 同一口径。
+    """
+    if raw is None:
+        return 1
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise HTTPException(status_code=400, detail="count 必须是正整数")
+    if raw < 1:
+        raise HTTPException(status_code=400, detail="count 至少是 1")
+    if raw > INVITE_CODE_BATCH_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多发 {INVITE_CODE_BATCH_MAX} 枚邀请码",
+        )
+    return raw
 
 
 def _normalize_max_uses(raw: Any) -> int:
@@ -683,19 +709,24 @@ async def admin_create_invite_code(
     """
     max_uses = _normalize_max_uses(payload.max_uses)
     hours = _normalize_expires_in_hours(payload.expires_in_hours)
-    created = create_invite_code(
+    count = _normalize_invite_count(payload.count)
+    created = create_invite_codes(
+        count,
         created_by=admin["id"],
         max_uses=max_uses,
         expires_at=invite_code_expiry(hours),
         note=payload.note,
     )
-    return {"item": created}
+    # `item` 是单枚出口（老前端读它），`items` 是批量出口。两者都在：
+    # 一次发一枚时 item 就是 items[0]，前端不用为「发几枚」写两套分支。
+    return {"item": created[0], "items": created}
 
 
 @router.get("/admin/invite-codes")
 async def admin_list_invite_codes(
     limit: int = Query(ADMIN_PAGE_SIZE_DEFAULT, description="每页条数，有上界"),
     offset: int = Query(0, description="跳过的条数"),
+    status: str | None = Query(None, description="按状态筛选：active/exhausted/expired/revoked"),
     _: dict = Depends(require_admin),
 ):
     """邀请码列表。**不回显完整码**，只有脱敏提示 ``code_masked``（前 4 后 4）。
@@ -707,8 +738,19 @@ async def admin_list_invite_codes(
 
     每项带用量（used_count / max_uses）、是否过期、是否作废——这三样
     是管理员唯一需要的信息：还能不能用、还能用几次、要不要作废。
+
+    ## 状态筛选（工单 #104）
+
+    ``status`` 取 active / exhausted / expired / revoked 之一；给别的值
+    回 **400** 而不是「当成没有筛选」——静默忽略会让管理员以为筛过了，
+    而列表其实没筛。
     """
-    return list_invite_codes(limit=limit, offset=offset)
+    if status is not None and status not in INVITE_CODE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知的邀请码状态：{status}（可选 {'/'.join(INVITE_CODE_STATUSES)}）",
+        )
+    return list_invite_codes(limit=limit, offset=offset, status=status)
 
 
 @router.post("/admin/invite-codes/{invite_id}/revoke")

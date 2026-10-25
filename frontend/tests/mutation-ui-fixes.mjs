@@ -67,6 +67,21 @@ function legacySanitizeMindmap(md) {
 /** 装回 VideoSummary.vue 时用的源码文本（函数名改回当年那个）。 */
 const LEGACY_SANITIZE_SOURCE = legacySanitizeMindmap.toString().replace('legacySanitizeMindmap', 'sanitizeMindmap')
 
+/**
+ * 剥掉 ANSI 转义序列（终端颜色）。
+ *
+ * 为什么需要：vitest 会给 "FAIL" 标色，Linux CI 上那行长这样：
+ *   `ESC[41m FAIL ESC[22m ESC[49m tests/x.spec.mjs > 套件 > 用例名`
+ * 直接按行首 "FAIL " 去认，行首是 ESC 而不是 F，于是**一条真被杀掉��变异
+ * 会被报成「该转红的用例没红」**。本机 Windows 上 vitest 不上色、CI 上色，
+ * 同一份守卫在两个平台上给出相反结论——这种「平台差异」比没有守卫更坏，
+ * 因为它让人以为守卫还在。
+ */
+function stripAnsi(text) {
+  // eslint-disable-next-line no-control-regex -- 就是要匹配 ANSI 转义序列本身
+  return text.replace(/\u001b\[[0-9;]*m/g, '')
+}
+
 /** 每个变异：破坏什么、期望哪条测试转红 */
 // 空白宽松匹配：模式串的每个字符之间都允许插入任意空白。
 // 非空白字符仍要逐字相同——所以它不放宽判据，只是不怕 prettier 重排。
@@ -301,38 +316,41 @@ const MUTANTS = [
   },
   {
     name: 'M27 管理后台发码请求打错地址（管理员点了没反应）',
-    file: join(FE, 'src/components/AdminPage.vue'),
+    file: join(FE, 'src/api/admin.ts'),
     from: "post('/api/admin/invite-codes', {",
     to: "post('/api/admin/invite-codes-mutant', {",
     expect: /有发码入口/,
   },
   {
     name: 'M28 管理后台列表请求打错地址（列表永远是空的）',
-    file: join(FE, 'src/components/AdminPage.vue'),
-    from: "get('/api/admin/invite-codes')",
-    to: "get('/api/admin/invite-codes-mutant')",
+    file: join(FE, 'src/api/admin.ts'),
+    from: "get('/api/admin/invite-codes', {",
+    to: "get('/api/admin/invite-codes-mutant', {",
     expect: /有列表入口/,
   },
   {
     name: 'M29 管理后台作废请求打错地址（点了作废，码还能用）',
-    file: join(FE, 'src/components/AdminPage.vue'),
-    from: 'post(`/api/admin/invite-codes/${id}/revoke`)',
-    to: 'post(`/api/admin/invite-codes/${id}/revoke-mutant`)',
+    file: join(FE, 'src/api/admin.ts'),
+    from: 'post(`/api/admin/invite-codes/${inviteId}/revoke`)',
+    to: 'post(`/api/admin/invite-codes/${inviteId}/revoke-mutant`)',
     expect: /有作废入口/,
   },
   {
     name: 'M30 列表改成显示完整码（明文只给一次这条规矩破了）',
-    file: join(FE, 'src/components/AdminPage.vue'),
+    file: join(FE, 'src/components/InviteCodesPage.vue'),
     from: '{{ row.codeMasked }}',
     to: '{{ row.code }}',
     expect: /列表只显示脱敏码/,
   },
   {
-    name: 'M31 展开区块时不加载列表（展开是一片空白）',
-    file: join(FE, 'src/components/AdminPage.vue'),
-    from: 'void loadInvites()',
-    to: 'void Promise.resolve()',
-    expect: /展开才加载列表/,
+    name: 'M31 打开页面时不加载列表（页面是一片空白）',
+    file: join(FE, 'src/components/InviteCodesPage.vue'),
+    // 锚点带上 onMounted 的开头：`void loadCodes()` 在页面里出现三次
+    // （翻页、换筛选、挂载），只锚这一句的话，装置改的是翻页那处，
+    // 挂载那处照样在跑 —— 变异会「存活」，而它压根没碰到被测机制。
+    from: 'onMounted(() => {\n  void loadCodes()',
+    to: 'onMounted(() => {\n  void Promise.resolve()',
+    expect: /挂载即加载列表/,
   },
   // ── 工单 #105：总结模板选择 ──
   // 这几条破坏的是「用户在下拉框里选的模板真的被用上」。
@@ -452,7 +470,12 @@ for (const m of MUTANTS) {
       }
       const mRan = out.match(/Tests\s+[^\n]*\((\d+)\)/)
       nRan = mRan ? Number(mRan[1]) : 0
-      failedTests = out
+      // 失败用例名要从 vitest 的输出里读。**必须先剥掉 ANSI 转义序列**：
+      // vitest 会给 "FAIL" 上色（Linux CI 上是 `ESC[41m FAIL ESC[22m ...`），
+      // 不剥的话这行根本不是以 "FAIL " 开头，解析器会以为「没有用例转红」，
+      // 于是把一条明明被杀掉的变异报成「该转红的用例没红」——
+      // 同一台机器上 Windows 与 Linux 结论相反，守卫就成了摆设。
+      failedTests = stripAnsi(out)
         .split('\n')
         .filter((l) => l.trimStart().startsWith('FAIL '))
         .map((l) => l.split(' > ').pop().trim())
@@ -487,6 +510,11 @@ for (const m of MUTANTS) {
       // 那种红不证明任何东西——它证明的是「这个文件坏了」，不是「这条守卫在验这条约束」。
       // 所以它既不算杀、也不算存活：算变异体自坏。
       broken.push(`${m.name} —— 变异体自坏（转红但不是 AssertionError：源码可能被改坏到无法导入）`)
+    } else if (m.failedTests && failedTests.length === 0) {
+      // 测试确实红了一大片，却一个失败用例名都没读到：不是「守卫够不着」，
+      // 而是**输出格式变了**（比如 vitest 给 FAIL 行上了 ANSI 颜色，
+      // 行首不是 "FAIL "）。这种情况必须单独说，否则会被误判成存活。
+      broken.push(`${m.name} —— 装置故障（测试转红了但没读到失败用例名：输出格式变了？）`)
     } else if (m.failedTests && !m.failedTests.every((t) => failedTests.includes(t))) {
       // 该转红的没转红 = 变异没被真正杀掉（护栏够不着它）。
       const missing = m.failedTests.filter((t) => !failedTests.includes(t))
