@@ -739,6 +739,8 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 
 上限写 `0` 表示该桶不限流。
 
+**每个来源每个端点各一个计数器**：六个桶的计数互不干扰——打满解析桶不会让登录被拒，反过来也一样。上限是**每个桶各自的**窗口上限，不是所有端点加在一起的总次数。
+
 **怎么算同一个来源**：只看直接连上来的那个地址。只有直接对端落在回环、私网或链路本地网段时，才采信 `X-Forwarded-For`——但采信的是它的**最后一段**（边缘代理追加进去的权威地址），不是第一段（客户端可以随便伪造的那段）。公网对端送来的这个头整个不采信（否则任何人换一个头就能绕开限流）。
 
 **反向代理信任模型**：来源身份由**边缘代理与后端共同**决定，两边都要对（ADR 0022）：
@@ -770,7 +772,7 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 
 **并发 429 的错误体**里 `code` 是 `concurrency_limit`（速率那道是 `rate_limit`）——前端据此把「同时在跑太多」与「来得太勤」分成两种提示，前者的用户动作是「结束前面那个任务」，不是「等一分钟」。
 
-**真值文件**：`backend/ratelimit.py`；判据与用例见 `backend/tests/test_ratelimit.py`（21 条）、`backend/tests/mutation_ratelimit.py`（10 个变异）、`backend/tests/test_concurrency_limit.py`（22 条）与 `backend/tests/mutation_concurrency_limit.py`（7 个变异）。来源身份那条链还有一道**端到端守卫**：`scripts/ops/check_xff_bypass.py`（从栈外面打带伪造头的请求，CI 的「生产构建」作业里跑）。
+**真值文件**：`backend/ratelimit.py`；判据与用例见 `backend/tests/test_ratelimit.py`（23 条）、`backend/tests/mutation_ratelimit.py`（11 个变异）、`backend/tests/test_concurrency_limit.py`（24 条）与 `backend/tests/mutation_concurrency_limit.py`（7 个变异）。来源身份那条链还有一道**端到端守卫**：`scripts/ops/check_xff_bypass.py`（从栈外面打带伪造头的请求，CI 的「生产构建」作业里跑）。
 
 ### 10.5 管理员播种
 
@@ -820,7 +822,13 @@ VIDDIGEST_ADMIN_EMAILS=you@example.com,other@example.com
     -d '{"max_uses":1,"expires_in_hours":24,"note":"给某某"}'
   ```
 
-  响应里的 `item.code` 是**明文**，只给这一次；`item.code_masked` 是脱敏码。
+  响应里的 `item.code` 是**明文**，只给这一次。**`item.code_masked` 不在创建响应里**——
+  它是列表项的字段（`GET /api/admin/invite-codes` 的每一行），值形如 `ABCD****WXYZ`，
+  由建码那一刻存下的 `code_hint` 给出，**不是明文、不能用来注册**。
+
+库里存的是 sha256 摘要，**没有明文**：库被读走不等于在用的码被用掉。代价是明文取不回来
+——复制走之后立刻发给对方，发漏了只能作废重发。老库（存明文的那种）在后端重启时
+自动升级：明文被算成摘要填进新表，**升级前发出的码仍然可用**。
 
 三条语义：
 
@@ -1217,10 +1225,10 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 
 ## 14. 持续集成
 
-### 14.1 四个 job 定义，展开 23 个实例
+### 14.1 四个 job 定义，展开 25 个实例
 
 `.github/workflows/ci.yml` 只做一件事：在干净的 Linux 机器上把门禁跑一遍。
-它有 **4 个 job 定义**（门禁、生产构建、后端变异矩阵、前端变异矩阵），在 GitHub 上**展开成 23 个实例**（两个变异矩阵按脚本数各展开）。
+它有 **4 个 job 定义**（门禁、生产构建、后端变异矩阵、前端变异矩阵），在 GitHub 上**展开成 25 个实例**（两个变异矩阵按脚本数各展开）。
 
 | job | 跑什么 | 为什么这么切 |
 | --- | --- | --- |

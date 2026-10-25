@@ -1,6 +1,8 @@
 import os
 import sys
 import json
+import hashlib
+import math
 import secrets
 import sqlite3
 import threading
@@ -394,32 +396,20 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_chat_user_url ON chat_messages(user_id, video_url, id);
 
-            -- 邀请码（工单 #99）。注册必须带码，码由管理员发放。
+            -- 邀请码（工单 #99 / #103）。注册必须带码，码由管理员发放。
             --
-            -- **明文存库**：管理员要把码复制给用户，存哈希就没法复制了。
-            -- 代价是库被读走等于码被读走——所以**所有列表出口一律脱敏**
-            -- （只回前 4 后 4），明文只在创建响应里给那一次。
+            -- **只存哈希**：库里存的是 sha256(明文)，不是明文——库被读走
+            -- 不等于码被用掉。代价是明文取不回来，所以**明文只在创建响应
+            -- 里给那一次**，之后谁都拿不回完整码。
             --
-            -- expires_at 为空 = 永不过期；max_uses 是总名额，used_count 是已用数。
-            -- revoked 是作废位：作废与用尽是两件事——用尽是「名额用完了」，
-            -- 作废是「这个码提前收回」，都拒绝注册，但管理员要能分开看。
-            --
-            -- created_by 是发放者的 user id，不建外键：与 videos.parsed_by
-            -- 同一理由——发放者被删之后，码本身还得留着（已注册的账号不该
-            -- 因为管理员换人就失效）。
-            --
-            -- note 是给管理员看的备注（这枚码给了谁）。**可空**。
-            CREATE TABLE IF NOT EXISTS invite_codes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT NOT NULL UNIQUE,
-                created_by INTEGER,
-                created_at TEXT NOT NULL,
-                expires_at TEXT,
-                max_uses INTEGER NOT NULL DEFAULT 1,
-                used_count INTEGER NOT NULL DEFAULT 0,
-                revoked INTEGER NOT NULL DEFAULT 0,
-                note TEXT
-            );
+            -- 表结构（每一列的含义）与升级路径见本文件末尾的
+            -- _INVITE_CODES_DDL：那是**唯一**一份 DDL，executescript 与
+            -- 老库升级路径引用同一个常量——两处各写一遍的话，漂移的后果
+            -- 是老库缺列而新库不缺（症状：老用户升级后注册报 no such
+            -- column，而新装的人一切正常）。
+            """
+            + _INVITE_CODES_DDL
+            + """
         """)
 
         # 邀请码（工单 #99）：建表 + 补列。
@@ -469,48 +459,45 @@ def init_db():
 
 
 def _migrate_invite_codes_table(conn) -> None:
-    """确保 invite_codes 表存在、且列齐全（工单 #99，upgrade 路径）。
+    """确保 invite_codes 表存在、且是**只存哈希**的新结构（工单 #99 / #103）。
 
-    ## 为什么需要这一步
+    ## 三条路径
 
-    老库里这张表**压根不存在**。`CREATE TABLE IF NOT EXISTS` 写在
-    init_db 的 executescript 里，它对老库其实也能建出这张表——但那
-    段脚本是「整段执行」的：它前面任何一条语句失败，后面这张表就
-    永远建不出来，而症状是「注册时 no such table」，发生在**用户
-    注册的那一刻**，不是启动的那一刻。
+    1. **表不存在** → 按新结构建出来。
+    2. **表在，还是老结构**（``code`` 存明文）→ **重建表**：建新表 → 把
+       明文逐行换算成哈希搬过去 → 删旧表 → 改名。SQLite 改不了列类型
+       （``code TEXT NOT NULL UNIQUE`` → ``code_hash TEXT NOT NULL UNIQUE``），
+       删列更是要重建表，所以这是唯一走得通的路。
+    3. **表在，已经是新结构** → 只补缺的列（SQLite 没有 ADD COLUMN IF
+       NOT EXISTS，只能先查列再 ALTER）。
 
-    所以这里**独立再走一遍**：表不在就建，表在但缺列就补列。
-    重复执行幂等（CREATE TABLE IF NOT EXISTS + 先查列再 ALTER）。
+    ## 建表语句只有一份
 
-    ## 建表语句写了两遍
+    DDL 在 ``_INVITE_CODES_DDL`` 里，executescript 与本函数引用**同一个
+    常量**：两处各写一遍的话，漂移的后果是老库缺列而新库不缺——症状是
+    「老用户升级后注册报 no such column」，而新装的人一切正常。
+    ``tests/test_invite_codes.py`` 里那条「老库升级后的列集必须与全新库
+    完全一致」的断言守着这件事。
 
-    与 _migrate_quota_columns 同一取舍：老库升级路径必须自带 DDL，
-    只靠 executescript 那一处就等于把「升级能不能起来」押在别人的
-    脚本顺序上。两处漂移的后果是老库与新库的列集不一样——所以
-    `tests/test_invite_codes.py` 里有一条断言在守这个：
-    **老库升级后的列集必须与全新库完全一致**。
+    重复执行幂等：表在且已是新结构时，这一步什么都不改。
     """
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='invite_codes'"
     ).fetchone()
     if row is None:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS invite_codes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT NOT NULL UNIQUE,
-                created_by INTEGER,
-                created_at TEXT NOT NULL,
-                expires_at TEXT,
-                max_uses INTEGER NOT NULL DEFAULT 1,
-                used_count INTEGER NOT NULL DEFAULT 0,
-                revoked INTEGER NOT NULL DEFAULT 0,
-                note TEXT
-            )
-        """)
-    # 表在但列不全（例如上一版发布时少写了两列）：逐列补。
-    # SQLite 没有 ADD COLUMN IF NOT EXISTS，先查列再 ALTER。
+        conn.execute(_INVITE_CODES_DDL)
+        return
+
     existing = {r["name"] for r in conn.execute("PRAGMA table_info(invite_codes)")}
+    if "code_hash" not in existing:
+        # 老结构：``code`` 存明文。必须重建表（见上面第 2 条路径）。
+        _rebuild_invite_codes_as_hashed(conn)
+        return
+
+    # 已是新结构，但列不全（例如上一版发布时少写了两列）：逐列补。
+    # SQLite 没有 ADD COLUMN IF NOT EXISTS，先查列再 ALTER。
     for column, ddl in (
+        ("code_hint", "ALTER TABLE invite_codes ADD COLUMN code_hint TEXT NOT NULL DEFAULT ''"),
         ("note", "ALTER TABLE invite_codes ADD COLUMN note TEXT"),
         ("revoked", "ALTER TABLE invite_codes ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0"),
         ("used_count", "ALTER TABLE invite_codes ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0"),
@@ -520,6 +507,86 @@ def _migrate_invite_codes_table(conn) -> None:
     ):
         if column not in existing:
             conn.execute(ddl)
+
+
+def _legacy_invite_value(row, columns, name, default=None):
+    """老表里取一列的值：列不存在或值为空时用默认值。"""
+    if name not in columns:
+        return default
+    value = row[name]
+    return default if value is None else value
+
+
+def _rebuild_invite_codes_as_hashed(conn) -> int:
+    """老库升级：``code`` 存明文 → **重建表**成只存哈希（工单 #103）。
+
+    搬数据时逐行算哈希：明文只在**这一刻**存在于内存里，落库的是哈希。
+
+    提示列（``code_hint``）**从明文算**——从哈希算不出来，所以这一列
+    必须在升级这一刻定下来。
+
+    **整段在一个事务里**：DROP TABLE 在 autocommit 下会**立刻提交**，
+    中途失败就是「表没了、数据也没了」；显式 BEGIN 让它要么全成、
+    要么全不成。
+
+    **升级后要把旧页上的明文清掉**（VACUUM）：DROP 掉的表只是被标记为
+    空闲页，**内容还在文件里**——不 VACUUM 的话，「库被读走等于码被用掉」
+    这条承诺对老库是假的：攻击者翻文件空闲页照样翻出明文。VACUUM 把文件
+    重写一遍，空闲页消失。VACUUM 失败（文件被锁）不阻断升级——行级的
+    保证（表里没有明文）已经成立。
+
+    返回搬过去的行数。
+    """
+    old_columns = {r["name"] for r in conn.execute("PRAGMA table_info(invite_codes)")}
+    rows = conn.execute("SELECT * FROM invite_codes").fetchall()
+
+    own_transaction = not conn.in_transaction
+    if own_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DROP TABLE invite_codes")
+        conn.execute(_INVITE_CODES_DDL)
+        for row in rows:
+            plaintext = (_legacy_invite_value(row, old_columns, "code", "") or "").strip()
+            conn.execute(
+                "INSERT INTO invite_codes (id, code_hash, code_hint, created_by, created_at,"
+                " expires_at, max_uses, used_count, revoked, note)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"],
+                    hash_invite_code(plaintext),
+                    mask_invite_code(plaintext) if plaintext else "",
+                    _legacy_invite_value(row, old_columns, "created_by"),
+                    _legacy_invite_value(row, old_columns, "created_at") or _iso_utc(),
+                    _legacy_invite_value(row, old_columns, "expires_at"),
+                    _legacy_invite_value(row, old_columns, "max_uses", 1),
+                    _legacy_invite_value(row, old_columns, "used_count", 0),
+                    _legacy_invite_value(row, old_columns, "revoked", 0),
+                    _legacy_invite_value(row, old_columns, "note"),
+                ),
+            )
+        # AUTOINCREMENT 的序列要跟上：显式搬 id 之后不更新序列，下一枚码会
+        # 拿到一个**用过的** id（老码的 id 被接口引用过，不能复用）。
+        max_id = conn.execute("SELECT max(id) FROM invite_codes").fetchone()[0]
+        if max_id:
+            conn.execute("DELETE FROM sqlite_sequence WHERE name = 'invite_codes'")
+            conn.execute(
+                "INSERT INTO sqlite_sequence (name, seq) VALUES ('invite_codes', ?)",
+                (max_id,),
+            )
+        if own_transaction:
+            conn.execute("COMMIT")
+    except Exception:
+        if own_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+    # 事务外做：VACUUM 不能在事务里跑。失败不阻断升级。
+    try:
+        conn.execute("VACUUM")
+    except sqlite3.Error:
+        pass
+    return len(rows)
 
 
 def _migrate_quota_columns(conn) -> None:
@@ -3057,23 +3124,76 @@ def get_video_by_url(video_url: str) -> dict | None:
     return item
 
 
-# ── 邀请码（工单 #99）─────────────────────────────────────
+# ── 邀请码（工单 #99 / #103）──────────────────────────────
 #
 # 注册必须带邀请码，码由管理员发放。四类失效原因要分开说（用户据此
 # 才知道该做什么）：不存在 / 已作废 / 已过期 / 已用完。
 #
-# 明文存库、列表脱敏：管理员要把码复制给用户，所以不能存哈希；
-# 但管理端的列表接口**不回显完整码**——明文只在创建响应里给一次。
+# **只存哈希**：库里存的是 sha256(明文)，不是明文——库被读走不等于
+# 码被用掉（工单 #103 要解决的就是这件事）。代价是明文取不回来，所以
+# **明文只在创建响应里给那一次**；之后的列表出口给的是**脱敏提示**
+# （前 4 后 4，中间 ****）——它不是明文，不能用来注册。
+#
+# 码本身也必须够强：猜中一枚码就能注册，所以组合空间至少 128 bit
+# （下界是**可执行断言**，见下面 INVITE_CODE_ENTROPY_BITS）。
+
+#: invite_codes 的建表语句。**唯一一份**——executescript 与老库升级路径
+#: （_migrate_invite_codes_table）引用同一个常量，两处漂移的后果是
+#: 老库缺列而新库不缺。
+#:
+#: 列的含义：
+#:
+#: - ``code_hash``：**唯一**，sha256(明文)。库里没有明文。
+#: - ``code_hint``：给管理员看的脱敏提示（前 4 后 4，中间 ****）。它是
+#:   建码那一刻从明文算出来存下的——**从哈希算不出来**，所以只能存。
+#:   它不是明文，不能用来注册。
+#: - ``created_by``：发放者的 user id，**不建外键**：与 videos.parsed_by
+#:   同一理由——发放者被删之后，码本身还得留着（已注册的账号不该因为
+#:   管理员换人就失效）。
+#: - ``created_at``：发放时刻。
+#: - ``expires_at``：为空 = 永不过期。
+#: - ``max_uses``：总名额（≥ 1）；``used_count``：已用数。
+#: - ``revoked``：作废位。作废与用尽是两件事——用尽是「名额用完了」，
+#:   作废是「这个码提前收回」，都拒绝注册，但管理员要能分开看。
+#: - ``note``：给管理员看的备注（这枚码给了谁）。**可空**。
+_INVITE_CODES_DDL = """
+    CREATE TABLE IF NOT EXISTS invite_codes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code_hash TEXT NOT NULL UNIQUE,
+        code_hint TEXT NOT NULL DEFAULT '',
+        created_by INTEGER,
+        created_at TEXT NOT NULL,
+        expires_at TEXT,
+        max_uses INTEGER NOT NULL DEFAULT 1,
+        used_count INTEGER NOT NULL DEFAULT 0,
+        revoked INTEGER NOT NULL DEFAULT 0,
+        note TEXT
+    )
+"""
 
 #: 邀请码字符集。**去掉易混字符**：0/O、1/I/L、2/Z、5/S、8/B。
 #:
 #: 码是要被人抄过去的——管理员口头告诉用户、截图发过去——字形相近的
 #: 字符抄错一次的代价是「用户填了却注册不了」，而用户看到的提示是
 #: 「邀请码无效」，不会怀疑是抄错了。
+#:
+#: **25 个互异字符**（20 个字母 + 5 个数字）。
 INVITE_CODE_ALPHABET = "ABCDEFGHJKMNPRTUVWXY34679"
 
-#: 码长。24 个字符 × 12 位 ≈ 8.7e16 种可能，猜不出来。
-INVITE_CODE_LENGTH = 12
+#: 码长。28 位 × 每个位置 log2(25) ≈ 4.644 bit ≈ **130.0 bit**
+#: ≈ 1.07e39 种可能。
+INVITE_CODE_LENGTH = 28
+
+#: 组合空间的比特数 = 码长 × log2(字符集大小)。**用 math.log2 算**，
+#: 不写死数字——字符集或码长一改，这个值跟着变。
+#:
+#: **下界（≥128 bit）的可执行断言在测试里**，不在本模块：
+#: ``backend/tests/test_invite_codes.py`` 里那条 ``test_the_code_space_has_at_least_128_bits``
+#: 独立重算一遍并 assert ≥ 128。为什么不写成模块级 assert：模块级
+#: assert 在 import 时触发，字符集被改弱的后果是**整个后端起不来**——
+#: 而这是一件 CI 就能拦住的事，不该拿线上可用性去换。测试里的断言是
+#: 同一件事的正确位置：它拦得住提交，且不会砸掉服务。
+INVITE_CODE_ENTROPY_BITS = INVITE_CODE_LENGTH * math.log2(len(INVITE_CODE_ALPHABET))
 
 
 class InviteRegistrationError(Exception):
@@ -3089,11 +3209,38 @@ class InviteRegistrationError(Exception):
         self.detail = detail
 
 
+def hash_invite_code(code: str) -> str:
+    """明文邀请码 → 存库用的 sha256 十六进制摘要（工单 #103）。
+
+    ## 为什么是 sha256，不是 bcrypt / argon2
+
+    慢哈希的价值在于「人选的弱口令要慢慢试」。邀请码不是弱口令——它是
+    130 bit 的全随机串，没有字典可打，KDF 的「慢」在这里只换来注册延迟，
+    换不来安全性。sha256 是标准库自带，**不引新依赖**（依赖是攻击面）。
+
+    ## 为什么存摘要就够
+
+    摘要不可逆 ⇒ 库里没有明文 ⇒ **库被读走不等于码被用掉**：攻击者拿到
+    的是 32 位十六进制摘要，想反推明文只能猜，而码的组合空间是 2^130。
+
+    ## 一处定义
+
+    建码时算一次、验码时算一次，两边必须算的是同一个东西——所以这个
+    函数是**唯一**的哈希入口，调用方不许自己拼 hashlib。
+    """
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
 def generate_invite_code(length: int = INVITE_CODE_LENGTH) -> str:
     """生成一枚邀请码（随机、大写、无易混字符）。
 
     用 ``secrets`` 而不是 ``random``：码是注册闸门，猜中就能注册，
     必须用密码学安全的随机源——``random`` 的可预测性在这里是漏洞。
+
+    组合空间由 ``INVITE_CODE_ENTROPY_BITS`` 给出；「≥ 128 bit」这条下界
+    是一条**可执行断言**，在 ``backend/tests/test_invite_codes.py`` 里
+    （``test_the_code_space_has_at_least_128_bits``）——它独立重算一遍，
+    不抄本模块的常量。
     """
     return "".join(secrets.choice(INVITE_CODE_ALPHABET) for _ in range(length))
 
@@ -3102,6 +3249,9 @@ def mask_invite_code(code: str) -> str:
     """脱敏：只回前 4 后 4。
 
     列表接口不得回显完整码（工单 #99）：明文只在创建响应里给一次。
+
+    这个形态**是对外契约**（字段 ``code_masked``，值形如 ``abcd****wxyz``），
+    前端管理页直接显示它——改了它前端就显示错了。
     """
     if not code:
         return ""
@@ -3153,11 +3303,15 @@ def _invite_code_expired(expires_at: str | None, now: datetime | None = None) ->
     return deadline <= moment.astimezone(timezone.utc)
 
 
-def _invite_code_item(row, *, include_code: bool = False) -> dict:
+def _invite_code_item(row, *, include_code: bool = False, code: str | None = None) -> dict:
     """邀请码的对外投影。
 
     ``include_code=False``（列表）**不回显完整码**，只给 code_masked；
     ``include_code=True``（创建响应）才给明文，且只给那一次。
+
+    库里**没有明文**（工单 #103），所以列表出口的掩码直接读 ``code_hint``
+    这一列——它是建码那一刻从明文算出来存下的（从哈希算不出来）。
+    创建出口的明文由调用方（create_invite_code）**当场**传进来。
 
     状态字段给的是**算出来的**，不是存出来的：过期与否取决于「现在」，
     而库里不存「已过期」这个状态——存了就与时间脱钩，第二天还得改一遍。
@@ -3186,9 +3340,9 @@ def _invite_code_item(row, *, include_code: bool = False) -> dict:
         "status": status,
     }
     if include_code:
-        item["code"] = row["code"]
+        item["code"] = code
     else:
-        item["code_masked"] = mask_invite_code(row["code"])
+        item["code_masked"] = row["code_hint"]
     return item
 
 
@@ -3209,6 +3363,9 @@ def create_invite_code(created_by: int | None = None, max_uses: int = 1,
     """建一枚邀请码，返回**含明文码**的行。
 
     明文只在这里给一次：之后所有列表出口都只给脱敏码。
+
+    **库里只存哈希**（工单 #103）：落库的是 ``code_hash``（sha256）与
+    ``code_hint``（脱敏提示），明文不出这个函数。
     """
     if max_uses < 1:
         raise ValueError("max_uses 至少是 1")
@@ -3217,10 +3374,18 @@ def create_invite_code(created_by: int | None = None, max_uses: int = 1,
             code = generate_invite_code()
             try:
                 cursor = conn.execute(
-                    "INSERT INTO invite_codes (code, created_by, created_at, expires_at,"
-                    " max_uses, used_count, revoked, note)"
-                    " VALUES (?, ?, ?, ?, ?, 0, 0, ?)",
-                    (code, created_by, _iso_utc(), expires_at, max_uses, note),
+                    "INSERT INTO invite_codes (code_hash, code_hint, created_by, created_at,"
+                    " expires_at, max_uses, used_count, revoked, note)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)",
+                    (
+                        hash_invite_code(code),
+                        mask_invite_code(code),
+                        created_by,
+                        _iso_utc(),
+                        expires_at,
+                        max_uses,
+                        note,
+                    ),
                 )
             except sqlite3.IntegrityError:
                 # 撞上重复的码（概率极低）：换一枚重试。
@@ -3228,7 +3393,7 @@ def create_invite_code(created_by: int | None = None, max_uses: int = 1,
             row = conn.execute(
                 "SELECT * FROM invite_codes WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            return _invite_code_item(row, include_code=True)
+            return _invite_code_item(row, include_code=True, code=code)
     raise RuntimeError("生成邀请码失败：连续多枚都撞上了重复的码")
 
 
@@ -3281,6 +3446,12 @@ def register_with_invite_code(email: str, password_hash: str, invite_code: str) 
 
     返回 ``{"id": ..., "email": ...}``；被拒时抛 ``InviteRegistrationError``。
 
+    ## 查码用哈希，不是明文
+
+    工单 #103 之后库里没有明文，所以查找条件是 ``code_hash = sha256(输入)``。
+    查不到就等于「这枚码不存在」——哈希碰撞在这里不构成问题（要撞出一枚
+    能用的码得先知道明文，而明文只在创建那一刻存在过）。
+
     ## 为什么必须是一个事务
 
     「校验 → 建号 → 计数」跨两张表。不是一个事务就会出两种歪账：
@@ -3298,7 +3469,7 @@ def register_with_invite_code(email: str, password_hash: str, invite_code: str) 
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT * FROM invite_codes WHERE code = ?", (invite_code,)
+            "SELECT * FROM invite_codes WHERE code_hash = ?", (hash_invite_code(invite_code),)
         ).fetchone()
         if row is None:
             raise InviteRegistrationError("邀请码无效")
