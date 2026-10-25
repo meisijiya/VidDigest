@@ -1237,6 +1237,35 @@ class TestBatchIssuingAndStatusFiltering:
             f"发放人邮箱没回显：{row}"
         )
 
+    def test_the_single_read_carries_the_same_projection_as_the_list(self, client_app):
+        """单枚读（作废接口回的那份）与列表必须是同一个形状。
+
+        作废接口回的是 `get_invite_code_by_id` 那一行：它若少给发放人邮箱，
+        调用方会以为「这枚码没人发过」——形状不一致的 bug 不报错，只是慢慢错。
+        """
+        client, admin_id, _ = client_app
+        created = client.post(
+            "/api/admin/invite-codes", json={}, headers=_admin_hdr(client_app)
+        ).json()["item"]
+        revoked = client.post(
+            f"/api/admin/invite-codes/{created['id']}/revoke",
+            headers=_admin_hdr(client_app),
+        )
+        assert revoked.status_code == 200, f"实得 {revoked.status_code}：{revoked.text}"
+        item = revoked.json()["item"]
+        listed = client.get(
+            "/api/admin/invite-codes", headers=_admin_hdr(client_app)
+        ).json()["items"]
+        listed_row = next(row for row in listed if row["id"] == item["id"])
+        assert item["created_by"] == admin_id
+        assert item["created_by_email"] == "boss@example.com", (
+            f"作废接口回的单枚没带发放人邮箱：{item}"
+        )
+        assert sorted(item.keys()) == sorted(listed_row.keys()), (
+            "单枚读与列表给的字段集合不同："
+            f"{sorted(item.keys())} vs {sorted(listed_row.keys())}"
+        )
+
     def test_the_list_still_pages(self, client_app):
         """分页没被筛选挤掉：翻页与筛选各走各的。"""
         client, _, _ = client_app
