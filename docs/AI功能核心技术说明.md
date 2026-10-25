@@ -164,7 +164,7 @@ AI 总结功能由三个子系统构成：
 
 两条都拿不到时抛 `ValueError`，提示配置环境变量。
 
-⚠️ **没有兜底链**（工单 #107）：原来那段 DeepSeek 兜底被删掉了——只换模型名不换端点必然 404，而兜底链会把第一个 provider 的真实错误盖住，让人排查时看到的是一个与原因无关的报文。**只配 `DEEPSEEK_API_KEY` 不算配置好了。**
+⚠️ **没有兜底链**：两条路径都拿不到凭据时直接抛 `ValueError`，而不是悄悄降级到别家模型——兜底链会把第一个 provider 的真实错误盖住，让人排查时看到的是一个与原因无关的报文。见 [ADR 0028](adr/0028-platform-model-and-provider-protocols.md)。
 
 平台模型名不是类属性：**每次实例化时从模型清单表读一次**（`self._bailian_model`），后台改默认值不用重启；默认落在 `qwen3.7-flash`。环境变量 `ALIYUN_BAILIAN_MODEL` **优先于**清单表（运维改模型时先看它）。平台路径**显式关思考**（`enable_thinking=False`）：qwen3.7-flash 是混合思考模型，默认开着会返回 `reasoning_content` 并把 `max_tokens` 预算吃掉（实测同一问句 845 vs 47 tokens）。
 

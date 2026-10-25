@@ -36,7 +36,7 @@ graph LR
   U[用户浏览器] -->|HTTP:5173| FE[Vue 3 SPA<br/>Vite Dev / 静态托管]
   FE -->|/api/* 代理| BE[FastAPI<br/>Uvicorn :8000]
   BE -->|HTTPS| YT[yt-dlp<br/>1800+ 平台]
-  BE -->|HTTPS| DS[DeepSeek API]
+  BE -->|HTTPS| LLM[平台模型 API<br/>百炼（OpenAI 兼容 / Anthropic 协议）]
   BE -->|HTTPS| ST[Stripe API]
   BE -->|可选 HTTPS| OA[OpenAI Whisper]
   BE --> DB[(SQLite<br/>data/app.db)]
@@ -48,11 +48,11 @@ graph LR
 
 | 进程             | 端口   | 依赖                                   | 备注                |
 | :--------------: | :----: | ------------------------------------ | ----------------- |
-| `backend-api`  | 8000 | Python 3.10+ / yt-dlp / 百炼或 DeepSeek Key（任一组） | FastAPI + Uvicorn |
+| `backend-api`  | 8000 | Python 3.11+ / yt-dlp / `ALIYUN_BAILIAN_API_KEY` | FastAPI + Uvicorn |
 | `frontend-dev` | 5173 | Node 20.19+ / 22.12+                  | 仅开发期使用，生产替换为静态文件  |
 
 
-**生产部署时**：前端 `npm run build` → `dist/` 由 Nginx 托管；后端用单进程 Uvicorn + 反向代理。理由见 [5.1.1](#511-后端单进程性能建议不再是正确性约束)。
+**生产部署时**：前端 `npm run release:build` → `dist/` 由 Nginx 托管；后端用单进程 Uvicorn + 反向代理。理由见 [5.1.1](#511-后端单进程性能建议不再是正确性约束)。
 
 ---
 
@@ -61,7 +61,7 @@ graph LR
 
 | 组件      | 最低版本 | 推荐         | 验证命令                |
 | ------- | :----: | :----------: | ------------------- |
-| Python  | 3.10 | 3.11       | `python --version`  |
+| Python  | 3.11 | 3.11       | `python --version`  |
 | Node.js | 20.19 或 22.12 | 22 / 24 | `node --version`    |
 | npm     | 10    | 10+        | `npm --version`     |
 | ffmpeg  | 任意   | 最新稳定       | `ffmpeg -version`   |
@@ -155,7 +155,7 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 
 | 变量                        | 必填  | 默认值                                                 | 用途                                      | 获取                                                                               |
 | ------------------------- | :---: | --------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------- |
-| `ALIYUN_BAILIAN_API_KEY`  | ✅   | —                                                   | AI 总结 / 导图 / 问答（平台 provider，**无兜底**）     | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/)       |
+| `ALIYUN_BAILIAN_API_KEY`  | ✅   | —                                                   | AI 总结 / 导图 / 问答（平台 provider，**无兜底**；缺失时进程照常启动，首次 AI 调用返回 500 并点名该变量）     | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/)       |
 | `ALIYUN_BAILIAN_BASE_URL` | —   | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼兼容模式端点                                | 用 workspace 专属地址                                                                 |
 | `ALIYUN_BAILIAN_MODEL`    | —   | 模型清单表里的 `bailian.default_model`（当前 `qwen3.7-flash`） | 模型名（**这一项优先于清单表**）                      | 百炼模型市场                                                                           |
 | `ALIYUN_BAILIAN_PROTOCOL` | —   | `openai`                                             | provider 协议：`openai`（OpenAI 兼容）/ `anthropic`（Messages API） | ——                                                                        |
@@ -177,7 +177,8 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 ```env
 # ─── AI（必填）────────────────────────────────────────────
 # 平台模型走**一个** provider：协议 + 端点 + 模型 + key，全部在这里配。
-# 平台侧没有兜底 provider：只配 DeepSeek 的 key 不算配置好了（见 §4.3）。
+# 平台侧没有兜底 provider：缺 key 时进程照常启动，解析与下载照常工作，
+# 首次调用 AI 接口会返回 500 并指名要配 ALIYUN_BAILIAN_API_KEY（见 §4.3）。
 # 阿里云百炼：填写 ALIYUN_BAILIAN_API_KEY 即可。模型名留空就走模型清单表里的
 # bailian.default_model（当前 qwen3.7-flash）；写死一个模型名就是显式选它，
 # 且**这一项优先于清单表**。
@@ -225,12 +226,12 @@ OPENAI_API_KEY=sk-your-openai-key
 
 #### 三条容易踩的
 
-- **没有兜底链**。只配了 `DEEPSEEK_API_KEY` **不算配置好了**——进程会带着明确的
-  报错停下来。原因：只换模型名不换端点必然 404，而兜底链会把第一个 provider 的
-  真实错误盖住。见 [ADR 0028](adr/0028-platform-model-and-provider-protocols.md)。
-- **环境变量优先于清单表**。`.env` 里留着 `ALIYUN_BAILIAN_MODEL=qwen-turbo` 时，
-  清单表里的 `qwen3.7-flash` 就不生效，而那个模型名在百炼工作空间端点上是 404。
-  要跟着平台模型走就把那一行删掉。
+- **没有兜底链**。缺 `ALIYUN_BAILIAN_API_KEY` 时，进程照常启动（解析与下载照常工作），
+  首次调用 AI 接口返回 500，报错里点名要配哪个环境变量，而不是悄悄降级到别家模型。
+  原因：兜底链会把第一个 provider 的真实错误盖住，排查时看到的是一个与原因无关的
+  报文。见 [ADR 0028](adr/0028-platform-model-and-provider-protocols.md)。
+- **环境变量优先于清单表**。`.env` 里写了 `ALIYUN_BAILIAN_MODEL` 时，清单表里的
+  `qwen3.7-flash` 就不生效。想跟着平台走就把那一行留空。
 - **思考默认开着**。平台模型不显式关掉思考的话，思维链会先吃掉 `max_tokens` 的
   预算（同一问句实测 845 vs 47 tokens），长总结于是提前截断。程序默认发
   `enable_thinking: false`；要开就设 `ALIYUN_BAILIAN_ENABLE_THINKING=true`。
@@ -671,7 +672,7 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 | uvicorn 端口被占                                     | 8000 被别的进程占            | `netstat -ano | grep 8000` 杀 PID 或换 `--port 8001`                        |
 | vite 端口跳到 5174/5175                              | 5173 被旧实例占             | `taskkill /F /PID <pid>` + 加 `--strictPort`                              |
 | hub 启动报 `CreateProcessW ... 不是有效的 Win32 应用程序`    | 中文 cwd + npx 触发 \0 bug | 用绝对路径 `node node_modules/vite/bin/vite.js`                               |
-| `未检测到 AI 服务 API Key，请配置环境变量`（`ValueError`） | `.env` 缺失或没填           | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY` → 重启（平台侧**没有兜底 provider**，只配 `DEEPSEEK_API_KEY` 不算） |
+| `未检测到 AI 服务 API Key，请配置环境变量`（`ValueError`） | `.env` 缺失或没填；首次调用 AI 接口时抛出（HTTP 500） | 复制 `.env.example` → 填 `ALIYUN_BAILIAN_API_KEY` → 重启（平台侧**没有兜底 provider**） |
 | `RuntimeError: 缺少环境变量 JWT_SECRET`               | `.env` 漏配 / 配了纯空白 / 启动进程读不到 | `openssl rand -hex 32` 生成 64 位随机串，写进 `backend/.env` 后重启            |
 
 
@@ -688,7 +689,7 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 | AI 总结 `请先登录`                                | 未鉴权                       | 注册 / 登录后重试                          |
 | AI 总结 `今日次数已用完`                             | 免费配额 3 次/日                | 等次日重置（当前无会员制）                   |
 | AI 总结 `没有可用的字幕`                             | 视频无字幕轨                    | 上传视频不会支持；选有字幕的视频                    |
-| AI 总结无响应 / 卡住                               | DeepSeek 限流 / 网络          | 看 `hub logs` + 重试                   |
+| AI 总结无响应 / 卡住                               | 平台模型限流 / 网络          | 看 `hub logs` + 重试                   |
 | Stripe 支付 500                               | 缺少 `STRIPE_SECRET_KEY`    | 填 `.env` 并重启                        |
 | Webhook 400 `Webhook secret not configured` | 缺 `STRIPE_WEBHOOK_SECRET` | 同上                                  |
 | 注册 400 `邮箱或密码错误`                            | 用 username 而不是 email      | 必须用邮箱登录                             |
@@ -701,7 +702,7 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 | 症状                 | 原因                      | 解决                                                                            |
 | ------------------ | ----------------------- | ----------------------------------------------------------------------------- |
 | yt-dlp 调用平台超时      | 国内访问 YouTube/Twitter 困难 | 配置代理：环境变量 `HTTPS_PROXY=http://127.0.0.1:<proxy-port>`                                 |
-| DeepSeek 502 / 超时  | DeepSeek 服务端问题          | 重试；切换 OpenAI 兼容接口                                                             |
+| 平台模型 502 / 超时  | 模型服务端问题          | 重试；检查端点与模型名是否匹配                                                             |
 | Stripe webhook 收不到 | 公网回调不通                  | 用 `stripe listen --forward-to http://127.0.0.1:8000/api/payment/webhook` 本地测试 |
 
 
@@ -736,7 +737,7 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 ### 10.1 当前瓶颈
 
 - **yt-dlp 解析**：单次 2-8s，受平台反爬影响
-- **DeepSeek 流式生成**：受 prompt 长度 + token 速率影响，通常 10-30s
+- **平台模型流式生成**：受 prompt 长度 + token 速率影响，通常 10-30s
 - **下载文件大小**：受 `downloads/` 磁盘限制
 
 ### 10.2 调优建议
@@ -1076,6 +1077,11 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://your-domain.com/          # 20
 curl -sS -o /dev/null -w '%{http_code}\n' https://your-domain.com/admin     # 200，且是 index.html
 curl -sS https://your-domain.com/admin | head -5                            # 应看到 <!DOCTYPE html> / <div id="app">
 
+# 2b) 五条真实路径都要能刷新（前端是 vue-router，深链靠 rewrite 兜底）
+for p in / /history /community /admin /admin/invite-codes; do
+  printf '%s ' "$p"; curl -sS -o /dev/null -w '%{http_code}\n' "https://your-domain.com$p"
+done
+
 # 3) API 没被 rewrite 吃掉
 curl -sS https://your-domain.com/api/health                                 # {"status":"ok"}
 
@@ -1133,11 +1139,24 @@ npm outdated       # 看哪些有更新
 
 ### 12.2 数据库迁移
 
-当前用 SQLite + 应用启动时 `init_db()` 建表。schema 变更时：
+当前用 SQLite，**迁移在应用启动时由 `init_db()` 统一执行**（幂等，重复启动不会重复改）。
+schema 变更分两类，写法不同：
 
-1. 改 `database.py` 中建表语句
-2. 或加兼容的 `ALTER TABLE` 逻辑
-3. 重启服务
+| 类型 | 什么时候用 | 怎么写 | 例子 |
+|------|-----------|--------|------|
+| **加列 / 改列** | 老库缺一列，或列的默认值要变 | 在 `database.py` 里加一个 `_migrate_xxx_columns(conn)`，用 `PRAGMA table_info` 先判断列在不在，不在才 `ALTER TABLE ... ADD COLUMN` | `_migrate_quota_columns`、`_migrate_videos_template_column` |
+| **写迁移** | 老数据的内容或形状本身要换 | 加一个 `_migrate_xxx(conn)`，**在自己的事务里**读旧表 → 写新表 → 换名 | `_migrate_invite_codes_table`（把明文邀请码重建成摘要表）、`_migrate_mindmap_levels`（按新层级上限重建存量导图） |
+
+写迁移的硬要求：
+
+1. **先备份**（`scripts/ops/backup_db.py` 或 `sqlite3.Connection.backup`），
+   写迁移不自带回滚。
+2. **在事务里做**：中途失败要能整体回滚，不能留下半张表。
+3. **幂等**：老库、已迁移的库、被中断过的库都要能安全启动一次。
+4. **迁移完的库要能正常启动**：迁移本身也要有测试覆盖（从**真缺列的老库**起一次）。
+
+改完迁移后按 §12.4 的 checklist 走一遍：备份 → 停服务 → 换代码 → 起服务 → 看日志里
+迁移是否执行 → 跑一次功能自检。
 
 ### 12.3 回滚
 
@@ -1160,10 +1179,13 @@ hub restart --name backend-api
 - [ ] 看 `git log` 与 `docs/adr/` 是否有破坏性变更
 - [ ] 在 staging 环境跑通
 - [ ] **前端做一次干净构建**，确认 `dist/assets/` 与 `dist/index.html` 的引用一一对应（见 [11.5.2](#1152-发布前先做一次干净构建)）
+- [ ] **依赖目录不在源码里**：同步代码到服务器后，在目标目录跑一次 `npm ci`，再 `npm run release:build`（只同步源码、不装依赖就构建，产物会缺块）
 - [ ] 确认静态托管的 **SPA rewrite** 生效（`curl https://<域名>/admin` 返回 200 且是 index.html，见 [11.5.4](#1154-上线后自检)）
+- [ ] 五条真实路径都能刷新（`/`、`/history`、`/community`、`/admin`、`/admin/invite-codes`）
 - [ ] 确认 `/api/*` 反代没被 rewrite 盖住（`curl https://<域名>/api/health` 返回 JSON）
 - [ ] 生产滚动升级（先停前端再停后端，避免半截状态）
 - [ ] 验证 `/api/health` + 主页 + `/admin` 刷新 + 注册登录 + 一次完整下载 + 一次 AI 总结（SSE 不缓冲）
+- [ ] 验证**邀请码注册链路**：管理后台发一枚码 → 用它注册一个新账号 → 码的可用次数减一（注册失败不该消耗码）
 
 ---
 

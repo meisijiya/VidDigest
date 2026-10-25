@@ -12,9 +12,11 @@
 <p align="center">
   <a href="#-what-it-does">What it does</a> ·
   <a href="#-quick-start">Quick start</a> ·
+  <a href="#-usage">Usage</a> ·
   <a href="#-architecture">Architecture</a> ·
   <a href="#-testing--verification">Testing</a> ·
   <a href="#-configuration">Configuration</a> ·
+  <a href="#-documentation">Documentation</a> ·
   <a href="#-design-decisions">Decisions</a>
 </p>
 
@@ -43,14 +45,17 @@
 
 | Feature | Description | Free tier |
 |--------|-------------|:--------:|
-| 🧠 **AI summary** | The LLM analyses the subtitles and produces a structured summary (overview, outline, key points) | 3 per day |
-| 🗺️ **Mind map** | An interactive SVG mind map extracted from the video's knowledge structure | Shared with the summary |
+| 🧠 **AI summary** | The LLM analyses the subtitles and produces a structured summary; four templates to choose from (full / brief / tutorial / analysis) | 3 per day |
+| 🗺️ **Mind map** | An interactive, zoomable mind map extracted from the video's knowledge structure (at most 3 levels, 7 branches per level, 30 nodes in total) | Shared with the summary |
 | 💬 **AI Q&amp;A** | Ask follow-up questions about the video, answered from its content | 10 per day |
 | 📝 **Subtitle export** | Extract and export subtitles as SRT / TXT | Included |
 | 🎬 **Parse &amp; download** | YouTube, Bilibili, Douyin and 1800+ other platforms, pick a quality and download | ✅ Unlimited |
+| 🎧 **Audio-only download** | Pick a native audio container (e.g. m4a / webm-opus / mp3) when you only need the sound — no transcoding | ✅ Unlimited |
 | 🗂️ **Community** | Read summaries, subtitles and mind maps other people already generated | ✅ Free |
 | 🕘 **Parse history** | Search, tag and favourite your own parse records | ✅ |
-| 🛠️ **Admin console** | Quota management, admin flags, community moderation, model catalogue | Admins only |
+| 🛠️ **Admin console** | Quota management, admin flags, account create/delete, community entries and tag vocabulary, model catalogue | Admins only |
+| 🎟️ **Invite-code console** | Issue and revoke invite codes in batches; the plaintext code is shown once, at creation (`/admin/invite-codes`) | Admins only |
+| 🛡️ **Abuse controls** | Public endpoints are rate-limited per source IP; heavy endpoints also have a concurrency gate (2 by default) | ✅ |
 
 > Parsing and downloading do not require an account; the AI features do.
 > **Registration needs an invite code — get one from an administrator.**
@@ -153,17 +158,52 @@ docker compose down                       # stop and remove the containers
 
 ---
 
+## 📖 Usage
+
+### Parse &amp; download
+
+```
+① open the home page → paste a video link → ② click "Parse"
+③ pick a quality under "选择画质", or an audio container under "纯音频"
+④ click "下载视频" / "下载音频"
+```
+
+Audio-only downloads ship the platform's **native audio containers** (e.g. m4a / webm-opus /
+mp3); nothing is transcoded.
+
+### AI summary
+
+Sign in, parse a video, then open the "AI 总结" tab and pick a template. The panel has
+four tabs: a streamed **summary**, an interactive **mind map** (markmap; up to 3 levels,
+7 branches per level, 30 nodes in total), the raw **subtitles**, and **Q&amp;A**.
+
+| Template | What it is for |
+|----------|----------------|
+| **Detailed summary** (`full`) | The full analysis: a thorough summary, mind map and tags |
+| **Brief** (`brief`) | Only the key conclusions — one screen, to decide whether the video is worth it |
+| **Tutorial** (`tutorial`) | The content turned into steps you can follow, with prerequisites and caveats |
+| **Analysis** (`analysis`) | Claims, arguments and counterpoints, with a conclusion you can carry over |
+
+### Registration and invite codes
+
+Registration is **invite-code only**: the endpoint requires a valid code, and codes are
+issued by administrators (admin console → invite codes). A code carries a number of uses
+and an expiry; validating the code, creating the account and decrementing the use count
+happen in one transaction, so a failed registration does not consume the code.
+
+---
+
 ## 🏗️ Architecture
 
 ```
 browser (Vue 3 + Vite)
   │  relative /api calls — same origin in dev (Vite proxy) and in production (Nginx)
   ▼
-FastAPI (Uvicorn)                     40 REST endpoints, 29 of them behind an auth dependency
+FastAPI (Uvicorn)                     44 REST endpoints, 29 of them behind an auth dependency
   ├─ api_auth / api_history / api_community / api_payment / admin_api
   ├─ api_summarize ──► SSE streaming (text/event-stream) for summary and Q&A
   ├─ downloader / douyin ──► yt-dlp and a dedicated Douyin module
-  ├─ summarizer ──► LLM calls (OpenAI-compatible API)
+  ├─ summarizer ──► LLM calls (OpenAI-compatible or Anthropic protocol)
   └─ database ──► SQLite via the Python standard library (WAL mode)
 ```
 
@@ -172,7 +212,7 @@ FastAPI (Uvicorn)                     40 REST endpoints, 29 of them behind an au
 | Frontend | Vue 3 + Vite + Tailwind CSS 4 | SPA, streaming rendering, two test runners |
 | Backend | FastAPI + Uvicorn | REST API plus SSE for the AI features |
 | Video parsing | yt-dlp + a dedicated Douyin module | 1800+ platforms; parsing is **not** re-implemented here |
-| AI | OpenAI-compatible API (DeepSeek, Alibaba Bailian, …) | Summary, mind map, Q&A |
+| AI | OpenAI-compatible / Anthropic protocols (Alibaba Bailian today) | Summary, mind map, tags, Q&A |
 | ASR fallback | Whisper API | Only when a video has no subtitle track |
 | Auth | JWT + bcrypt | Token lifetime 72 h; admin rights are re-read from the database per request |
 | Database | SQLite (standard library, WAL) | Users and quotas, orders, community videos, parse history, chat sessions |
@@ -249,16 +289,14 @@ provider. Its credential, endpoint and model all come from environment variables
 | `OPENAI_API_KEY` | **Whisper ASR only**: transcribes audio when a video has no subtitles | [platform.openai.com](https://platform.openai.com/) | ASR is skipped; nothing else is affected |
 
 > **Environment variables win over the model catalog.** As soon as
-> `ALIYUN_BAILIAN_MODEL` is set, it overrides the catalog's platform default. If a
-> deployment still carries `ALIYUN_BAILIAN_MODEL=qwen-turbo`, delete that line to
-> follow the platform model (that model name 404s on a Bailian workspace
-> endpoint).
+> `ALIYUN_BAILIAN_MODEL` is set, it overrides the catalog's platform default; leave it
+> empty to use the catalog's `qwen3.7-flash`.
 
-> The platform side has **no fallback provider**: configuring only
-> `DEEPSEEK_API_KEY` does not count as configured, and the process stops with an
-> explicit error. See [ADR 0028](docs/adr/0028-platform-model-and-provider-protocols.md)
-> for why: swapping the model name without swapping the endpoint is a guaranteed
-> 404, and a fallback chain hides the first provider's real error.
+> The platform side has **no fallback provider**: without `ALIYUN_BAILIAN_API_KEY` the
+> process still starts — parsing and downloading keep working — and the first AI call
+> returns 500 naming the variable to set, instead of silently degrading to another
+> provider. See [ADR 0028](docs/adr/0028-platform-model-and-provider-protocols.md)
+> for why: a fallback chain hides the first provider's real error.
 
 With a user-supplied credential (BYOK), the platform key is not used at all.
 
@@ -336,6 +374,8 @@ Annotated template: [backend/.env.example](backend/.env.example).
 | [docs/API.md](docs/API.md) | Complete endpoint list with auth requirements |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Runtime facts, deployment, static hosting, monitoring points |
 | [docs/TESTING-STRATEGY.md](docs/TESTING-STRATEGY.md) | Test strategy, coverage gaps, mutation harness |
+| [docs/INVITE-CODES.md](docs/INVITE-CODES.md) | Invite-code semantics: issuing, consuming, revoking |
+| [docs/TECHNICAL.md](docs/TECHNICAL.md) | End-to-end walkthrough of the AI pipeline (Chinese) |
 | [docs/AI功能核心技术说明.md](docs/AI功能核心技术说明.md) | How the AI pipeline works (Chinese) |
 | [GLOSSARY.md](GLOSSARY.md) | Domain vocabulary |
 | [docs/adr/](docs/adr/) | Architecture decision records |
@@ -356,18 +396,26 @@ result of a real trade-off.
 | 0005 | Tags come from a hand-maintained fixed vocabulary; the model may not invent them |
 | 0006 | The first parse of a video wins — no overwrite, no double billing |
 | 0007 | The owner of a parse may regenerate their own summary; later visitors may not |
-| 0008 | Visual identity: graphite + lake blue (the blue ramp is no longer remapped to violet) |
+| 0008 | Visual identity: graphite + lake blue |
 | 0009 | Light and dark themes override CSS variables instead of introducing semantic tokens |
-| 0010 | Admin console: an `/admin` route in the same Vue app — scope and authentication (extended by ADR 0012 / 0013) |
+| 0010 | The admin console is an `/admin` route in the same Vue app — scope and authentication |
 | 0011 | The model catalogue lives in the database; platform and user keys stay in `.env` |
 | 0012 | Account lifecycle moves into the admin console: create, flag as admin, delete (409 when content exists) |
 | 0013 | Community moderation: retag and delete entries — deleting the community row only, never a user's history |
 | 0014 | Card display fields are written at reservation time, not back-filled by the frontend |
 | 0015 | The regeneration gate is stored in the database instead of assuming a single backend process |
 | 0016 | URL canonicalisation: compare by canonical form, echo the original |
-| 0017 | ~~Lightweight hand-written routing, no vue-router~~ — superseded by ADR 0018 |
-| 0018 | Adopt `vue-router` with four real paths, replacing the hand-written router |
+| 0018 | Front-end routing uses `vue-router` with real paths |
 | 0019 | Containerised delivery: two services, one compose file, scripts that operate on the running data |
+| 0020 | Public endpoints are rate-limited per source IP (429 + `Retry-After`) |
+| 0021 | Public endpoints have a concurrency gate, working alongside the rate limit |
+| 0022 | Client identity behind a reverse proxy: the edge overwrites `X-Forwarded-For`, the backend takes its last segment |
+| 0023 | Registration requires an invite code |
+| 0025 | The invite-code console is its own route (`/admin/invite-codes`) |
+| 0026 | The summary-template catalogue has a single source; template ids cross the seam explicitly |
+| 0027 | The mind map has a fixed three-level structure; stored maps are rebuilt by a write migration |
+| 0028 | One platform model (`qwen3.7-flash`), providers configured by protocol, no fallback chain |
+| 0029 | The mind-map structure has one source of truth; the legacy rebuild also drops rows that exceed the limits |
 
 ---
 
@@ -388,6 +436,23 @@ result of a real trade-off.
 - **"Daily limit reached"** → 3 per account per day, reset at midnight
 - **"Please sign in first"** → register or sign in to use the AI features
 - **No response** → check the LLM key in `.env` (`ALIYUN_BAILIAN_API_KEY`; the platform side has no fallback provider)
+</details>
+
+<details>
+<summary><b>Cannot register?</b></summary>
+
+- **"Invite code invalid / already used"** → registration needs an invite code, get one
+  from an administrator. A code has a number of uses and an expiry; once it is used up or
+  expired you need a new one.
+- **"Email already registered"** → sign in instead, or use another address.
+</details>
+
+<details>
+<summary><b>429 / too many requests?</b></summary>
+
+- Public endpoints are rate-limited per source IP (20 parses, 10 downloads, 30 direct-url
+  lookups per minute, …), and parsing and downloading also have a concurrency gate (2 at
+  a time by default). Retry after a short wait.
 </details>
 
 <details>

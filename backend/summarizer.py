@@ -917,8 +917,8 @@ class VideoSummarizer:
         bailian_key = os.getenv("ALIYUN_BAILIAN_API_KEY", "").strip()
         if not bailian_key:
             # ── 没配置平台 key（**没有兜底链**，工单 #107）──
-            # 只配了 DEEPSEEK_API_KEY 不再算数：那段兜底被删了，
-            # 因为只换模型名不换端点必然 404，而兜底会把真实错误盖住。
+            # 只有平台 provider：缺 key 就报错，不降级到别家模型——
+            # 兜底会把真实错误盖住，报错里也得点名要配哪个变量。
             raise ValueError(
                 "未检测到 AI 服务 API Key，请配置环境变量：\n"
                 "  └─ 阿里云百炼（平台模型）:\n"
