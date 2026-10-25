@@ -36,10 +36,16 @@
  * ## 判据只走「用户看到什么」与「后端收到什么」
  *
  * `<script setup>` 不暴露内部状态，DOM 是唯一出口。本文件不 import 也不调用
- * `started` / `chatStream` / `sanitizeMindmap` / `applyQuotaEvent`——那些是实现细节。
+ * `started` / `chatStream` / `applyQuotaEvent`——那些是实现细节。
  * 唯一的例外是「点完之后后端收到什么」：那本来就是接口契约，从 mock 的调用记录读。
+ *
+ * ## 思维导图那一节（工单 #111 / ADR 0029）
+ *
+ * 导图的结构规则只有一份：`backend/mindmap.py`。前端**不再自己洗一遍**——
+ * 洗一遍就会有一处规则在改规则时没被一起改。本节盯住这件事：后端交来的
+ * markdown 原样渲染，第三级节点不许在前端这一层消失。
  */
-import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 
 // vi.mock 必须在顶部：它靠「被提升到组件 import 之前」生效。下沉到共用夹具就依赖导入
@@ -450,5 +456,88 @@ describe('VideoSummary 挂载 · byok 额度提示', () => {
     const html = w.html()
     expect(html).toContain('本次解析用了你自己的 API Key')
     expect(html, '两条提示同时出现 —— 用户会读到互相矛盾的话').not.toContain('但还没填')
+  })
+})
+
+// ── 思维导图：前端不再自己洗一遍（工单 #111 / ADR 0029）────────────────
+
+/**
+ * markmap-view 在 jsdom 里要两样东西才画得出来：
+ *
+ * - `ResizeObserver`：markmap-view 内部直接 new 一个，缺了抛
+ *   `ReferenceError`，而组件把异常接住会切成「渲染失败」兜底——用例会
+ *   安静地测到另一条分支上。
+ * - `requestAnimationFrame`：d3 的补间要动 `transform.baseVal`，jsdom 的
+ *   SVG 没这个属性，补间一跑就抛。
+ *
+ * 缺任何一个都会让本节退化成兜底分支，所以这里显式补上。
+ */
+class StubResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+/** 导图节点：markmap 把每个节点画成一个 `<g class="markmap-node">`。 */
+function mindmapNodes(w) {
+  return w.findAll('g.markmap-node')
+}
+
+function nodeByText(w, text) {
+  return mindmapNodes(w).find((n) => n.text().trim() === text)
+}
+
+describe('VideoSummary 挂载 · 思维导图渲染', () => {
+  beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', StubResizeObserver)
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  test('后端交来的 markdown 原样渲染：第三级节点不会在前端这一层消失', async () => {
+    const w = await mountSummary({ hasCommunityResult: true })
+    // 根写在 `##` 上（老库存量的形状）。前端若再自己「把首个 ## 提成 #」，
+    // 它的后代不会跟着下移——`###` 就比根深了两级。markmap 建树时遇到这种
+    // 孤儿标题会把父节点的孩子整个清空，第三级节点就凭空消失了。
+    // 前端不做这件事，第三级节点就还在。
+    summarizeCb.onMindmap({ markdown: '## 视频主题\n### 主题细节\n## 关键分支' })
+    await flushPromises()
+    await openTab(w, '思维导图')
+
+    const detail = nodeByText(w, '主题细节')
+    expect(detail, '第三级节点「主题细节」没渲染出来 —— 少了一层内容').toBeTruthy()
+    expect(detail.attributes('data-depth'), '第三级节点不在第 3 层 —— 层级被改动了').toBe('3')
+
+    const parent = nodeByText(w, '视频主题')
+    expect(parent, '第二级节点「视频主题」没渲染出来').toBeTruthy()
+    expect(detail.attributes('data-path'), '第三级节点没挂在第二级节点下面 —— 层级错了').toContain(
+      `${parent.attributes('data-path')}.`,
+    )
+  })
+
+  test('对照组：后端形状的导图（# 根）第三级照样在第三层', async () => {
+    const w = await mountSummary({ hasCommunityResult: true })
+    summarizeCb.onMindmap({
+      markdown: '# 视频主题\n## 分支一\n### 细节节点\n## 分支二',
+    })
+    await flushPromises()
+    await openTab(w, '思维导图')
+
+    const detail = nodeByText(w, '细节节点')
+    expect(detail, '后端给的第三级节点没渲染出来').toBeTruthy()
+    expect(detail.attributes('data-depth')).toBe('3')
+  })
+
+  test('没有导图时是空态，一个节点都不画', async () => {
+    const w = await mountSummary({ hasCommunityResult: true })
+    summarizeCb.onDone()
+    await flushPromises()
+    await openTab(w, '思维导图')
+
+    expect(w.text()).toContain('暂无思维导图')
+    expect(mindmapNodes(w).length, '没有导图却画出了节点').toBe(0)
   })
 })

@@ -97,26 +97,33 @@ def clean_mindmap_markdown(md: str) -> str:
     """
     if not md or not md.strip():
         return md or ""
-    text = md.strip()
-    # 1. 去除代码块围栏
-    text = re.sub(r"^```(?:markdown|md)?\s*\n?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\n?```\s*$", "", text)
-    # 2. 截掉第一个标题之前的前导说明文字
-    first = _FIRST_HEADING_RE.search(text)
-    if not first:
-        # 3. 兜底：没有任何 Markdown 标题时，把非空文本行转为根节点下的列表
-        return _fallback_from_plain_lines(text)
-    blocks = _parse_blocks(text[first.start():])
-    forest = _build_forest(blocks)
-    if not forest:
-        return _fallback_from_plain_lines(text)
-    root = forest[0]
-    # 4. 唯一的根：其余顶层块挂到根下面（否则会渲染出第二个一级标题）
-    for extra in forest[1:]:
-        root.children.append(extra)
+    root = _mindmap_root(md)
+    if root is None:
+        # 连一条兜底叶子都凑不出来：给一根光杆加一条占位叶子
+        return "# %s\n- 暂无内容" % DEFAULT_ROOT_TITLE
     out = []
     _render_node(root, 1, out, {"total": 0})
     return "\n".join(out)
+
+
+def exceeds_limits(md: str) -> bool:
+    """这份导图的结构超出当前上限吗（深度 ≤3 / 每支 ≤7 / 全图 ≤30）。
+
+    判据是「按规则洗一遍会不会少节点」：少掉的那几个就是被上限截掉的。
+    上限只在 `_render_node` 里执行一次——这里量的是**同一棵树**，
+    不重抄一份规则（规则的真源只能有一处，工单 #111）。
+
+    存量导图的写迁移用它判断「这一行要不要收拾」，见 `database.py` 的
+    `_migrate_mindmap_levels`。
+    """
+    if not md or not md.strip():
+        return False
+    root = _mindmap_root(md)
+    if root is None:
+        return False
+    out = []
+    _render_node(root, 1, out, {"total": 0})
+    return len(out) < _count_nodes(root)
 
 
 def rebuild_mindmap_from_summary(summary_md: str) -> str:
@@ -246,22 +253,63 @@ def _render_node(node: _Node, level: int, out, state) -> None:
             used += 1
 
 
+def _count_nodes(node: _Node) -> int:
+    """树里的节点总数（**不执行**任何上限）。
+
+    给 `exceeds_limits` 用：洗出来的节点数比它少，就说明上限咬掉了东西。
+    """
+    total = 1
+    for child in node.children:
+        total += _count_nodes(child)
+    return total
+
+
 def _render_tree(root: _Node) -> str:
     out = []
     _render_node(root, 1, out, {"total": 0})
     return "\n".join(out)
 
 
-def _fallback_from_plain_lines(text: str) -> str:
-    """完全没有标题的输入：兜底成一个根 + 若干叶子。"""
+def _mindmap_root(md: str):
+    """把一段 Markdown 洗成一棵导图树（**还没**执行上限截断）。
+
+    `clean_mindmap_markdown`（洗）与 `exceeds_limits`（量）共用它：
+    两者看到的是同一棵树，规则不会被抄成两份。洗完的树里，每个节点的
+    级别按**树深度**重算（见 `_child_level`）。
+    """
+    text = md.strip()
+    # 1. 去除代码块围栏
+    text = re.sub(r"^```(?:markdown|md)?\s*\n?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\n?```\s*$", "", text)
+    # 2. 截掉第一个标题之前的前导说明文字
+    first = _FIRST_HEADING_RE.search(text)
+    if not first:
+        # 3. 兜底：没有任何 Markdown 标题时，把非空文本行转为根节点下的列表
+        return _fallback_tree(text)
+    blocks = _parse_blocks(text[first.start():])
+    forest = _build_forest(blocks)
+    if not forest:
+        return _fallback_tree(text)
+    # 4. 唯一的根：其余顶层块挂到根下面（否则会渲染出第二个一级标题）
+    root = forest[0]
+    for extra in forest[1:]:
+        root.children.append(extra)
+    return root
+
+
+def _fallback_tree(text: str):
+    """完全没有标题的输入：兜底成一棵「根 + 若干叶子」的树。
+
+    一条叶子都凑不出来时返回 None（没有树可洗，交给调用方给占位内容）。
+    """
     items = []
     for line in text.splitlines():
         clean = _LEAD_JUNK_RE.sub("", line.strip()).strip()
         if clean:
             items.append(clean)
     if not items:
-        return "# %s\n- 暂无内容" % DEFAULT_ROOT_TITLE
+        return None
     root = _Node("heading", DEFAULT_ROOT_TITLE, 1)
     for item in items:
         root.children.append(_Node("item", item))
-    return _render_tree(root)
+    return root

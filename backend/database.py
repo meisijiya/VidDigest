@@ -16,7 +16,12 @@ from url_canonical import canonical_video_url
 # 思维导图的结构规则（工单 #106 / ADR 0027）。同样不 import 本项目的任何
 # 东西（纯文本处理），所以顶层引入不会绕成环——存量导图重建要用它，
 # 而导图规则的唯一真值必须只有一份。
-from mindmap import is_degenerate, rebuild_mindmap_from_summary
+from mindmap import (
+    clean_mindmap_markdown,
+    exceeds_limits,
+    is_degenerate,
+    rebuild_mindmap_from_summary,
+)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
 
@@ -1077,7 +1082,9 @@ def _migrate_parse_history_unique_url(conn) -> int:
 
 
 def _migrate_mindmap_levels(conn) -> int:
-    """按新规则重建存量导图（工单 #106 / ADR 0027）。返回被重建的行数。
+    """把存量导图收拾到当前结构规则之内（工单 #106 / #111 / ADR 0027、0029）。
+
+    返回被改写的行数。
 
     ## 为什么需要这一步
 
@@ -1086,11 +1093,15 @@ def _migrate_mindmap_levels(conn) -> int:
     导图永远不会被再洗一次。所以「只对新总结生效」等于没改：库里躺着的
     存量导图还是一根光杆。
 
-    ## 重建依据
+    ## 两类要收拾的存量行
 
-    同一行的总结正文（``summary_md``）里已经有现成的结构（``##`` /
-    ``###`` 标题），它是重建导图唯一可靠的来源——不用猜，也不用重新
-    调模型。
+    * **退化的行**（只有一级标题，没有分支）：按同一行的总结正文
+      （``summary_md``）重建——正文里已经有现成的结构（``##`` / ``###``
+      标题），它是重建导图唯一可靠的来源，不用猜，也不用重新调模型。
+    * **层级够但超上限的行**（同一父节点下超过 7 个子节点，或全图超过
+      30 个节点）：按当前规则截回上限之内（``clean_mindmap_markdown``）。
+      这一类**不拿总结正文替换**——重建会丢掉原图独有的细节，截断只丢
+      超出的那部分。
 
     ## 例外：没有正文的记录保持原样
 
@@ -1099,8 +1110,8 @@ def _migrate_mindmap_levels(conn) -> int:
 
     ## 幂等
 
-    重建后的导图层级 ≥2，下一次启动就不再命中「退化」这条条件；即使
-    命中，重建结果与原值相同也不会写库。重复执行不产生额外改动。
+    收拾过的导图层级 ≥2 且在上限之内，下一次启动就不再命中任何一条
+    条件；即使命中，结果与原值相同也不会写库。重复执行不产生额外改动。
     """
     rebuilt = 0
     for table in ("videos", "parse_history"):
@@ -1109,14 +1120,20 @@ def _migrate_mindmap_levels(conn) -> int:
             f"WHERE COALESCE(mindmap_md, '') != ''"
         ).fetchall()
         for row in rows:
-            if not is_degenerate(row["mindmap_md"]):
+            md = row["mindmap_md"]
+            if is_degenerate(md):
+                summary = (row["summary_md"] or "").strip()
+                if not summary:
+                    # 无正文：没有重建依据，保持原样
+                    continue
+                new_md = rebuild_mindmap_from_summary(summary)
+            elif exceeds_limits(md):
+                # 层级够但超上限：按当前规则截回上限之内（不换内容，只丢超出的）
+                new_md = clean_mindmap_markdown(md)
+            else:
+                # 层级够、也在上限之内：一个字符都不动
                 continue
-            summary = (row["summary_md"] or "").strip()
-            if not summary:
-                # 无正文：没有重建依据，保持原样
-                continue
-            new_md = rebuild_mindmap_from_summary(summary)
-            if not new_md or new_md == row["mindmap_md"]:
+            if not new_md or new_md == md:
                 continue
             conn.execute(
                 f"UPDATE {table} SET mindmap_md = ? WHERE id = ?",

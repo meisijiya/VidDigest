@@ -640,48 +640,13 @@ if (Array.isArray(props.initialHistory?.chat_history)) {
 }
 
 /**
- * 清洗思维导图 Markdown，保证 markmap 可解析：
- * 1. 去除代码块围栏；2. 截掉第一个标题前的说明文字；
- * 3. 保证存在一级根标题；4. 无任何标题时按纯文本行兜底构造导图结构。
+ * 导图结构由后端定：`backend/mindmap.py` 是导图规则的**唯一真源**
+ * （层级上限、每支子节点上限、总数上限、清洗规则全在那边）。
+ *
+ * 前端**不再自己清洗一遍**：两份规则迟早分叉，而分叉的那一份没人测。
+ * 拿到的 markdown 原样交给 markmap 渲染；渲染不了就走模板里的失败兜底
+ * （把原始 markdown 显示出来），空内容走「暂无思维导图」空态。
  */
-function sanitizeMindmap(md: string) {
-  let text = (md || '').trim()
-  if (!text) return '# 视频思维导图\n- 暂无内容'
-
-  // 1. 去除代码块围栏
-  text = text.replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/i, '')
-
-  // 2. 截掉第一个任意级别标题之前的内容
-  const headingMatch = text.match(/^#{1,6}\s+\S/m)
-  if (headingMatch) {
-    const idx = text.indexOf(headingMatch[0])
-    text = text.slice(idx)
-    // 3. 保证存在 `# ` 一级根标题
-    if (!/^#\s+\S/m.test(text)) {
-      const firstH2 = text.match(/^##\s+(.+)$/m)
-      if (firstH2) {
-        text = `# ${firstH2[1].trim()}\n${text.slice(text.indexOf(firstH2[0]) + firstH2[0].length)}`
-      } else {
-        text = `# 视频思维导图\n${text}`
-      }
-    }
-    return text.trim()
-  }
-
-  // 4. 兜底：没有任何 Markdown 标题时，把非空文本行转为根节点下的列表
-  const lines = text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-  const items = lines
-    .map((l) => l.replace(/^[-*•#\d.、\s]+/, '').trim())
-    .filter(Boolean)
-    .slice(0, 50)
-    .map((l) => `- ${l}`)
-    .join('\n')
-  return items ? `# 视频思维导图\n${items}` : '# 视频思维导图\n- 暂无内容'
-}
-
 function renderMindmap() {
   if (!markmapContainer.value || !mindmapMd.value) return
   mindmapRenderFailed.value = false
@@ -692,7 +657,7 @@ function renderMindmap() {
     }
     markmapContainer.value.innerHTML = ''
     const transformer = new Transformer()
-    const { root } = transformer.transform(sanitizeMindmap(mindmapMd.value))
+    const { root } = transformer.transform(mindmapMd.value)
     markmapInstance = Markmap.create(
       markmapContainer.value,
       {
