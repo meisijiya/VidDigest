@@ -1,19 +1,24 @@
-"""邀请码注册（工单 #99 / ADR 0023）。
+"""邀请码注册（工单 #99 / #103 / ADR 0023）。
 
 ## 这个文件在钉什么
 
 公开注册从「邮箱 + 密码」改成「邮箱 + 密码 + 邀请码」。邀请码由管理员
 发放，后端在**同一个事务**里完成「校验码 → 建号 → 计数」。
 
+工单 #103 之后，邀请码**只存哈希**：库里存的是 sha256 摘要，明文只在
+创建那一次响应里出现；码本身也必须够强（组合空间 ≥ 128 bit）。
+
 断言只钉外部可观察的东西：
 
 - HTTP 状态码与响应体里的中文 detail；
-- 数据库里的真实行（used_count、users 行数）；
+- 数据库里的真实行（used_count、users 行数、**存的是不是哈希**）；
+- 数据库**文件**里有没有明文（工单 #103 的核心承诺）；
 - 管理端点返回的字段形状（明文只给一次、列表脱敏）。
 
 不钉私有函数名，不钉内部调用顺序。结构性约束（必须校验码、必须计数、
-必须判过期与作废）由 ``tests/mutation_invite_codes.py`` 兜住：把实现改坏，
-那些用例必须转红。
+必须判过期与作废、**熵不能低于 128 bit、库里不能有明文、有效期按小时
+换算**）由 ``tests/mutation_invite_codes.py`` 兜住：把实现改坏，那些
+用例必须转红。
 
 ## 四类失效原因必须分开
 
@@ -27,9 +32,21 @@
 顺序调用两次同一枚码，测的是幂等；**并发**调用两次才测并发安全。断言落在
 库里的计数上，而不是某个线程的返回值——返回值只说明那一个线程看见了什么，
 库里那行才是别的线程也要面对的事实。
+
+## 熵那条断言为什么允许读模块常量
+
+组合空间 = 码长 × log2(字符集大小)，而「字符集多大、码多长」是这份规格的
+**唯一**出处，代码里就是两个常量。断言不读它们，就没有任何东西能表达
+「这个码猜不中」——所以这里读常量，但**独立重算**一遍（不抄
+``INVITE_CODE_ENTROPY_BITS`` 的值），并在旁边钉住「字符集没有重复字符」
+（重复字符会悄悄把熵打折，而字符集长什么样肉眼看不出来）。
 """
+import ast
+import hashlib
+import math
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -45,7 +62,8 @@ from seams import auth_headers, make_client
 #: column」，而新装的人一切正常。
 EXPECTED_COLUMNS = {
     "id",
-    "code",
+    "code_hash",
+    "code_hint",
     "created_by",
     "created_at",
     "expires_at",
@@ -54,6 +72,26 @@ EXPECTED_COLUMNS = {
     "revoked",
     "note",
 }
+
+#: 工单 #103 之前的老表结构（**冻结副本**）。升级路径的测试用它造一个
+#: 「真老库」：``code`` 存明文，没有 ``code_hash`` / ``code_hint``。
+#:
+#: 为什么是冻结副本而不是从当前代码里取：当前代码里**已经没有**这个结构
+#: 了，要造出「真老库」只能把老结构原样写在这里。老结构改了名字或列，
+#: 这个副本要跟着改——它就是「老库长什么样」的定义。
+LEGACY_INVITE_CODES_DDL = """
+    CREATE TABLE invite_codes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL UNIQUE,
+        created_by INTEGER,
+        created_at TEXT NOT NULL,
+        expires_at TEXT,
+        max_uses INTEGER NOT NULL DEFAULT 1,
+        used_count INTEGER NOT NULL DEFAULT 0,
+        revoked INTEGER NOT NULL DEFAULT 0,
+        note TEXT
+    )
+"""
 
 
 # ── 夹具与助手 ────────────────────────────────────────────
@@ -93,13 +131,88 @@ def _register(client, email="new@example.com", password="secret1", code=None):
     return client.post("/api/auth/register", json=body)
 
 
+def _sha256(code: str) -> str:
+    """sha256(明文码)，**测试自己算**。
+
+    不调后端的哈希函数：那样测的是「后端算的哈希 == 后端算的哈希」，
+    恒真。这里独立算一遍，钉住的是「库里那列**就是** sha256(明文)」。
+    """
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
 def _used_count(code):
-    """库里这枚码的已用数。"""
+    """库里这枚码的已用数（按哈希查，工单 #103 之后库里没有明文）。"""
     with database.get_db() as conn:
         row = conn.execute(
-            "SELECT used_count FROM invite_codes WHERE code = ?", (code,)
+            "SELECT used_count FROM invite_codes WHERE code_hash = ?", (_sha256(code),)
         ).fetchone()
     return None if row is None else row["used_count"]
+
+
+def _db_file_bytes() -> bytes:
+    """数据库**文件**的字节（含 WAL）。
+
+    为什么读文件而不只读行：工单 #103 的承诺是「库被读走不等于码可用」，
+    而「库里没有明文」如果只看行，会漏掉两处——表外的空闲页里可能还留着
+    旧明文，WAL 里也可能留着。读文件才是攻击者拿到的东西。
+    """
+    path = Path(database.get_db_path())
+    blobs = [path.read_bytes()] if path.exists() else []
+    wal = path.with_name(path.name + "-wal")
+    if wal.exists():
+        blobs.append(wal.read_bytes())
+    blob = b"".join(blobs)
+    assert blob, (
+        f"数据库文件读不到内容（{path}）："
+        "「文件里没有明文」这条断言就是空的，什么都没验"
+    )
+    return blob
+
+
+def _checkpoint_the_database():
+    """把 WAL 里的内容落回主库文件，并把 WAL 截断。
+
+    为什么需要：WAL 模式下主库文件是**旧的**（最新内容在 WAL 里），WAL
+    文件自己也可能留着旧页。只读主库文件、或者只读 WAL，都会漏掉一半
+    真相——「文件里有没有明文」这条断言必须先把两边对齐。
+    """
+    with database.get_db() as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def _dotted_names(node):
+    """把一个 AST 节点摊成点号串集合（``secrets.choice`` 这种）。"""
+    names = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            names.add(child.id)
+        elif isinstance(child, ast.Attribute):
+            bases = _dotted_names(child.value)
+            attr = child.attr
+            if bases:
+                names |= {f"{base}.{attr}" for base in bases}
+            else:
+                names.add(attr)
+        elif isinstance(child, ast.Call):
+            names |= _dotted_names(child.func)
+    return names
+
+
+def _function_source(function_name: str) -> ast.FunctionDef:
+    """从**磁盘上的**源码里取出某个函数的 AST。
+
+    读磁盘而不是读内存里的模块对象：变异脚本改的就是磁盘上的文件，
+    读内存会看不到被改坏的那份（断言就永远绿着）。
+
+    用 AST 而不是纯文本找（仓库的测试策略 §6）：文本断言挡不住等价改写，
+    作用域限定到**这一个函数**之后才是「结构性判据」而不是「关键字守卫」。
+    """
+    source = Path(database.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return node
+    raise AssertionError(f"backend/database.py 里找不到函数 {function_name}")
 
 
 def _user_count(email):
@@ -632,6 +745,280 @@ class TestLegacyDatabaseUpgrade:
         )
         assert registered["email"] == "after-upgrade@example.com"
         assert _used_count(item["code"]) == 1
+
+
+# ── 工单 #103：强度 / 只存哈希 / 有效期换算 ──────────────────
+
+
+class TestTheCodeSpaceIsBigEnough:
+    """邀请码必须**猜不中**（工单 #103）。
+
+    组合空间 = 码长 × log2(字符集大小)。这个数低于 128 bit 时，库被读走
+    之后攻击者可以离线把整个空间枚举一遍——那时「只存哈希」这层保护挡不住
+    任何东西（sha256 再快也只是每条候选一次哈希）。
+    """
+
+    def test_the_code_space_has_at_least_128_bits(self):
+        """组合空间的下界：≥ 128 bit。
+
+        数字**不写死**：写死一个数（"至少 20 位"）的话，把字符集改小一半
+        断言还在绿。这里按「码长 × log2(字符集大小)」现算，字符集和码长
+        一动，这个数跟着动。
+        """
+        alphabet = database.INVITE_CODE_ALPHABET
+        length = database.INVITE_CODE_LENGTH
+        bits = length * math.log2(len(alphabet))
+        assert bits >= 128, (
+            f"邀请码的组合空间只有 {bits:.1f} bit"
+            f"（{length} 位 × 字符集 {len(alphabet)} 个），低于 128 bit："
+            "库泄露之后可以被离线穷举"
+        )
+
+    def test_the_alphabet_has_no_duplicate_characters(self):
+        """重复字符会**悄悄**把熵打折，而字符集长什么样肉眼看不出来。
+
+        同一个字符出现两次，组合空间就少了一截——`math.log2(len(...))`
+        看的是**长度**不是**去重后的个数**，所以这一条得单独钉。
+        """
+        alphabet = database.INVITE_CODE_ALPHABET
+        repeated = sorted({c for c in alphabet if alphabet.count(c) > 1})
+        assert not repeated, f"字符集里有重复字符：{repeated}"
+
+    def test_generated_codes_come_from_a_cryptographic_source(self):
+        """码必须来自密码学随机源。
+
+        这条**只能**看实现：`random.choice` 出来的码和 `secrets.choice`
+        出来的码在行为上没有区别，但前者的序列是可以被预测的——被预测的
+        邀请码等于没有邀请码。判据用 AST 限定到 `generate_invite_code`
+        这一个函数（仓库测试策略 §6：文本断言要么用 AST / 函数归属限定
+        作用域，要么它拦不住等价改写）。
+
+        判的是「用没用 ``secrets``」，不是「有没有恰好写成
+        ``secrets.choice``」——``secrets.SystemRandom().choice`` 同样是
+        密码学随机源，把它当成缺陷就是误报。
+        """
+        names = _dotted_names(_function_source("generate_invite_code"))
+        assert any(name.startswith("secrets.") for name in names), (
+            "generate_invite_code 没用密码学随机源 secrets.*，"
+            f"现在用到的随机源是：{sorted(names)}"
+        )
+
+    def test_a_lot_of_codes_are_all_different(self, db):
+        """发 200 枚码，不能有重复。
+
+        顺带钉住「每个字符都真被用到」：生成器若只用了字符集的一部分
+        （比如把数字那一半写死），码长不变但熵会缩水——而组合空间那条
+        断言看的是字符集长度，看不出「这些字符其实没被用过」。
+        """
+        codes = [database.generate_invite_code() for _ in range(200)]
+        assert len(set(codes)) == len(codes), "生成了重复的邀请码"
+        unused = sorted(set(database.INVITE_CODE_ALPHABET) - set("".join(codes)))
+        assert not unused, f"字符集里有字符一次都没被用到：{unused}"
+
+
+class TestOnlyTheHashIsStored:
+    """工单 #103 的核心承诺：库被读走 ≠ 码被用掉。
+
+    旧实现把明文存库，库一泄露，在用的码就全成了明文——不需要爆破，
+    不需要任何算力。改完之后库里只有 sha256 摘要，明文只在创建那一次
+    响应里出现。
+    """
+
+    def test_the_row_stores_the_hash_and_not_the_plaintext(self, db):
+        item = db.create_invite_code(max_uses=1)
+        code = item["code"]
+        with db.get_db() as conn:
+            row = conn.execute("SELECT * FROM invite_codes").fetchone()
+        assert row["code_hash"] == _sha256(code), "存的不是 sha256(明文)"
+        for key in row.keys():
+            assert row[key] != code, f"第 {key} 列存了明文邀请码"
+
+    def test_the_database_file_holds_no_plaintext(self, db):
+        """攻击者拿到的是**文件**，不是「表里的行」。
+
+        只查行会漏两处：表外的空闲页（老表被替换之后残留）与 WAL。
+        所以这条读的是文件本身。
+        """
+        item = db.create_invite_code(max_uses=1)
+        code = item["code"]
+        _checkpoint_the_database()
+        blob = _db_file_bytes()
+        assert code.encode("utf-8") not in blob, "数据库文件里能翻出明文邀请码"
+
+    def test_the_plaintext_leaves_only_in_the_creation_response(self, client_app):
+        """明文只在创建那一次响应里出现，之后哪儿都取不回。"""
+        client, _, _ = client_app
+        hdr = _admin_hdr(client_app)
+        created = client.post("/api/admin/invite-codes", json={}, headers=hdr)
+        assert created.status_code == 200, created.text
+        code = created.json()["item"]["code"]
+
+        listing = client.get("/api/admin/invite-codes", headers=hdr)
+        assert listing.status_code == 200
+        assert code not in listing.text, "列表响应里出现了完整码"
+
+        _checkpoint_the_database()
+        assert code.encode("utf-8") not in _db_file_bytes(), "数据库文件里能翻出明文"
+
+    def test_the_hint_cannot_be_used_to_register(self, client_app):
+        """列表里的脱敏提示**不是码**，拿它注册必须失败。
+
+        管理员靠它认出「这枚是我发给张三的那枚」，但它不能当码用——
+        否则「库里不存明文」就只剩一半：攻击者从提示里拼不出码，
+        可管理员能，而管理员能就等于这个接口能。
+        """
+        client, _, _ = client_app
+        hdr = _admin_hdr(client_app)
+        created = client.post("/api/admin/invite-codes", json={}, headers=hdr)
+        assert created.status_code == 200, created.text
+        listing = client.get("/api/admin/invite-codes", headers=hdr)
+        row = listing.json()["items"][0]
+        assert "****" in row["code_masked"], f"脱敏提示形态不对：{row['code_masked']}"
+
+        r = _register(client, email="hint@example.com", code=row["code_masked"])
+        assert r.status_code == 400, f"脱敏提示居然能注册：{r.status_code} {r.text}"
+        assert r.json()["detail"] == "邀请码无效"
+
+    def test_the_hint_is_stored_in_the_row(self, db):
+        """提示列是**建码那一刻**存下的：它从明文算得出，从哈希算不出。"""
+        item = db.create_invite_code(max_uses=1)
+        code = item["code"]
+        with db.get_db() as conn:
+            row = conn.execute(
+                "SELECT code_hint FROM invite_codes WHERE code_hash = ?",
+                (_sha256(code),),
+            ).fetchone()
+        assert row["code_hint"] == code[:4] + "****" + code[-4:]
+
+
+class TestTheExpiryIsCountedInHours:
+    """「有效小时数」就是小时（工单 #103）。
+
+    旧实现把 ``timedelta(hours=hours)`` 写成 ``timedelta(minutes=hours)``，
+    38 条用例照样全绿——「可配置有效期」这条当时没有任何判据。
+    """
+
+    def test_twenty_four_hours_means_twenty_four_hours(self, client_app, frozen_clock):
+        client, _, _ = client_app
+        r = client.post(
+            "/api/admin/invite-codes",
+            json={"max_uses": 1, "expires_in_hours": 24},
+            headers=_admin_hdr(client_app),
+        )
+        assert r.status_code == 200, f"实得 {r.status_code}：{r.text}"
+        item = r.json()["item"]
+        created = datetime.fromisoformat(item["created_at"])
+        expires = datetime.fromisoformat(item["expires_at"])
+        assert expires - created == timedelta(hours=24), (
+            f"选 24 小时，库里差的却是 {expires - created}："
+            "有效期的单位换算错了（小时被当成了分钟？）"
+        )
+
+    def test_one_hour_means_one_hour(self, client_app, frozen_clock):
+        client, _, _ = client_app
+        r = client.post(
+            "/api/admin/invite-codes",
+            json={"max_uses": 1, "expires_in_hours": 1},
+            headers=_admin_hdr(client_app),
+        )
+        assert r.status_code == 200, f"实得 {r.status_code}：{r.text}"
+        item = r.json()["item"]
+        created = datetime.fromisoformat(item["created_at"])
+        expires = datetime.fromisoformat(item["expires_at"])
+        assert expires - created == timedelta(hours=1), (
+            f"选 1 小时，库里差的却是 {expires - created}"
+        )
+
+
+class TestUpgradingFromAnOldPlaintextDatabase:
+    """从**真老库**（``code`` 存明文）启动，要能升级成新结构（工单 #103）。
+
+    三件事必须同时成立：升级前发出的码**仍然可用**；升级后**表里**没有
+    明文；升级后**文件里**也没有明文。
+    """
+
+    OLD_CODE = "OLDLEGACYCODE1234567890AB"
+
+    def _build_an_old_database(self):
+        """把当前库改成工单 #103 之前的样子，并塞进一枚明文邀请码。
+
+        先 ``init_db()`` 造出完整的库（users 等表要留着，否则注册无从
+        谈起），再把 invite_codes 换成老结构、塞进明文行——这就是真老库
+        的样子：**表在，列是旧的，行里是明文**。
+        """
+        database.init_db()
+        with database.get_db() as conn:
+            conn.execute("DROP TABLE invite_codes")
+            conn.execute(LEGACY_INVITE_CODES_DDL)
+            conn.execute(
+                "INSERT INTO invite_codes (id, code, created_by, created_at, expires_at,"
+                " max_uses, used_count, revoked, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (1, self.OLD_CODE, None, "2026-01-01T00:00:00+00:00", None, 2, 1, 0, "老码"),
+            )
+
+    def test_an_old_code_still_works_after_the_upgrade(self, legacy_db):
+        """升级前发出的码，升级后**仍然可用**。
+
+        迁移时把明文算成哈希填进新表，所以老码还能查到、还能用。
+        """
+        self._build_an_old_database()
+        database.init_db()
+
+        registered = database.register_with_invite_code(
+            "old-code@example.com", "hash", self.OLD_CODE
+        )
+        assert registered["email"] == "old-code@example.com"
+        assert _used_count(self.OLD_CODE) == 2, "老码的已用数没有接着往上走"
+
+    def test_the_upgraded_table_holds_no_plaintext(self, legacy_db):
+        self._build_an_old_database()
+        database.init_db()
+
+        with database.get_db() as conn:
+            row = conn.execute("SELECT * FROM invite_codes").fetchone()
+        assert row is not None, "升级把老码弄丢了"
+        assert row["code_hash"] == _sha256(self.OLD_CODE), "老码没有被算成哈希"
+        for key in row.keys():
+            assert row[key] != self.OLD_CODE, f"第 {key} 列还留着明文"
+
+    def test_the_upgraded_database_file_holds_no_plaintext(self, legacy_db):
+        """文件里也不能有明文。
+
+        老表被替换掉之后，明文可能还留在空闲页里——「库被读走等于码被用掉」
+        这条承诺对老库必须是**真的**，所以升级要顺手把文件重写一遍。
+        """
+        self._build_an_old_database()
+        database.init_db()
+        _checkpoint_the_database()
+        blob = _db_file_bytes()
+        assert self.OLD_CODE.encode("utf-8") not in blob, (
+            "老库的明文还留在数据库文件里（空闲页或 WAL）"
+        )
+
+    def test_the_upgraded_row_keeps_its_usage_and_note(self, legacy_db):
+        """升级不能把老行的其它信息弄丢：已用数、备注、创建时间。"""
+        self._build_an_old_database()
+        database.init_db()
+
+        with database.get_db() as conn:
+            row = conn.execute("SELECT * FROM invite_codes").fetchone()
+        assert row["used_count"] == 1
+        assert row["max_uses"] == 2
+        assert row["note"] == "老码"
+        assert row["created_at"] == "2026-01-01T00:00:00+00:00"
+
+    def test_the_new_codes_after_the_upgrade_are_still_hashed(self, legacy_db):
+        """升级之后新发的码当然也是哈希——两条路径要一致。"""
+        self._build_an_old_database()
+        database.init_db()
+
+        item = database.create_invite_code(max_uses=1)
+        with database.get_db() as conn:
+            row = conn.execute(
+                "SELECT code_hash FROM invite_codes WHERE code_hash = ?",
+                (_sha256(item["code"]),),
+            ).fetchone()
+        assert row is not None, "升级之后新建的码没有按哈希存"
 
 
 # ── 既有行为不被破坏 ──────────────────────────────────────

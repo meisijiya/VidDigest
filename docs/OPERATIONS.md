@@ -810,7 +810,13 @@ VIDDIGEST_ADMIN_EMAILS=you@example.com,other@example.com
     -d '{"max_uses":1,"expires_in_hours":24,"note":"给某某"}'
   ```
 
-  响应里的 `item.code` 是**明文**，只给这一次；`item.code_masked` 是脱敏码。
+  响应里的 `item.code` 是**明文**，只给这一次。**`item.code_masked` 不在创建响应里**——
+  它是列表项的字段（`GET /api/admin/invite-codes` 的每一行），值形如 `ABCD****WXYZ`，
+  由建码那一刻存下的 `code_hint` 给出，**不是明文、不能用来注册**。
+
+库里存的是 sha256 摘要，**没有明文**：库被读走不等于在用的码被用掉。代价是明文取不回来
+——复制走之后立刻发给对方，发漏了只能作废重发。老库（存明文的那种）在后端重启时
+自动升级：明文被算成摘要填进新表，**升级前发出的码仍然可用**。
 
 三条语义：
 
