@@ -1166,6 +1166,8 @@ hub restart --name backend-api
 | `backend/logging_setup.py` | JSON 行日志、分级、轮转 |
 | `scripts/ops/backup_db.py` | SQLite 在线备份 + 完整性校验 + 保留策略 |
 | `scripts/ops/inspect_runtime.py` | 运行期巡检，任一项不达标即非零退出 |
+| `scripts/ops/check_xff_bypass.py` | 限流绕过自检：伪造 XFF 连打 25 次，断言至少一个 429（CI「生产构建」作业里跑） |
+| `scripts/ops/probe_ai_e2e.py` | **AI 总结质量探针**（手动跑，**不进 init.sh**）：用真实视频跑完整链路，打印字幕字数 / 总结字数 / H2 数 / 导图层级与节点数 / 标签。换模型或换提示词后跑它做前后对照 |
 
 ### 13.2 起停与验证
 

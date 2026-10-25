@@ -144,37 +144,29 @@ AI 总结功能由三个子系统构成：
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#8b5cf6" stroke-width="2" style="vertical-align:middle"><target/></svg> 职责
 
-调用 OpenAI 兼容的 AI 服务（百炼优先、DeepSeek 兜底，见下方「初始化」），基于字幕文本生成结构化总结、思维导图和问答。
+调用 AI 服务（平台侧走阿里云百炼，支持 OpenAI 兼容与 Anthropic 两种协议，见下方「初始化」），基于字幕文本生成结构化总结、思维导图和问答。**没有兜底链**：provider 失败直接报错。
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#8b5cf6" stroke-width="2" style="vertical-align:middle"><settings/></svg> 初始化
 
-`VideoSummarizer.__init__`（`backend/summarizer.py:782` 起）有**三条分支**，不是单一后端：
+`VideoSummarizer.__init__`（`backend/summarizer.py`）有**两条分支**，不是单一后端：
 
 ```python
 # 1. 用户自带凭据（BYOK）—— credential 不为 None 时走这条，provider="user_credential"
-self.client = OpenAI(
-    api_key=credential.reveal(),
-    base_url=user_base_url or os.getenv("ALIYUN_BAILIAN_BASE_URL", ...),
-)
-self.model = user_model or os.getenv("ALIYUN_BAILIAN_MODEL", self._bailian_model)
-
-# 2. 阿里云百炼 —— 平台侧优先级最高，provider="aliyun_bailian"
-self.client = OpenAI(api_key=bailian_key, base_url=DEFAULT_BAILIAN_BASE_URL)
-
-# 3. DeepSeek —— **只是兜底**，provider="deepseek"
-self.client = OpenAI(api_key=deepseek_key, base_url=DEFAULT_DEEPSEEK_BASE_URL)
-self.model = DEFAULT_DEEPSEEK_MODEL
+#    端点/模型默认仍走平台配置，用户显式指定了才用他的
+# 2. 平台 provider —— provider="aliyun_bailian"，走 backend/provider_config.py
+#    的 build_client()：按 ALIYUN_BAILIAN_PROTOCOL 选协议（openai 默认 / anthropic）
 ```
 
 | 优先级 | 来源 | 触发条件 |
 |---:|---|---|
 | 1 | **用户自带凭据**（BYOK） | 调用方传了 `credential` |
-| 2 | **阿里云百炼**（OpenAI 兼容） | 配了 `ALIYUN_BAILIAN_API_KEY` |
-| 3 | **DeepSeek**（OpenAI 兼容） | 只配了 `DEEPSEEK_API_KEY` |
+| 2 | **平台 provider**（百炼，openai 或 anthropic 协议） | 配了 `ALIYUN_BAILIAN_API_KEY` |
 
-三条都拿不到时抛 `ValueError`，提示「请配置以下任一组环境变量」。
+两条都拿不到时抛 `ValueError`，提示配置环境变量。
 
-⚠️ **百炼优先、DeepSeek 兜底**——写文档或排查问题时别把 DeepSeek 当成唯一后端。模型名也不是类属性：百炼的默认模型**每次实例化时从模型清单表读一次**（`self._bailian_model`），后台改默认值不用重启。
+⚠️ **没有兜底链**（工单 #107）：原来那段 DeepSeek 兜底被删掉了——只换模型名不换端点必然 404，而兜底链会把第一个 provider 的真实错误盖住，让人排查时看到的是一个与原因无关的报文。**只配 `DEEPSEEK_API_KEY` 不算配置好了。**
+
+平台模型名不是类属性：**每次实例化时从模型清单表读一次**（`self._bailian_model`），后台改默认值不用重启；默认落在 `qwen3.7-flash`。环境变量 `ALIYUN_BAILIAN_MODEL` **优先于**清单表（运维改模型时先看它）。平台路径**显式关思考**（`enable_thinking=False`）：qwen3.7-flash 是混合思考模型，默认开着会返回 `reasoning_content` 并把 `max_tokens` 预算吃掉（实测同一问句 845 vs 47 tokens）。
 
 BYOK 分支的端点校验不在 `__init__` 里，而在 `credentials.validate_base_url`——那里是唯一一份规则。
 
@@ -203,16 +195,13 @@ BYOK 分支的端点校验不在 `__init__` 里，而在 `credentials.validate_b
 └─────────────────────────────────────────┘
 ```
 
-**字幕截断：** 前 15000 字符（约 3000-5000 tokens），超出部分丢弃。模型上下文窗口远大于此，但截断是为了控制处理延迟和成本。
+**字幕截断：** 前 60000 字符（约 2 万 tokens 以内），超出部分丢弃。模型上下文窗口远大于此，但截断是为了控制处理延迟和成本。
 
-### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#06b6d4" stroke-width="2" style="vertical-align:middle"><map/></svg> 思维导图（非流式）
+### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#06b6d4" stroke-width="2" style="vertical-align:middle"><map/></svg> 思维导图
 
-`generate_mindmap(subtitle_text, language)` 使用非流式模式，一次性返回完整 Markdown。
+思维导图**不单独发一次模型请求**：它与总结同一次调用返回，藏在总结文本的哨兵之后的 JSON 里（见 `backend/summarizer.py` 的 `VideoSummarizer` 类注释）。
 
-**System Prompt：**
-> 你是一个专业的思维导图生成助手。你擅长将内容转化为层级清晰的 Markdown 结构。
-
-**输出格式：** 纯 Markdown 标题层级（`#` → `##` → `###` → `####`），前端用 markmap 库渲染为交互式 SVG 导图。
+**输出格式：** 纯 Markdown 标题层级，**最多 3 级**（`#` → `##` → `###`），前端用 markmap 库渲染为交互式 SVG 导图。层级与数量的结构上限写在提示词里（`backend/prompts/summarize_full.md`），清洗与校验的唯一真源是 `backend/mindmap.py`（`MAX_HEADING_LEVEL`/`MAX_CHILDREN_PER_NODE`/`MAX_TOTAL_NODES`）。
 
 ### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#10b981" stroke-width="2" style="vertical-align:middle"><message-circle/></svg> AI 问答（流式）
 

@@ -32,6 +32,7 @@ Token 有效期 **72 小时**，过期需重新登录。
 | POST | `/api/auth/login` | — | 用户登录 |
 | GET | `/api/auth/me` | 必需 | 获取用户信息 |
 | GET | `/api/models` | — | **公开**模型清单（只给 `enabled=1` 的行，供 BYOK 下拉） |
+| GET | `/api/summary-templates` | — | **公开**提示词模板清单（`{default, templates[]}`），供前端下拉框渲染。**只给 id / 名称 / 说明，不暴露模板文件名** |
 | GET | `/api/quota` | 可选 | 查询额度（**只读，不消耗**）。未登录也返回结构化额度槽位 |
 
 ### 社区（`api_community.py`）
@@ -73,6 +74,9 @@ Token 有效期 **72 小时**，过期需重新登录。
 | PATCH | `/api/admin/community/{id}` | 改标签。**词表外 → 400 并点名被拒的标签**（不静默归入「其他」）；上限由服务端给 |
 | DELETE | `/api/admin/community/{id}` | 删条目。**只删 `videos` 那一行**，用户的解析历史一行不动 |
 | GET | `/api/admin/tags/vocabulary` | 标签词表（前端不抄第二份） |
+| GET | `/api/admin/invite-codes` | 邀请码列表（分页 `limit` / `offset`）。**不回显完整码**，只有脱敏提示 `code_masked`（前 4 后 4）——库里存的是 sha256 摘要，明文取不回来 |
+| POST | `/api/admin/invite-codes` | 发一枚邀请码。**明文码只在这一次响应里给**（`item.code`），之后只剩脱敏码。可带 `max_uses`（用几次，默认 1）、`expires_in_hours`（几小时后过期，缺省=永不过期）、`note` |
+| POST | `/api/admin/invite-codes/{id}/revoke` | 作废一枚邀请码（已用完的不受影响） |
 
 ### 支付（会员制当前关闭）
 
@@ -130,6 +134,14 @@ Token 有效期 **72 小时**，过期需重新登录。
 {"url": "https://www.bilibili.com/video/BV1uT4y1P7CX", "language": "zh"}
 ```
 
+可选字段 `summary_template` 选提示词模板（id 见 `GET /api/summary-templates`；**未知 id 直接 422，不静默回退**）：
+
+```json
+{"url": "https://www.bilibili.com/video/BV1uT4y1P7CX", "language": "zh", "summary_template": "brief"}
+```
+
+模板只改总结方向，**不改变事件集合**。命中社区已有结果走复用回放时**不重生成**，模板不生效（既有语义）。
+
 **SSE 事件流（按顺序接收）：**
 
 | 事件 | 数据 | 说明 |
@@ -186,6 +198,14 @@ Token 有效期 **72 小时**，过期需重新登录。
 ```json
 {"email": "user@example.com", "password": "123456"}
 ```
+
+带邀请码注册时多一个 `invite_code` 字段（**可选**，但缺了或码无效会被拒）：
+
+```json
+{"email": "user@example.com", "password": "123456", "invite_code": "XXXXXXXXXXXXXXXXXXXXXXXXXXXX"}
+```
+
+邀请码规则见 `docs/INVITE-CODES.md`：库里只存 sha256 摘要（明文只在发放那一刻给管理员一次）；一个码用满 `max_uses` 次后失效，超期或被管理员作废同样失效；注册失败（码无效 / 邮箱已存在）**不消耗**码次。
 
 **响应：**
 ```json
