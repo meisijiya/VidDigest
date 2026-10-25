@@ -62,6 +62,13 @@ date: 2026-10-24
 - 行为由 `backend/tests/test_ratelimit.py`（15 条）与
   `backend/tests/mutation_ratelimit.py`（8 个变异）钉住；运维口径见
   `docs/OPERATIONS.md` 第 10.4 节。
+- **上限是「每个端点各算各的」**：计数键是「来源 + 端点」，同一个来源在
+  每个端点各有一个计数器，桶与桶互不影响。键里少了端点这一段的话，六个桶
+  会共用一个计数器——判红时用的是**当前桶**的上限，累加的却是**所有桶**的
+  总次数，于是打满解析桶（20 次）之后**第一次**登录就被拒，而症状看着像
+  登录面被撞库（工单 #102）。这条语义由 `backend/tests/test_ratelimit.py` 与
+  `backend/tests/mutation_ratelimit.py` 钉住：镜像的两条用例分别钉住两个
+  方向（解析的流量不污染登录、登录的流量不污染解析）。
 - 「采信 `X-Forwarded-For` 的哪一段」由 [ADR 0022](0022-reverse-proxy-client-identity.md)
   收紧：边缘代理必须**覆盖**这个头，后端取**末段**。上面那两份文件的条数是 0020
   当时的快照，当前的条数与规则以 `backend/tests/test_ratelimit.py`、
