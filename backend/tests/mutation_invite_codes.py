@@ -1,12 +1,12 @@
-"""变异脚本：证明「邀请码注册」那批测试真能杀掉缺陷（工单 #99）。
+"""变异脚本：证明「邀请码注册」那批测试真能杀掉缺陷（工单 #99 / #103）。
 
 逐个破坏 → 跑指定测试 → 必须转红，而且必须是**断言**转红。绿灯不算证据。
 
 ## 为什么值得单独守
 
 「注册要邀请码」是一串**看不见**的约定：码得校验、消费得原子、失效原因得
-分开说、列表不得回显完整码。这些约定写错了，功能测试可能照样全绿——账号
-照建、照发 token，只是闸门形同虚设。
+分开说、列表不得回显完整码、库里不得存明文、码本身得够强。这些约定写错了，
+功能测试可能照样全绿——账号照建、照发 token，只是闸门形同虚设。
 
 所以只能靠「故意打坏 + 看它有没有变红」来证明守得住：测试写完不代表
 它在守，只代表它在**绿**。
@@ -24,8 +24,23 @@
 | M1 | 注册不校验邀请码也能建号，闸门整个敞开 |
 | M2 | 码被「消费」了但计数不涨，同一个名额能被用无数次 |
 | M3 | 已作废、已过期的码照样能注册 |
-| M4 | 管理端列表回显完整码，码从只给一次变成人人都能翻出来 |
+| M4 | 明文落库：库被读走就等于所有在用码可用（工单 #103 的正主） |
 | M5 | 作废端点回 200 但没真作废，管理员以为撤了其实没撤 |
+| M6 | 码长被改短，组合空间掉到 128 bit 以下，库泄露后可离线穷举 |
+| M7 | 有效期按**分钟**算：选 24 小时拿到的是 24 分钟 |
+| M8 | 随机源从 `secrets` 换成 `random`：序列可被预测 |
+
+M4 的形态随工单 #103 变过：只存哈希之后，「列表回显完整码」没法从出口
+复现了（出口手上根本没有明文），于是这条变异改从**存储侧**下手——明文
+落进库里，列表就会把它原样回显出去。后果是同一个（码从「只给一次」变成
+人人能翻出来），复现路径换了。
+
+## 对照组：不该被守住的改动
+
+`CONTROLS` 里的改动**行为完全等价**（乘法的换序、hexdigest 多套一层
+`.lower()`），改完之后测试**必须保持绿**。它们证明那些守卫不是「关键字
+守卫」：一个等价改写如果也能把用例打红，说明守卫越权了——而守卫越权比
+变异存活更严重，它会让人不敢改代码。
 """
 import os
 import re
@@ -100,19 +115,12 @@ MUTATIONS = [
         ],
     ),
     (
-        "M4 列表回显完整码：码从「只给一次」变成人人都能翻出来",
+        "M4 明文落库：库被读走就等于所有在用码可用",
         DATABASE_FILE,
         [
             (
-                '    if include_code:\n'
-                '        item["code"] = row["code"]\n'
-                '    else:\n'
-                '        item["code_masked"] = mask_invite_code(row["code"])\n',
-                '    if include_code:\n'
-                '        item["code"] = row["code"]\n'
-                '    else:\n'
-                '        item["code"] = row["code"]\n'
-                '        item["code_masked"] = mask_invite_code(row["code"])\n',
+                "                        mask_invite_code(code),\n",
+                "                        code,\n",
             ),
         ],
     ),
@@ -123,6 +131,69 @@ MUTATIONS = [
             (
                 '            "UPDATE invite_codes SET revoked = 1 WHERE id = ?", (invite_id,)\n',
                 '            "UPDATE invite_codes SET revoked = 0 WHERE id = ?", (invite_id,)\n',
+            ),
+        ],
+    ),
+    (
+        "M6 码长被改短：组合空间掉到 128 bit 以下，库泄露后可离线穷举",
+        DATABASE_FILE,
+        [
+            (
+                "INVITE_CODE_LENGTH = 28\n",
+                "INVITE_CODE_LENGTH = 20\n",
+            ),
+        ],
+    ),
+    (
+        "M7 有效期按分钟算：选 24 小时拿到的是 24 分钟",
+        DATABASE_FILE,
+        [
+            (
+                "timedelta(hours=hours)",
+                "timedelta(minutes=hours)",
+            ),
+        ],
+    ),
+    (
+        "M8 随机源从 secrets 换成 random：序列可被预测",
+        DATABASE_FILE,
+        [
+            (
+                "import math\nimport secrets\n",
+                "import math\nimport random\nimport secrets\n",
+            ),
+            (
+                "secrets.choice(INVITE_CODE_ALPHABET)",
+                "random.choice(INVITE_CODE_ALPHABET)",
+            ),
+        ],
+    ),
+]
+
+#: (说明, 目标文件, [(模式串, 替换串), ...])
+#:
+#: 对照组：**行为等价的改动**。它们改完之后测试必须**保持绿**——
+#: 转红说明守卫越权（把等价改写也当成缺陷拦），那比变异存活更严重。
+CONTROLS = [
+    (
+        "C1 哈希多套一层 .lower()（hexdigest 本来就是小写）：必须保持绿",
+        DATABASE_FILE,
+        [
+            (
+                '    return hashlib.sha256(code.encode("utf-8")).hexdigest()\n',
+                '    return hashlib.sha256(code.encode("utf-8")).hexdigest().lower()\n',
+            ),
+        ],
+    ),
+    (
+        "C2 熵常量的乘法换序：必须保持绿",
+        DATABASE_FILE,
+        [
+            (
+                "INVITE_CODE_ENTROPY_BITS = INVITE_CODE_LENGTH"
+                " * math.log2(len(INVITE_CODE_ALPHABET))\n",
+                "INVITE_CODE_ENTROPY_BITS = math.log2(len(INVITE_CODE_ALPHABET))"
+                " * INVITE_CODE_LENGTH\n",
             ),
         ],
     ),
@@ -229,6 +300,7 @@ def main():
         DATABASE_FILE: read_source(DATABASE_FILE),
     }
     survived, not_run = [], []
+    control_failed = []
 
     try:
         for name, target_file, edits in MUTATIONS:
@@ -263,6 +335,30 @@ def main():
                 not_run.append(name)
             else:
                 print(f"  [杀死] {name}  ({f} 条转红，伴随断言)")
+
+        # ── 对照组：行为等价的改动，必须保持绿 ──
+        for name, target_file, edits in CONTROLS:
+            original = originals[target_file]
+            mutated = original
+            for pattern, replacement in edits:
+                mutated = mutate_bytes(mutated, pattern, replacement)
+            if mutated == original:
+                print(f"  [未命中] 对照 {name} —— 模式没匹配上")
+                control_failed.append(name)
+                continue
+            write_source(target_file, mutated)
+            try:
+                _, out = run(TARGET)
+            finally:
+                write_source(target_file, original)
+
+            p, f, e, summary = parse_counts(out)
+            if f > 0 or e > 0:
+                # 守卫越权：等价改写被判成缺陷。
+                print(f"  [对照转红] {name}  <-- 守卫越权（{summary}）")
+                control_failed.append(name)
+            else:
+                print(f"  [对照-绿] {name}  ({summary})")
     finally:
         for path, data in originals.items():
             write_source(path, data)
@@ -283,7 +379,18 @@ def main():
         for s in not_run:
             print(f"  - 无效: {s}")
         return 1
-    print(f"结论: {len(MUTATIONS)} 个变异全部被杀死，邀请码注册守得住")
+    if control_failed:
+        print(
+            f"结论: {len(MUTATIONS)} 个变异全被杀死，但 {len(control_failed)} "
+            "个对照组转红 —— 守卫越权"
+        )
+        for s in control_failed:
+            print(f"  - 对照转红: {s}")
+        return 1
+    print(
+        f"结论: {len(MUTATIONS)} 个变异全部被杀死，"
+        f"{len(CONTROLS)} 个对照组保持绿，邀请码注册守得住"
+    )
     return 0
 
 
