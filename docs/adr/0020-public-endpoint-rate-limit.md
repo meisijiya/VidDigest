@@ -59,8 +59,8 @@ date: 2026-10-24
 - 429 的错误体带机器可读的 `code`（`rate_limit`），中文 `error` 只给人看。
   两端靠文案对齐是脆的：改一次文案，前端就把自家闸门说成平台风控。`code`
   是协议，前端先认它，老后端没给 `code` 时才退回认文案。
-- 行为由 `backend/tests/test_ratelimit.py`（15 条）与
-  `backend/tests/mutation_ratelimit.py`（8 个变异）钉住；运维口径见
+- 行为由 `backend/tests/test_ratelimit.py`（23 条）与
+  `backend/tests/mutation_ratelimit.py`（11 个变异）钉住；运维口径见
   `docs/OPERATIONS.md` 第 10.4 节。
 - **上限是「每个端点各算各的」**：计数键是「来源 + 端点」，同一个来源在
   每个端点各有一个计数器，桶与桶互不影响。键里少了端点这一段的话，六个桶
