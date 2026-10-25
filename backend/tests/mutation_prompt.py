@@ -1,4 +1,4 @@
-"""变异脚本：证明「总结正文不许写短」那组用例真在验（可重跑）。
+"""变异脚本：证明「导图结构契约」那组用例真在验（可重跑）。
 
 改提示词很容易，改完门禁照样绿——因为没有任何一条测试会因为
 「提示词又变回只讲格式」而转红。这份脚本逐个破坏 → 跑指定测试 →
@@ -10,7 +10,12 @@
   2. 替换时归一化行尾符——summarizer.py 是 CRLF，模式串按 \\n 写，
      不归一就一个字符都匹配不上，「没命中」长得和「守不住」一模一样。
 
-每个变异跑完立刻还原，绝不留下变异体。
+工单 #106 之后再多守两条：
+  3. **KILLED 必须伴随 AssertionError**。语法错 / KeyError / TypeError
+     让用例变红的方式，和「断言抓到了缺陷」不是一回事——那说明变异体
+     自己坏了，不是护栏在生效。
+  4. 每个变异跑完立刻**字节级**还原，并做一次还原自检（比对原始字节），
+     绝不留下变异体。
 """
 import os
 import re
@@ -25,8 +30,23 @@ TESTS = Path(__file__).resolve().parent
 BACKEND = TESTS.parent
 PY = venv_python()
 PROMPT_FILE = BACKEND / "prompts" / "summarize_full.md"
+MINDMAP_FILE = BACKEND / "mindmap.py"
+DATABASE_FILE = BACKEND / "database.py"
 
-TARGET = ["tests/test_summarize_routes.py", "-k", "TestSummaryPromptContentDemand"]
+#: 提示词契约那组用例（工单 #106 口径 3）。
+PROMPT_TARGET = ["tests/test_summarize_routes.py", "-k", "TestSummaryPromptContentDemand"]
+
+#: 清洗与上限那组用例（工单 #106 口径 1、2）。
+LEVELS_TARGET = ["tests/test_mindmap_levels.py"]
+
+#: 存量重建迁移那组用例（工单 #106 口径 5）。
+MIGRATION_TARGET = ["tests/test_mindmap_migration.py"]
+
+#: 兜底重建落库那组用例（工单 #106 口径 4）。
+STORAGE_TARGET = [
+    "tests/test_summarize_routes.py",
+    "tests/test_mindmap_migration.py",
+]
 
 _COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|error)")
 
@@ -68,37 +88,59 @@ _BLOCK_CHENHE = (
     "- 丙机尘盒是密封设计，不挑灰但不能水洗，长期发霉的风险要自己承担\n"
 )
 
+#: 提示词里那段写明结构上限的话（工单 #106 口径 3）。
+_LIMITS_BLOCK = (
+    "导图的结构上限（超出的部分会被截断，所以要自己控制）：\n"
+    "- 层级最多 3 级：`#` → `##` → `###`，不要出现 `####`；\n"
+    "- 同一个父节点下最多 7 个子节点；\n"
+    "- 至少 2 个二级分支，每个分支下再挂 1-2 个三级要点——只有一层等于没给。\n"
+)
+
 MUTATIONS = [
     (
         "P1 篇幅下限被改成「尽量详实」（= 没有下限）",
+        PROMPT_FILE,
+        PROMPT_TARGET,
         [(r"7. **篇幅**：正文不少于 1500 字（不含标题行）。",
           "7. **篇幅**：正文尽量详实。")],
     ),
     (
         "P2 示例退回占位骨架「（总结正文……）」",
+        PROMPT_FILE,
+        PROMPT_TARGET,
         [("- 三款定价依次为 2199、1299、899 元，差价主要来自导航方案和尘盒结构",
           "（总结正文……）")],
     ),
     (
         "P3 示例要点被削到 9 条（演示不出密度）",
+        PROMPT_FILE,
+        PROMPT_TARGET,
         [(_BLOCK_YUEZHANG, ""), (_BLOCK_CHENHE, "")],
     ),
     (
         "P4 导图字数限制去掉作用域隔离（会泛化成全文基调）",
+        PROMPT_FILE,
+        PROMPT_TARGET,
         [("（下面的长度与节点数限制**只适用于思维导图**，不要套用到第一部分的总结正文。\n"
           "导图刻意精简、总结正文刻意详实，这是两件不同的事。）",
           "（导图按下面的要求输出。）")],
     ),
     (
         "P5 标签数量限制去掉作用域隔离",
+        PROMPT_FILE,
+        PROMPT_TARGET,
         [("（同样只约束标签本身，不影响前两部分。）", "")],
     ),
     (
         "P6 「覆盖优先 / 不要编造」被软化",
+        PROMPT_FILE,
+        PROMPT_TARGET,
         [("**覆盖优先**", "**自由取舍**"), ("不要编造", "可以补充")],
     ),
     (
         "P7 正反例对照被删（只说「要有内容」不够）",
+        PROMPT_FILE,
+        PROMPT_TARGET,
         [("   - 反例：`成本分析：不同模型的 API 费用对比`（只说了这节要讲什么，没有内容）\n"
           "   - 反例：`做法介绍：介绍这道菜的基本做法`（同上）\n"
           "   - 正例：`做法介绍：先用盐水浸泡 20 分钟去腥，两面煎至金黄后转小火慢炖 40 分钟`\n"
@@ -110,6 +152,8 @@ MUTATIONS = [
         # 第二部分之后 —— 作用域错位，模型会把「覆盖优先 / 1500 字」读成
         # 导图或标签的要求。
         "P8 内容要求被挪到第二部分之后（作用域错位）",
+        PROMPT_FILE,
+        PROMPT_TARGET,
         [
             (
                 "二、内容（比上面四条格式更重要，务必遵守）\n"
@@ -138,6 +182,58 @@ MUTATIONS = [
             ),
         ],
     ),
+    # ── 工单 #106 的结构契约 ──────────────────────────────────────────
+    (
+        # 口径 1：提升根标题时后代必须同步下移。不下移的话，`###` 会变成
+        # 比根深两级，在 3 级上限下整棵被截掉——5 节点 3 级只剩 3 节点。
+        "M1 提升根标题时后代不再同步下移（子节点保留模型给的原级别）",
+        MINDMAP_FILE,
+        LEVELS_TARGET,
+        [("    return parent_level + 1\n", "    return child.level\n")],
+    ),
+    (
+        # 口径 2：三个上限得真的被执行。调大它们，超限输入就不再被截断。
+        "M2 三个结构上限被调大（超限输入不再被截断）",
+        MINDMAP_FILE,
+        LEVELS_TARGET,
+        [
+            ("MAX_HEADING_LEVEL = 3", "MAX_HEADING_LEVEL = 9"),
+            ("MAX_CHILDREN_PER_NODE = 7", "MAX_CHILDREN_PER_NODE = 99"),
+            ("MAX_TOTAL_NODES = 30", "MAX_TOTAL_NODES = 999"),
+        ],
+    ),
+    (
+        # 口径 3：提示词里必须写明结构上限，否则模型不知道能有多深。
+        "M3 提示词里的导图结构上限段被删掉",
+        PROMPT_FILE,
+        PROMPT_TARGET,
+        [(_LIMITS_BLOCK, "")],
+    ),
+    (
+        # 口径 3 的另一半：few-shot 样例必须是真的多层。退回单层单分支，
+        # 模型被教出来的导图就又只有一层。
+        "M4 提示词里的导图样例退回单层单分支",
+        PROMPT_FILE,
+        PROMPT_TARGET,
+        [('{"mindmap": "# 视频主题\\n## 主要结论\\n### 结论要点\\n## 关键数据\\n'
+          '### 对比数据", "tags": ["编程", "人工智能"]}',
+          '{"mindmap": "# 视频思维导图\\n## 章节\\n### 要点", "tags": ["编程", "人工智能"]}')],
+    ),
+    (
+        # 口径 4：退化检测被短路，兜底重建就再也不会触发。
+        "M5 退化检测被短路（退化导图不再触发兜底重建）",
+        MINDMAP_FILE,
+        STORAGE_TARGET,
+        [("    return mindmap_depth(md) < 2\n", "    return False\n")],
+    ),
+    (
+        # 口径 5：存量导图的写迁移空转，老库里的光杆永远重建不了。
+        "M6 存量导图重建迁移空转（退化行不被重建）",
+        DATABASE_FILE,
+        MIGRATION_TARGET,
+        [('            if not is_degenerate(row["mindmap_md"]):\n                continue\n',
+          "            continue\n")],
+    ),
 ]
 
 
@@ -160,59 +256,70 @@ def parse_counts(out):
 
 
 def failed_names(out):
-    return re.findall(r"(?:FAILED|_+ Test\S+)", out)
+    return re.findall(r"(?:FAILED\s+\S+::\S+|_+ Test\S+)", out)
 
 
 def main():
-    code, out = run(["tests/test_summarize_routes.py"])
-    if code != 0:
-        print("FAIL: 基线不绿，无法评估变异")
-        print(out[-2000:])
-        return 9
-    print(f"基线: {parse_counts(out)[2]}")
+    # 1. 每个目标都要能收集到测试，且它自己是绿的
+    for label, target in (
+        ("提示词契约", PROMPT_TARGET),
+        ("清洗与上限", LEVELS_TARGET),
+        ("存量重建", MIGRATION_TARGET),
+    ):
+        code, out = run(list(target))
+        p, f, summary = parse_counts(out)
+        if code != 0:
+            print(f"FAIL: 目标「{label}」基线不绿，无法评估变异")
+            print(out[-2000:])
+            return 9
+        if p + f == 0:
+            print(f"FAIL: 目标「{label}」{target} 收集到 0 个测试，变异评估无意义")
+            print(out[-1200:])
+            return 9
+        print(f"基线 {label}: {summary}")
+    print()
 
-    code, out = run(list(TARGET))
-    p, f, summary = parse_counts(out)
-    if p + f == 0:
-        print(f"FAIL: 目标 {TARGET} 收集到 0 个测试，变异评估无意义")
-        print(out[-1200:])
-        return 9
-    print(f"目标收集: {p + f} 条\n")
+    killed, survived, not_run, broken, restore_failed = 0, [], [], [], []
 
-    original = read_source(PROMPT_FILE)
-    killed, survived, not_run = 0, [], []
-
-    try:
-        for name, pairs in MUTATIONS:
-            mutated = mutate_bytes(original, pairs)
-            if mutated == original:
-                print(f"  [未命中] {name} —— 模式没匹配上，先更新脚本，别跳过")
-                not_run.append(name)
-                continue
-            write_source(PROMPT_FILE, mutated)
-            try:
-                code, out = run(list(TARGET))
-                _, failed, summary = parse_counts(out)
-                if failed == 0:
-                    survived.append(f"{name} —— 存活（{summary}，这组用例没在验它）")
-                else:
-                    killed += 1
-                    names = failed_names(out)
-                    print(f"KILLED  {name}")
-                    print(f"        转红于: {', '.join(n.strip('_ ') for n in names[:4])}")
-            finally:
-                write_source(PROMPT_FILE, original)
-    finally:
-        write_source(PROMPT_FILE, original)
+    for name, path, target, pairs in MUTATIONS:
+        original = read_source(path)
+        mutated = mutate_bytes(original, pairs)
+        if mutated == original:
+            print(f"  [未命中] {name} —— 模式没匹配上，先更新脚本，别跳过")
+            not_run.append(name)
+            continue
+        write_source(path, mutated)
+        try:
+            code, out = run(list(target))
+            _, failed, summary = parse_counts(out)
+            if failed == 0:
+                survived.append(f"{name} —— 存活（{summary}，这组用例没在验它）")
+            elif "AssertionError" not in out:
+                # 变异体自己坏了（语法错、KeyError……），不是护栏在生效
+                broken.append(f"{name} —— 用例红了但没有 AssertionError：{summary}")
+            else:
+                killed += 1
+                names = failed_names(out)
+                print(f"KILLED  {name}")
+                print(f"        转红于: {', '.join(n.strip('_ ') for n in names[:4])}")
+        finally:
+            write_source(path, original)
+            if read_source(path) != original:
+                print(f"  [还原失败] {name} —— 文件没能字节级还原")
+                restore_failed.append(name)
 
     print("=" * 72)
     print(f"变异结果：{killed}/{len(MUTATIONS)} 杀，"
-          f"{len(survived)} 存活，{len(not_run)} 未命中")
+          f"{len(survived)} 存活，{len(not_run)} 未命中，{len(broken)} 变异体自坏")
     for s in survived:
         print("  存活: " + s)
     for s in not_run:
         print("  未命中: " + s)
-    return 1 if (survived or not_run) else 0
+    for s in broken:
+        print("  变异体自坏: " + s)
+    for s in restore_failed:
+        print("  还原失败: " + s)
+    return 1 if (survived or not_run or broken or restore_failed) else 0
 
 
 if __name__ == "__main__":

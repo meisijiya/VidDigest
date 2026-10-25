@@ -11,6 +11,11 @@ from contextlib import contextmanager
 # 所以顶层引入不会绕成环——与 model_catalog 那个刻意延迟的 import 不同。
 from url_canonical import canonical_video_url
 
+# 思维导图的结构规则（工单 #106 / ADR 0027）。同样不 import 本项目的任何
+# 东西（纯文本处理），所以顶层引入不会绕成环——存量导图重建要用它，
+# 而导图规则的唯一真值必须只有一份。
+from mindmap import is_degenerate, rebuild_mindmap_from_summary
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
 
 # 线程本地连接缓存（uvicorn 线程池复用线程，连接随之复用）
@@ -446,7 +451,12 @@ def init_db():
         # parse_history，而重复行会让社区搜索的候选集出现同一条内容两次。
         # 排在 executescript 之后是因为表得先存在（全新库那一刻还没建）。
         _migrate_parse_history_unique_url(conn)
+        # 存量导图重建（工单 #106 / ADR 0027）：退化（层级 <2）的导图按新
+        # 规则重建，依据是同一行的总结正文。排在去重之后是因为去重会
+        # 删行，先删完再扫少扫几行；排在 _create_video_search_index 之后
+        # 是因为那条 UPDATE 会触发 videos_fts_au 触发器——索引表得先在。
         _create_video_search_index(conn)
+        _migrate_mindmap_levels(conn)
         # 模型清单（工单 #13 / ADR 0011）是**另一张表**，DDL 与播种都在
         # model_catalog 里——那张表不属于 users 域，塞进来只会让两条不同的
         # 迁移线索混在同一个文件里。
@@ -997,6 +1007,56 @@ def _migrate_parse_history_unique_url(conn) -> int:
         "ON parse_history(user_id, video_url)"
     )
     return removed
+
+
+def _migrate_mindmap_levels(conn) -> int:
+    """按新规则重建存量导图（工单 #106 / ADR 0027）。返回被重建的行数。
+
+    ## 为什么需要这一步
+
+    导图退化（只剩一根）发生在**写库那一刻**：模型给的导图在清洗后层级
+    不足 2，落库的就是一条光杆。而清洗只作用于**新**的总结——存量行里的
+    导图永远不会被再洗一次。所以「只对新总结生效」等于没改：库里躺着的
+    存量导图还是一根光杆。
+
+    ## 重建依据
+
+    同一行的总结正文（``summary_md``）里已经有现成的结构（``##`` /
+    ``###`` 标题），它是重建导图唯一可靠的来源——不用猜，也不用重新
+    调模型。
+
+    ## 例外：没有正文的记录保持原样
+
+    没有总结正文就没有重建依据。这类行**原样保留**：宁可留一根光杆，
+    也不拿别处的文字编一棵导图出来。
+
+    ## 幂等
+
+    重建后的导图层级 ≥2，下一次启动就不再命中「退化」这条条件；即使
+    命中，重建结果与原值相同也不会写库。重复执行不产生额外改动。
+    """
+    rebuilt = 0
+    for table in ("videos", "parse_history"):
+        rows = conn.execute(
+            f"SELECT id, summary_md, mindmap_md FROM {table} "
+            f"WHERE COALESCE(mindmap_md, '') != ''"
+        ).fetchall()
+        for row in rows:
+            if not is_degenerate(row["mindmap_md"]):
+                continue
+            summary = (row["summary_md"] or "").strip()
+            if not summary:
+                # 无正文：没有重建依据，保持原样
+                continue
+            new_md = rebuild_mindmap_from_summary(summary)
+            if not new_md or new_md == row["mindmap_md"]:
+                continue
+            conn.execute(
+                f"UPDATE {table} SET mindmap_md = ? WHERE id = ?",
+                (new_md, row["id"]),
+            )
+            rebuilt += 1
+    return rebuilt
 
 
 def _migrate_history_favorite_column(conn) -> None:
