@@ -210,19 +210,54 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 ### AI 服务（不填就只有下载能用）
 
-程序读**三个 key** 和两个百炼端点/模型变量，作用各不相同：
+平台模型（摘要、思维导图、标签、追问）走**一个** provider。它的凭据、端点、模型
+都在环境变量里：
 
 | 变量 | 用途 | 从哪拿 | 缺了会怎样 |
 |------|------|--------|-----------|
-| `ALIYUN_BAILIAN_API_KEY` | **主用**：摘要、思维导图、标签、追问（阿里云百炼 OpenAI 兼容模式） | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) → API-KEY 管理 | 走下面的兜底；两个都没有 ⇒ AI 功能直接报错 |
+| `ALIYUN_BAILIAN_API_KEY` | **必填**：平台模型的凭据（阿里云百炼 OpenAI 兼容模式） | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) → API-KEY 管理 | AI 功能直接报错（平台侧**没有兜底 provider**，见下面的「提供商配置」） |
 | `ALIYUN_BAILIAN_BASE_URL` | 端点，默认 `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼控制台给的 workspace 专属地址 | 用默认值 |
-| `ALIYUN_BAILIAN_MODEL` | 模型，默认取模型清单表里的 `bailian.default_model`（表里没配时回落 `qwen-plus`） | 同上 | 用默认值 |
-| `DEEPSEEK_API_KEY` | **兜底**：百炼没配时用它 | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | 同上 |
+| `ALIYUN_BAILIAN_MODEL` | 模型，**留空则取模型清单表里的 `bailian.default_model`**（当前 `qwen3.7-flash`） | 同上 | 用清单表里的值 |
+| `ALIYUN_BAILIAN_PROTOCOL` | 协议：`openai`（默认）/ `anthropic` | —— | 用 `openai` |
+| `ALIYUN_BAILIAN_ENABLE_THINKING` | 思考开关，默认**关** | —— | 关 |
 | `OPENAI_API_KEY` | **只给 Whisper ASR**：视频没有字幕时转写音频 | [platform.openai.com](https://platform.openai.com/) | 跳过 ASR，不影响其它 AI 功能 |
 
-两个 key 都在时**百炼优先**（`backend/summarizer.py` 里读环境变量的顺序）。用户自己带凭据（BYOK）时，平台 key 不参与。
+> **环境变量优先于模型清单表。** `ALIYUN_BAILIAN_MODEL` 一旦写了，就盖过清单表里的
+> 平台默认模型。部署里若留着 `ALIYUN_BAILIAN_MODEL=qwen-turbo`（那个模型名在百炼
+> 工作空间端点上是 404），要跟着平台模型走就把它删掉。
 
-模板里的 `ALIYUN_BAILIAN_MODEL=qwen-turbo` 是**显式选择**：留空则走模型清单表里的 `bailian.default_model`。
+> 平台侧**没有兜底 provider**：只配了 `DEEPSEEK_API_KEY` 不算配置好了，进程会带着
+> 明确的报错停下来。原因见 [ADR 0028](docs/adr/0028-platform-model-and-provider-protocols.md)：
+> 只换模型名不换端点必然 404，兜底链还会把第一个 provider 的真实错误盖住。
+
+用户自己带凭据（BYOK）时，平台 key 不参与。
+
+### 🧩 提供商配置
+
+平台模型接的是**一个** provider，它由四件事决定：**协议 + 端点 + 模型 + key**，
+四件都来自环境变量（不落库、不进仓库）：
+
+| 要素 | 变量 | 取值 |
+|------|------|------|
+| 协议 | `ALIYUN_BAILIAN_PROTOCOL` | `openai`（默认，OpenAI 兼容协议）/ `anthropic`（Anthropic Messages API） |
+| 端点 | `ALIYUN_BAILIAN_BASE_URL` | OpenAI 兼容协议填**前缀**（`.../compatible-mode/v1`）；Anthropic 填**根**（`https://api.anthropic.com`，尾部带 `/v1` 也不会变成 `/v1/v1/messages`） |
+| 模型 | `ALIYUN_BAILIAN_MODEL` | 留空 = 取模型清单表里的平台默认模型（当前 `qwen3.7-flash`） |
+| key | `ALIYUN_BAILIAN_API_KEY` | provider 的凭据 |
+
+两种协议都支持，**当前只配置百炼**（`openai` 兼容模式）。Anthropic 那条路用仓库
+已有的 `requests` 手写适配层（POST `/v1/messages` + `x-api-key` +
+`anthropic-version` + SSE 流），不装 anthropic SDK。
+
+**平台模型 vs 用户自带凭据（BYOK）**：BYOK 是**用户自己**的 key 与端点，只影响他自己
+那一次调用；平台模型是**服务方**的 key，走模型清单表里的默认模型。两者互不影响，
+BYOK 也不是「换个 provider 的办法」。
+
+> **别把 key 提交进仓库。** 真值只进 `backend/.env`（已被 `.gitignore` 挡住）；但
+> `.gitignore` 挡得住文件，挡不住「把口令抄进文档」，所以门禁第 4 关
+> （`scripts/check_secrets.py`）还会扫工作树与全部可达 git 历史。模板
+> `backend/.env.example` 里刻意不留任何具体凭据字符串。
+
+**换 provider 要改环境变量并重启**：协议与端点是启动时读一次的。
 
 ### 其它必填项
 
@@ -325,7 +360,7 @@ openssl rand -hex 32
 - **"没有可用的字幕"** → 该视频没有字幕轨道，不支持 AI 总结
 - **"今日次数已用完"** → 每账号每日 3 次，次日 0 点重置
 - **"请先登录"** → 注册/登录后使用
-- **无响应** → 检查 `.env` 中的 LLM API Key（`ALIYUN_BAILIAN_API_KEY` 或 `DEEPSEEK_API_KEY`）
+- **无响应** → 检查 `.env` 中的 LLM API Key（`ALIYUN_BAILIAN_API_KEY`；平台侧没有兜底 provider）
 </details>
 
 <details>

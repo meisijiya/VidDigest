@@ -32,6 +32,9 @@ PY = venv_python()
 PROMPT_FILE = BACKEND / "prompts" / "summarize_full.md"
 MINDMAP_FILE = BACKEND / "mindmap.py"
 DATABASE_FILE = BACKEND / "database.py"
+PROVIDER_FILE = BACKEND / "provider_config.py"
+SUMMARIZER_FILE = BACKEND / "summarizer.py"
+CATALOG_FILE = BACKEND / "model_catalog.py"
 
 #: 提示词契约那组用例（工单 #106 口径 3）。
 PROMPT_TARGET = ["tests/test_summarize_routes.py", "-k", "TestSummaryPromptContentDemand"]
@@ -47,6 +50,15 @@ STORAGE_TARGET = [
     "tests/test_summarize_routes.py",
     "tests/test_mindmap_migration.py",
 ]
+
+#: provider 抽象与平台口径那组用例（工单 #107 口径 1、2、4）。
+PROVIDER_TARGET = [
+    "tests/test_provider_config.py",
+    "tests/test_platform_provider.py",
+]
+
+#: 模型清单与存量迁移那组用例（工单 #107 口径 3）。
+CATALOG_TARGET = ["tests/test_model_catalog.py"]
 
 _COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|error)")
 
@@ -234,6 +246,63 @@ MUTATIONS = [
         [('            if not is_degenerate(row["mindmap_md"]):\n                continue\n',
           "            continue\n")],
     ),
+    # ── 工单 #107 的 provider 口径 ───────────────────────────────
+    (
+        # 口径 1：DeepSeek 兜底没删干净。只配了 DEEPSEEK_API_KEY 也能构造出
+        # 客户端——「配了就能用」的错觉回来了，而它打的仍是百炼端点，必然 404。
+        "V1 DeepSeek 兜底分支被恢复（只配 DeepSeek key 也算配置好了）",
+        SUMMARIZER_FILE,
+        PROVIDER_TARGET,
+        [('        bailian_key = os.getenv("ALIYUN_BAILIAN_API_KEY", "").strip()\n'
+          "        if not bailian_key:\n"
+          "            # ── 没配置平台 key（**没有兜底链**，工单 #107）──\n",
+          '        bailian_key = os.getenv("ALIYUN_BAILIAN_API_KEY", "").strip()\n'
+          "        if not bailian_key:\n"
+          '            bailian_key = os.getenv("DEEPSEEK_API_KEY", "").strip()\n'
+          "        if not bailian_key:\n"
+          "            # ── 没配置平台 key（**没有兜底链**，工单 #107）──\n")],
+    ),
+    (
+        # 口径 2：协议路由对调。配成 anthropic 的 provider 拿到 OpenAI 兼容
+        # 客户端（反之亦然）——真实环境里表现成一个看不懂的 404/400。
+        "V2 provider 协议路由对调（anthropic 配置走了 OpenAI 兼容客户端）",
+        PROVIDER_FILE,
+        PROVIDER_TARGET,
+        [("    protocol = normalize_protocol(settings.protocol)\n"
+          "    if protocol == PROTOCOL_OPENAI:\n"
+          "        return _build_openai_client(settings, openai_factory)\n"
+          "    return _build_anthropic_client(settings)\n",
+          "    protocol = normalize_protocol(settings.protocol)\n"
+          "    if protocol == PROTOCOL_OPENAI:\n"
+          "        return _build_anthropic_client(settings)\n"
+          "    return _build_openai_client(settings, openai_factory)\n")],
+    ),
+    (
+        # 口径 3：清单表里的平台默认模型没改成新模型。新库立刻就对不上。
+        "V3 平台默认模型退回旧值 qwen-plus（清单表没跟上）",
+        CATALOG_FILE,
+        CATALOG_TARGET,
+        [('PLATFORM_DEFAULT_MODEL = "qwen3.7-flash"', 'PLATFORM_DEFAULT_MODEL = "qwen-plus"')],
+    ),
+    (
+        # 口径 3 的另一半：存量库靠迁移收敛，迁移空转就等于没改。
+        # 改的是**参数**而不是 SQL 字符串：占位符个数与参数个数必须对得上，
+        # 否则整条 SQL 直接报错——那是「变异体自己坏了」，不是「护栏在生效」。
+        "V4 存量库的默认模型迁移空转（老库永远停在旧模型）",
+        CATALOG_FILE,
+        CATALOG_TARGET,
+        [("        LEGACY_PLATFORM_DEFAULT_MODELS,\n",
+          '        ("__never__",),\n')],
+    ),
+    (
+        # 反向对照：provider 抽象里**与契约无关**的旋钮（请求超时）改了，
+        # 不该让任何用例转红。守卫越权比变异存活更严重。
+        "V5 反向对照：请求超时从 120s 改成 180s（不该让任何用例转红）",
+        PROVIDER_FILE,
+        PROVIDER_TARGET,
+        [("DEFAULT_TIMEOUT = 120.0", "DEFAULT_TIMEOUT = 180.0")],
+        "GREEN",
+    ),
 ]
 
 
@@ -265,6 +334,8 @@ def main():
         ("提示词契约", PROMPT_TARGET),
         ("清洗与上限", LEVELS_TARGET),
         ("存量重建", MIGRATION_TARGET),
+        ("provider 协议与平台口径", PROVIDER_TARGET),
+        ("模型清单与迁移", CATALOG_TARGET),
     ):
         code, out = run(list(target))
         p, f, summary = parse_counts(out)
@@ -280,8 +351,13 @@ def main():
     print()
 
     killed, survived, not_run, broken, restore_failed = 0, [], [], [], []
+    green_ok, over_killed = 0, []
 
-    for name, path, target, pairs in MUTATIONS:
+    for entry in MUTATIONS:
+        # 第 5 个元素是**期望**：默认 "KILLED"（必须转红）；
+        # "GREEN" 是反向对照（必须**不**转红——守卫越权比变异存活更严重）。
+        name, path, target, pairs = entry[:4]
+        expect = entry[4] if len(entry) > 4 else "KILLED"
         original = read_source(path)
         mutated = mutate_bytes(original, pairs)
         if mutated == original:
@@ -293,23 +369,38 @@ def main():
             code, out = run(list(target))
             _, failed, summary = parse_counts(out)
             if failed == 0:
-                survived.append(f"{name} —— 存活（{summary}，这组用例没在验它）")
+                if expect == "GREEN":
+                    green_ok += 1
+                    print(f"GREEN   {name}（反向对照：不该转红，确实没红）")
+                else:
+                    survived.append(f"{name} —— 存活（{summary}，这组用例没在验它）")
             elif "AssertionError" not in out:
                 # 变异体自己坏了（语法错、KeyError……），不是护栏在生效
                 broken.append(f"{name} —— 用例红了但没有 AssertionError：{summary}")
             else:
-                killed += 1
-                names = failed_names(out)
-                print(f"KILLED  {name}")
-                print(f"        转红于: {', '.join(n.strip('_ ') for n in names[:4])}")
+                if expect == "GREEN":
+                    over_killed.append(
+                        f"{name} —— 反向对照转红了（守卫越权）：{summary}"
+                    )
+                else:
+                    killed += 1
+                    names = failed_names(out)
+                    print(f"KILLED  {name}")
+                    print(f"        转红于: {', '.join(n.strip('_ ') for n in names[:4])}")
         finally:
             write_source(path, original)
             if read_source(path) != original:
                 print(f"  [还原失败] {name} —— 文件没能字节级还原")
                 restore_failed.append(name)
 
+    expect_killed = sum(
+        1 for e in MUTATIONS
+        if (e[4] if len(e) > 4 else "KILLED") == "KILLED"
+    )
+    expect_green = len(MUTATIONS) - expect_killed
     print("=" * 72)
-    print(f"变异结果：{killed}/{len(MUTATIONS)} 杀，"
+    print(f"变异结果：{killed}/{expect_killed} 杀，"
+          f"反向对照 {green_ok}/{expect_green} 条保持绿，"
           f"{len(survived)} 存活，{len(not_run)} 未命中，{len(broken)} 变异体自坏")
     for s in survived:
         print("  存活: " + s)
@@ -317,9 +408,11 @@ def main():
         print("  未命中: " + s)
     for s in broken:
         print("  变异体自坏: " + s)
+    for s in over_killed:
+        print("  反向对照转红: " + s)
     for s in restore_failed:
         print("  还原失败: " + s)
-    return 1 if (survived or not_run or broken or restore_failed) else 0
+    return 1 if (survived or not_run or broken or restore_failed or over_killed) else 0
 
 
 if __name__ == "__main__":

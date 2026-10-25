@@ -22,6 +22,10 @@ import model_catalog
 # 任何东西，所以顶层引入不会绕成环——与 model_catalog 那个刻意延迟的
 # import 不同（同样的话见 database.py 顶部）。
 import mindmap
+# provider 配置抽象（工单 #107 / ADR 0028）：协议（OpenAI 兼容 / Anthropic
+# Messages API）、端点与客户端构造都收在那个模块里，本文件只管「用哪个
+# provider、哪个模型、什么参数」。
+import provider_config
 
 logger = logging.getLogger("summarizer")
 
@@ -720,12 +724,13 @@ def _parse_tail(tail: str) -> tuple[str, list]:
 #: 平台默认模型的**最后兜底**，只在模型清单表读不到时用（工单 #13 / ADR 0011）。
 #:
 #: 改动前这里写死的是 ``qwen-turbo``，而前端 byok.js:50 写的是 ``qwen-plus``
-#: ——两份硬编码已经在漂移。本轮把清单入库并**收敛到 qwen-plus**（表里
-#: bailian 行的 default_model 就是它），兜底值跟着收敛。
+#: ——两份硬编码已经在漂移。清单入库后收敛过一次（到 qwen-plus），
+#: 本轮再收敛到平台统一的 qwen3.7-flash（工单 #107 / ADR 0028），
+#: 兜底值跟着清单表走。
 #:
 #: 兜底**不是**默认路径：读表失败会打一条 warning（model_catalog 侧），
 #: 所以「静默用一个可能已下架的模型名」这件事不会发生。
-_FALLBACK_BAILIAN_MODEL = "qwen-plus"
+_FALLBACK_BAILIAN_MODEL = "qwen3.7-flash"
 
 
 def _bailian_default_model() -> str:
@@ -735,6 +740,63 @@ def _bailian_default_model() -> str:
     并且那条 warning 由 model_catalog 打——回落本身必须是**有痕迹**的。
     """
     return model_catalog.platform_default_model("bailian") or _FALLBACK_BAILIAN_MODEL
+
+
+# ── 平台模型的参数口径（工单 #107 / ADR 0028）────────────────
+#:
+#: 改动前散在调用点上的字面量：temperature 0.7、max_tokens 4096、
+#: 字幕截断 15000 字。现在收成下面这组常量，理由写在各自注释里。
+
+#: 采样温度。0.7 → 0.4。
+#:
+#: 总结是**照着字幕讲**的任务，不是创作任务：温度高会带来自说自话与
+#: 格式漂移，而格式一漂，思维导图与标签的解析就跟着不稳。
+TEMPERATURE = 0.4
+
+#: 一次总结的输出 token 上限。4096 → 8192。
+#:
+#: 改动前 4096 撞的是「思维链 + 正文」共用一个预算，而该模型的思考
+#: **默认开着**（实测同一问句 845 vs 47 tokens）——不关掉思考，正文能分到
+#: 的预算会被思维链先吃掉，长总结于是提前截断。
+SUMMARY_MAX_TOKENS = 8192
+
+#: 一次追问的输出 token 上限。追问只答一句话，给得少。
+CHAT_MAX_TOKENS = 2048
+
+#: 送进**总结**提示词的字幕字符上限。15000 → 60000。
+#:
+#: 该模型上下文 1M、最大输入 991808，15000 字在这里不是「保护模型」，
+#: 是「扔掉一大半素材」——长视频的后半段直接不进提示词。
+SUBTITLE_CHAR_LIMIT = 60000
+
+#: 送进**追问**提示词的字幕字符上限。问答应答得快，保留的上下文比总结少。
+CHAT_SUBTITLE_CHAR_LIMIT = 12000
+
+#: 平台模型的思考开关（工单 #107 / ADR 0028）。
+#:
+#: 该模型**默认开着**思考。不显式关掉的话，思维链会先吃掉 max_tokens
+#: 的预算（实测同一问句 845 vs 47 tokens），长总结会提前截断。
+#:
+#: 取值：
+#:   * 不设置 → ``False``（显式关思考，默认）
+#:   * ``true`` / ``1`` / ``on`` → ``True``（显式开思考）
+#:   * ``omit`` / ``none`` → ``None``（**不发**这个参数：换成不认
+#:     ``enable_thinking`` 的 OpenAI 兼容端点、报 400 时用这个）
+ENABLE_THINKING_ENV = "ALIYUN_BAILIAN_ENABLE_THINKING"
+
+
+def _enable_thinking() -> bool | None:
+    """读平台模型的思考开关。认不出的值就报错——不猜。"""
+    raw = os.getenv(ENABLE_THINKING_ENV, "").strip().lower()
+    if raw in ("", "0", "false", "off", "no"):
+        return False
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    if raw in ("omit", "none", "null"):
+        return None
+    raise ValueError(
+        f"{ENABLE_THINKING_ENV} 只能是 true / false / omit，收到 {raw!r}"
+    )
 
 
 # ── 流式响应帧的读取 ────────────────────────────────────
@@ -774,18 +836,23 @@ class VideoSummarizer:
            - 标签（同一份 JSON，只能取自固定词表）
            - AI 问答（流式，基于字幕上下文）
 
-    支持后端（按优先级读取环境变量）:
+    平台 provider（读环境变量）:
       1. 阿里云百炼 OpenAI 兼容模式（默认推荐）
            - ALIYUN_BAILIAN_API_KEY   必填
            - ALIYUN_BAILIAN_BASE_URL  可选，默认 https://dashscope.aliyuncs.com/compatible-mode/v1
            - ALIYUN_BAILIAN_MODEL     可选，默认取模型清单表里的 bailian.default_model
-                                    （表里没配时回落 qwen-plus，见工单 #13）
-      2. DeepSeek（兼容旧配置）
-           - DEEPSEEK_API_KEY         必填
+                                    （表里没配时回落 qwen3.7-flash，见工单 #13 / #107）
+      2. Anthropic Messages API 协议（可选）
+           - ALIYUN_BAILIAN_PROTOCOL  可选，openai（默认）或 anthropic
+           - ALIYUN_BAILIAN_ENABLE_THINKING  可选，false（默认，显式关思考）/ true / omit
 
-    配置 : 在 backend/.env 中设置任一组即可（.env 已被 .gitignore 忽略）
+    **没有兜底链**（工单 #107）：provider 失败就直接报错。原来那段
+    DeepSeek 兜底被删掉了——只换模型名不换端点必然 404，而兜底链会把
+    真实错误盖住，让人排查时看到的是一个与原因无关的报文。
 
-    模型 : qwen-turbo / deepseek-chat 等（兼容 OpenAI ChatCompletion 接口）
+    配置 : 在 backend/.env 中设置（.env 已被 .gitignore 忽略）
+
+    模型 : 平台默认 qwen3.7-flash；用户自带凭据时用用户自己的模型名
 
     安全提醒:
       - 永远不要在代码中硬编码 API Key
@@ -798,19 +865,19 @@ class VideoSummarizer:
     DEFAULT_BAILIAN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     # 默认模型不再写死：它在 model_providers 表里，由 __init__ 取一次
     # 存成 self._bailian_model（工单 #13）。改动前这一行是 "qwen-turbo"，
-    # 与前端 byok.js 的 "qwen-plus" 漂移，本轮收敛到表里的 qwen-plus。
-    DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-    DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+    # 与前端 byok.js 的 "qwen-plus" 漂移；工单 #107 再收敛到 qwen3.7-flash。
 
     def __init__(self, credential: UserCredential | None = None):
         """
         LC :: 初始化 LLM 客户端
         ──────────────────────────────
-        后端选择优先级:
-          1. 阿里云百炼 ALIYUN_BAILIAN_API_KEY（配置了即生效）
-          2. DeepSeek DEEPSEEK_API_KEY（兜底）
+        平台 provider：阿里云百炼 ALIYUN_BAILIAN_API_KEY（配置了即生效）。
 
-        任意一组未配置都会抛出 ValueError，阻止后续调用。
+        **没有兜底链**（工单 #107）：只配了 DeepSeek 的 key **不**算配置好了
+        ——provider 失败就直接报错。原来的 DeepSeek 兜底被删掉了：只换模型名
+        不换端点必然 404，而兜底会把真实错误盖住。
+
+        未配置平台 key 会抛 ValueError，阻止后续调用。
         视频下载功能不受此影响。
 
         传入 ``credential`` 时改用**用户自带凭据**（BYOK）：只有认证头换成
@@ -848,41 +915,41 @@ class VideoSummarizer:
             return
 
         bailian_key = os.getenv("ALIYUN_BAILIAN_API_KEY", "").strip()
-        deepseek_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        if not bailian_key:
+            # ── 没配置平台 key（**没有兜底链**，工单 #107）──
+            # 只配了 DEEPSEEK_API_KEY 不再算数：那段兜底被删了，
+            # 因为只换模型名不换端点必然 404，而兜底会把真实错误盖住。
+            raise ValueError(
+                "未检测到 AI 服务 API Key，请配置环境变量：\n"
+                "  └─ 阿里云百炼（平台模型）:\n"
+                "      ALIYUN_BAILIAN_API_KEY=sk-xxx\n"
+                "      ALIYUN_BAILIAN_MODEL=qwen3.7-flash   # 可选，不配则取模型清单表里的默认值\n"
+                "  获取地址: https://bailian.console.aliyun.com/"
+            )
 
-        if bailian_key:
-            # ── 阿里云百炼（OpenAI 兼容模式）──
-            self.provider = "aliyun_bailian"
-            self.client = OpenAI(
-                api_key=bailian_key,
+        # ── 阿里云百炼 ──
+        # 协议、端点与客户端构造都交给 provider_config（工单 #107 / ADR 0028）：
+        # OpenAI 兼容协议走 SDK；Anthropic Messages API 走 requests 手写的适配层。
+        # 本仓不装 anthropic SDK——多一个依赖就多一份升级负担，适配层只有几十行。
+        self.provider = "aliyun_bailian"
+        self.model = os.getenv(
+            "ALIYUN_BAILIAN_MODEL",
+            self._bailian_model,
+        ).strip() or self._bailian_model
+        self.client = provider_config.build_client(
+            provider_config.ProviderSettings(
+                provider_id="bailian",
+                protocol=os.getenv("ALIYUN_BAILIAN_PROTOCOL", ""),
                 base_url=os.getenv(
                     "ALIYUN_BAILIAN_BASE_URL",
                     self.DEFAULT_BAILIAN_BASE_URL,
                 ).strip() or self.DEFAULT_BAILIAN_BASE_URL,
-            )
-            self.model = os.getenv(
-                "ALIYUN_BAILIAN_MODEL",
-                self._bailian_model,
-            ).strip() or self._bailian_model
-        elif deepseek_key:
-            # ── DeepSeek（兼容旧配置）──
-            self.provider = "deepseek"
-            self.client = OpenAI(
-                api_key=deepseek_key,
-                base_url=self.DEFAULT_DEEPSEEK_BASE_URL,
-            )
-            self.model = self.DEFAULT_DEEPSEEK_MODEL
-        else:
-            # ── 两个都没配置 ──
-            raise ValueError(
-                "未检测到 AI 服务 API Key，请配置以下任一组环境变量：\n"
-                "  ├─ 阿里云百炼（推荐，最便宜）:\n"
-                "  │   ALIYUN_BAILIAN_API_KEY=sk-xxx\n"
-                "  │   ALIYUN_BAILIAN_MODEL=qwen-plus    # 可选，不配则取模型清单表里的默认值\n"
-                "  └─ DeepSeek（兼容）:\n"
-                "      DEEPSEEK_API_KEY=sk-xxx\n"
-                "  获取地址: https://bailian.console.aliyun.com/  或  https://platform.deepseek.com/api_keys"
-            )
+                model=self.model,
+                api_key=bailian_key,
+                enable_thinking=_enable_thinking(),
+            ),
+            openai_factory=OpenAI,
+        )
 
     # ── 总结 + 思维导图 + 标签（一次调用）────────────────
 
@@ -931,8 +998,8 @@ class VideoSummarizer:
                 {"role": "user", "content": prompt},
             ],
             stream=True,
-            temperature=0.7,
-            max_tokens=4096,
+            temperature=TEMPERATURE,
+            max_tokens=SUMMARY_MAX_TOKENS,
         )
         for content in _iter_delta_text(response):
             yield content
@@ -961,8 +1028,8 @@ class VideoSummarizer:
             model=self.model,
             messages=messages,
             stream=True,
-            temperature=0.7,
-            max_tokens=2048,
+            temperature=TEMPERATURE,
+            max_tokens=CHAT_MAX_TOKENS,
         )
         for content in _iter_delta_text(response):
             yield content
@@ -997,7 +1064,7 @@ class VideoSummarizer:
 
 
 
-        truncated = subtitle_text[:15000]
+        truncated = subtitle_text[:SUBTITLE_CHAR_LIMIT]
 
         lang_hint = "中文" if language.startswith("zh") else "与原文相同的语言"
 
@@ -1026,7 +1093,7 @@ class VideoSummarizer:
         混在中间的「用户问题：…」会让模型分不清哪句是这次问的、哪句是上轮问的。
         字幕块那侧的「请基于视频内容给出准确、详细的回答」留在原处不动。
         """
-        truncated = subtitle_text[:12000]
+        truncated = subtitle_text[:CHAT_SUBTITLE_CHAR_LIMIT]
         messages = [{
             "role": "system",
             "content": "你是一个视频内容问答助手。根据提供的字幕内容回答用户的问题。",

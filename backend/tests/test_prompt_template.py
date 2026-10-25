@@ -181,10 +181,24 @@ class TestTemplateContentContract:
 
         判据取**结尾**而不是全文计数：模板正文里本来就有 13 个「字」
         （字数、十字……），数全文会把它们算进去。
+
+        上限 60000（工单 #107）：该模型上下文 1M、最大输入 991808，
+        旧的 15000 字在这里不是「保护模型」，是「扔掉一大半素材」。
         """
-        long_sub = "Ω" * 20000
+        long_sub = "Ω" * 200000
         out = summarizer.VideoSummarizer._build_full_prompt(long_sub, "zh")
-        assert out.endswith("Ω" * 15000), (
-            f"结尾不是 15000 个 Ω，实际尾部是 {out[-20:]!r}"
+        assert out.endswith("Ω" * 60000), (
+            f"结尾不是 60000 个 Ω，实际尾部是 {out[-20:]!r}"
         )
-        assert "Ω" * 15001 not in out, "截断没生效"
+        assert "Ω" * 60001 not in out, "截断没生效"
+
+    def test_subtitle_at_the_limit_is_not_truncated(self):
+        """反向对照：正好 60000 字时**不许**再截一刀。
+
+        少截与多截都是错：多截扔素材，少截会把超限的字幕送进模型。
+        """
+        exact = "Ω" * 60000
+        out = summarizer.VideoSummarizer._build_full_prompt(exact, "zh")
+        assert out.endswith("Ω" * 60000), (
+            f"正好 60000 字却被截了，尾部是 {out[-20:]!r}"
+        )
