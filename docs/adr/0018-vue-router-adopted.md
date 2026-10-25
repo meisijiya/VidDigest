@@ -5,6 +5,10 @@ date: 2026-10-23
 
 # 前端路由：引入 vue-router，取代手写的轻路由
 
+> **部分已被 ADR 0025 修正（2026-10-25）**：第五条真实路径 `/admin/invite-codes`
+> （邀请码管理页）已加入，本文写的「四条真实路径」不再完整。
+> 本文件保留原样是为了留住当时的论证——ADR 0025 里写了它为什么不再成立。
+
 **决定**：前端引入 `vue-router`，用四条真实路径（`/`、`/history`、`/community`、
 `/admin`）替换 `frontend/src/App.vue` 里手写的 `PATHS` / `pageFromPath` /
 `pushPage` / `syncPageFromUrl`。

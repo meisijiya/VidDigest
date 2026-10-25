@@ -1145,7 +1145,7 @@ schema 变更分两类，写法不同：
 | 类型 | 什么时候用 | 怎么写 | 例子 |
 |------|-----------|--------|------|
 | **加列 / 改列** | 老库缺一列，或列的默认值要变 | 在 `database.py` 里加一个 `_migrate_xxx_columns(conn)`，用 `PRAGMA table_info` 先判断列在不在，不在才 `ALTER TABLE ... ADD COLUMN` | `_migrate_quota_columns`、`_migrate_videos_template_column` |
-| **写迁移** | 老数据的内容或形状本身要换 | 加一个 `_migrate_xxx(conn)`，**在自己的事务里**读旧表 → 写新表 → 换名 | `_migrate_invite_codes_table`（把明文邀请码重建成摘要表）、`_migrate_mindmap_levels`（按新层级上限重建存量导图） |
+| **写迁移** | 老数据的内容或形状本身要换 | 加一个 `_migrate_xxx(conn)`，在自己的事务里改写存量数据：重建表（DROP 旧表 → 建新表 → 逐行搬）或逐行 UPDATE | `_migrate_invite_codes_table`（把明文邀请码重建成只存 SHA-256 哈希的表）、`_migrate_mindmap_levels`（按新层级上限逐行改写存量导图） |
 
 写迁移的硬要求：
 
@@ -1332,7 +1332,7 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 | job | 跑什么 | 为什么这么切 |
 | --- | --- | --- |
 | `gate` | `bash scripts/bootstrap.sh` → `bash ./init.sh` | 门禁的真相在 `init.sh` 里，工作流不复述它。装环境也走 `bootstrap.sh`，本地与 CI 走同一条路，否则「本地绿、CI 红」只能靠猜 |
-| `build` | `npm ci && npm run build` → `docker compose build` | 镜像与前端生产包此前只在文档里被描述过，从没在 CI 上真跑过一次；跑一次才知道那份文档是不是在骗人 |
+| `build` | `npm ci && npm run build` → `docker compose build` → 起容器做一次自检 | 这个 job 真跑前端生产构建、镜像构建与容器自检，构建产物不是只在文档里被描述过 |
 | `mutation-backend` | 19 个后端变异脚本，每个一个 job | 变异脚本会故意改坏源码再还原，同一个工作区里串行跑会互相踩；分开跑互不污染 |
 | `mutation-frontend` | 4 个前端变异脚本，每个一个 job | 同上 |
 
