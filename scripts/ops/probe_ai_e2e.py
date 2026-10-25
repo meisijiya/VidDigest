@@ -46,6 +46,10 @@
     # 只看字幕拿不拿得到（不调模型、不花钱）
     docker compose exec backend python /app/scripts/ops/probe_ai_e2e.py --no-ai
 
+    # 换提示词模板（对照四份模板的产出形态）
+    docker compose exec backend python /app/scripts/ops/probe_ai_e2e.py \\
+        --template brief
+
 ## 输出
 
 每行一个 ``键=值``，便于脚本或人眼比对。退出码：0 = 全流程跑通；
@@ -122,12 +126,16 @@ def _mindmap_shape(mindmap_markdown: str) -> tuple[int, int]:
 def _base_url_of(summarizer) -> str:
     """端点地址。
 
-    客户端有两层：OpenAI 兼容协议下 ``client`` 是包装器（``raw()`` 才是
-    真客户端），Anthropic 协议下 ``client`` 自己带 ``base_url``。
-    哪条路都取不到就回落到环境变量——**只打印地址，不打印 key**。
+    客户端有两层：OpenAI 兼容协议下 ``client`` 是包装器
+    （``client.raw`` 是**属性**，取出来就是被包的 SDK 客户端），Anthropic
+    协议下 ``client`` 自己带 ``base_url``。哪条路都取不到就回落到环境
+    变量——**只打印地址，不打印 key**。
     """
     client = getattr(summarizer, "client", None)
-    for candidate in (client, getattr(client, "raw", lambda: None)()):
+    inner = getattr(client, "raw", None)
+    if inner is None:
+        inner = client
+    for candidate in (client, inner):
         base_url = getattr(candidate, "base_url", None)
         if base_url:
             return str(base_url)
@@ -142,6 +150,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只探字幕（不调模型、不花钱）",
     )
+    parser.add_argument(
+        "--template",
+        default=None,
+        help="用哪个提示词模板（full / brief / tutorial / analysis）。缺省=平台默认",
+    )
     args = parser.parse_args(argv)
 
     # 与应用本体同一条加载链：后端读配置走的是 python-dotenv（backend/main.py
@@ -149,10 +162,13 @@ def main(argv: list[str] | None = None) -> int:
     # 已经存在的环境变量不会被它覆盖（容器里 compose 注入的就是）。
     # 路径要写死：load_dotenv() 不带参数时是**从调用方文件所在目录往上找**
     # .env，而这个脚本在 scripts/ops/ 下，往上找不到 backend/.env。
+    # 真值文件在 **backend/ 里面**（backend/.env），所以是 backend 目录
+    # 自己的 .env，不是它的上级目录——曾经写错成上一级，宿主机直接跑时
+    # 就读不到 key，表现为「未检测到 AI 服务 API Key」。
     try:
         from dotenv import load_dotenv
 
-        env_path = _backend_dir().parent / ".env"
+        env_path = _backend_dir() / ".env"
         load_dotenv(env_path if env_path.exists() else None)
     except Exception:  # pragma: no cover - 没装 dotenv 时按环境变量走
         pass
@@ -180,11 +196,12 @@ def main(argv: list[str] | None = None) -> int:
     print("PROVIDER=%s" % summarizer.provider)
     print("MODEL=%s" % summarizer.model)
     print("BASE_URL=%s" % _base_url_of(summarizer))
+    print("TEMPLATE=%s" % (args.template or "<平台默认>"))
 
     summary_parts: list[str] = []
     mindmap_markdown = ""
     tags: object = ""
-    for kind, payload in summarizer.summarize_full_stream(subtitle):
+    for kind, payload in summarizer.summarize_full_stream(subtitle, template=args.template):
         if kind == "summary":
             summary_parts.append(payload)
         elif kind == "mindmap":
