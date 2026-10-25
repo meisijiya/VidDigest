@@ -108,7 +108,7 @@ const features = [
   {
     icon: IconFileText,
     title: '字幕导出',
-    desc: 'SRT/VTT/TXT 多格式字幕下载，支持离线语音转写',
+    desc: 'SRT/TXT 双格式字幕导出，支持离线语音转写',
     iconBg: 'bg-blue-50 group-hover:bg-blue-100',
     iconColor: 'text-blue-400',
     barColor: 'bg-blue',
@@ -116,7 +116,7 @@ const features = [
   {
     icon: IconHeart,
     title: '免费试用',
-    desc: '每账号每日 3 次免费 AI 总结额度，0 点重置',
+    desc: '每账号每日 3 次总结 + 10 次追问额度，0 点重置',
     iconBg: 'bg-amber-50 group-hover:bg-amber-100',
     iconColor: 'text-amber-400',
     barColor: 'bg-amber',

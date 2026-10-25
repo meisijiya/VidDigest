@@ -34,19 +34,19 @@
 | 维度 | 当前值 | 来源（复现命令见附录 A） |
 | --- | --- | --- |
 | REST 端点 | 44 | 路由装饰器计数（A1） |
-| 挂鉴权依赖的端点 | 34（`get_current_user` 17 + `require_admin` 14 + `get_optional_user` 3） | 依赖注入计数（A2） |
+| 挂鉴权依赖的端点 | 32（`get_current_user` 15 + `require_admin` 14 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
-| 后端用例 | 1504 | `pytest --collect-only`（A4） |
+| 后端用例 | 1505 | `pytest --collect-only`（A4） |
 | 前端静态 / 契约断言 | 538 | `npm test`（A5） |
 | 前端挂载用例 | 215 | `npm run test:mount`（A6） |
 | 变异脚本 | 23（后端 19 + 前端 4） | 文件清单（A7） |
 | 门禁 | 10 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
 | CI | 4 个 job 定义，展开 25 个实例 | `.github/workflows/ci.yml`（A9） |
-| 业务表 | 7 张 + 1 个 FTS5 虚表 + 4 个触发器 | 建表语句（A10） |
+| 业务表 | 7 张 + 1 个 FTS5 虚表 + 6 个触发器 | 建表语句（A10） |
 | 公开端点限流 | 6 个端点按来源 IP 限速，每分钟 20 / 10 / 30 / 60 / 10 / 5 | `backend/ratelimit.py`（A19、ADR 0020） |
 | 设计决策 | 28 篇 ADR（27 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
 | 受管理的 Markdown | 48 个 | `git ls-files '*.md'`（A12） |
-| 编码代理的工单 | 70 条（全部关闭） | `gh issue list --state all`（A13） |
+| 编码代理的工单 | 70 条（全部关闭） | `gh issue list --state all --limit 200 --json labels`（A13） |
 
 ### 1.2 两条主线
 
@@ -258,7 +258,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 关卡 | 它证明什么 |
 | --- | --- | --- |
-| 1 | `backend: pytest` | 1504 条后端用例通过 |
+| 1 | `backend: pytest` | 1505 条后端用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
 | 4 | `frontend: npm test` | 538 条静态 / 契约断言通过 |
@@ -300,7 +300,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | --- | --- | --- |
 | `yt-dlp` | 主解析通道，覆盖大量平台 | 解析失败多为平台侧变化，升级 `yt-dlp` 是第一手段 |
 | `backend/douyin.py` | 抖音独立通道 | 有自己的 WAF 绕过路径 |
-| 模型（百炼 / DeepSeek / 用户自带） | 总结、导图、问答 | **分支在实例化时选定，调用失败不跨厂商自动重试**；用户重试才重新选分支 |
+| 模型（百炼 / 用户自带） | 总结、导图、问答 | **分支在实例化时选定，调用失败不跨厂商自动重试**；用户重试才重新选分支 |
 | ASR | 没有字幕轨道时的兜底 | 需单独配置；失败原因随结果回传（`FAIL_NO_TRACK` / `FAIL_FETCH_FAILED` / `FAIL_ASR_NOT_CONFIGURED`） |
 | SQLite | 唯一存储 | 写锁竞争 → `database is locked` |
 | Stripe | 会员支付 | 回调按事件幂等处理 |
@@ -457,19 +457,19 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 数字 | 口径 | 复现命令 | 真值文件 | 变化时机 |
 | --- | --- | --- | --- | --- | --- |
-| A1 | 44 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
-| A2 | 34 | `get_current_user` 15 + `require_admin` 11 + `get_optional_user` 3 | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -v '/venv/' \| grep -v '/tests/'` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
-| A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -n 'EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1504 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A1 | 44 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -vE 'venv\|tests' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
+| A2 | 32 | `get_current_user` 15 + `require_admin` 14 + `get_optional_user` 3（端点级：不含 `backend/auth.py` 里 `require_admin` 自身的 `Depends(get_current_user)`，也不含 `backend/api_community.py` 顶部文档里提到的 `Depends(get_current_user)`） | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -vE 'venv\|tests' \| grep -vE 'backend[/\\]auth\.py' \| grep -vE 'api_community\.py:17' \| wc -l` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
+| A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -c 'response_class=EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
+| A4 | 1505 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 538 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 215 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
 | A7 | 23 | `scripts/` 10 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
 | A8 | 10 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
 | A9 | 4 个 job 定义 / 25 个实例 | 1 个门禁 job + 1 个生产构建 job + 19 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
-| A10 | 7 表 + 1 虚表 + 4 触发器 | 建表 / 建虚表 / 建触发器语句 | `grep -rnE 'CREATE (VIRTUAL )?TABLE\|CREATE TRIGGER' backend --include=*.py` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
+| A10 | 7 张业务表 + 1 张 FTS5 虚表 + 6 条触发器（3 条 `*_fill_canonical` + 3 条 `videos_fts_*`） | 库里实际存在的建表 / 建虚表 / 建触发器对象（FTS5 自带的 4 张影子表 `videos_fts_data` / `_idx` / `_docsize` / `_config` 不计） | `backend/venv/Scripts/python.exe -c "import sqlite3;print(sqlite3.connect('backend/data/app.db').execute(\"select type,name from sqlite_master where name not like 'sqlite_%'\").fetchall())"` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
 | A11 | 28 | `docs/adr/` 下的文件数（27 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
 | A12 | 48 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
-| A13 | 83 | 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
+| A13 | 70（`ready-for-agent` 标签）/ 83（全部工单） | 编码代理可领的工单数 / 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number,labels --jq '[.[] \| select(any(.labels[]; .name=="ready-for-agent"))] \| length'` 与 `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A16 | 1800 | 覆盖闸门 TTL（秒） | `grep -n 'VIDEO_REGENERATE_TTL_SECONDS' backend/database.py` | `backend/database.py` | 常量可改 |

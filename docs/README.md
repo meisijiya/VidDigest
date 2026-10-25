@@ -15,6 +15,7 @@
 | [测试策略](TESTING-STRATEGY.md) | 测什么、每类用哪种测试、覆盖目标、缺口清单、示例用例写法 |
 | [AI 功能核心技术说明](AI功能核心技术说明.md) | 字幕提取、AI 总结 / 导图 / 问答、SSE 事件流、额度与组件数据流 |
 | [技术文档](TECHNICAL.md) | 当前实现的机制、可复现的数字口径、故障定位表、已知边界 |
+| [邀请码说明](INVITE-CODES.md) | 邀请码的发放、消费、作废语义与运维操作 |
 
 ### 架构决策与代理约定
 
@@ -40,6 +41,10 @@ universal-video-downloader/
 │   ├── tags.py           # 固定标签词表与校验（ADR 0005）
 │   ├── credentials.py    # BYOK 用户凭据的解析与脱敏（ADR 0004）
 │   ├── model_catalog.py  # 模型清单表与默认模型（ADR 0011）
+│   ├── provider_config.py # 平台 provider 的协议 / 端点 / 模型配置（ADR 0028）
+│   ├── mindmap.py        # 思维导图的结构与层级 / 节点数上限（ADR 0027 / 0029）
+│   ├── ratelimit.py      # 公开端点的速率闸门与并发闸门（ADR 0020 / 0021 / 0022）
+│   ├── download_artifacts.py # 下载产物的落盘与清理
 │   ├── auth.py           # JWT + bcrypt
 │   ├── logging_setup.py  # JSON 行日志与轮转
 │   ├── database.py       # SQLite 数据层 + 迁移
@@ -54,7 +59,7 @@ universal-video-downloader/
 │   │   ├── composables/  # 组合式函数
 │   │   ├── config/       # 功能开关
 │   │   ├── lib/          # 纯逻辑（BYOK 状态、标签筛选等）
-│   │   ├── router/       # 四条真实路径的路由表
+│   │   ├── router/       # 五条真实路径的路由表
 │   │   ├── stores/       # Pinia store（登录态）
 │   │   └── views/        # 路由级页面
 │   ├── tests/        # 两套 runner 的用例与变异装置
@@ -63,7 +68,7 @@ universal-video-downloader/
 ├── docs/             # 文档
 │   ├── adr/         # 架构决策记录
 │   ├── agents/      # 编码代理约定
-│   └── *.md         # API / 运维 / 测试策略 / 技术文档
+│   └── *.md         # API / 运维 / 测试策略 / 技术文档 / 邀请码
 ├── init.sh           # 门禁入口（唯一）
 ├── docker-compose.yml# 容器化编排
 └── .github/workflows/# CI 工作流
