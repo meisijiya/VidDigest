@@ -105,9 +105,11 @@ def _seed_legacy_library(db):
             [
                 # 一条 ready 的真内容。
                 # 标签刻意用 **5 个字**：FTS 走 trigram 分词器，低于
-                # MIN_FTS_TERM_CHARS(3) 的词在索引里没有对应 trigram，
-                # 查了必然是空。拿 2 字词当查询词会得到一条恒红的用例，
+                # MIN_FTS_TERM_CHARS(3) 的词在 MATCH 路径里没有对应 trigram，
+                # 查了必然是空。拿 2 字词当 MATCH 查询词会得到一条恒红的用例，
                 # 而它与「索引有没有建成」毫无关系。
+                # （2 字词另有子串兜底，见 test_search_index_upgrade.py；
+                # 那条兜底读的是内容表，与这里的索引路径不是一回事。）
                 (URL_A, "ready", "老库里的总结", "{}", '["计算机科普"]',
                  "字幕", uid, "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
                 # 一条 pending 占位：标签刻意与上面**不共用词**，

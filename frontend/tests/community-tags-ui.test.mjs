@@ -701,15 +701,15 @@ describe('既有行为 · needLogin / loadError / tooShort 都还在', () => {
   test('tooShort：短查询提示读后端给的 min_chars，不在前端写死', async () => {
     const code = pageVue()
     const scope = loadScope({
-      searchCommunity: async () => ({ items: [], total: 0, q_too_short: true, min_chars: 3 }),
+      searchCommunity: async () => ({ items: [], total: 0, q_too_short: true, min_chars: 2 }),
     })
     scope.activeQuery.value = '机器'
     const { load } = withScope(code, ['load', 'applyList'], scope)
     await load()
-    assert.deepEqual(scope.tooShort.value, { q: '机器', min: 3 }, '短查询提示没按后端给的 min_chars 显示')
+    assert.deepEqual(scope.tooShort.value, { q: '机器', min: 2 }, '短查询提示没按后端给的 min_chars 显示')
     const hardcoded =
-      stripComments(read('../src/components/CommunityPage.vue')).match(/length\s*<\s*3|min_chars\s*[:=]\s*3/g) || []
-    assert.deepEqual(hardcoded, [], `前端把分词器下限写死成了 3：${JSON.stringify(hardcoded)}`)
+      stripComments(read('../src/components/CommunityPage.vue')).match(/length\s*<\s*2|min_chars\s*[:=]\s*2/g) || []
+    assert.deepEqual(hardcoded, [], `前端把检索下限写死成了 2：${JSON.stringify(hardcoded)}`)
   })
 
   test('三套提示的模板分支都还在', () => {

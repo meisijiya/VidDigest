@@ -82,7 +82,7 @@
         </button>
       </div>
 
-      <!-- 短查询必然召回 0（trigram 滑窗至少 3 字符）。
+      <!-- 短查询必然召回 0（1 个字没有意义；2 个字后端走子串兜底）。
            把这个边界说出来，否则「搜不到」与「社区里没有」长得一模一样。 -->
       <div
         v-if="tooShort"
@@ -258,9 +258,10 @@ const needLogin = ref(false)
 const loadError = ref('')
 
 /**
- * 短查询提示。全文检索用 trigram 滑窗，不足 3 个字符**必然**召回 0，
+ * 短查询提示。全文检索对不足下限的查询**必然**召回 0，
  * 所以后端会把这个边界一起返回（q_too_short / min_chars）。
  * 不说的话，「搜机器」和「社区里没有机器」在界面上完全一样。
+ * 下限由后端给出：2 个字走子串兜底、搜得到，1 个字才被判太短。
  */
 const tooShort = ref<{ q: string; min: number } | null>(null)
 

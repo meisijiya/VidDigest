@@ -248,12 +248,13 @@ bash ./init.sh          # exit code 0 = verified
 | 8 | `frontend: npm run format:check` | Every file matches Prettier |
 | 9 | `refs: ADR 与路径引用一致性` | Every `ADR NNNN` reference and every source path mentioned in docs or comments still resolves |
 | 10 | `gate: 关卡数口径一致性` | The number of checks this README claims is the number the gate really runs — counted from `init.sh`, never hard-coded |
+| 11 | `eval: 社区检索质量` | Community search: structural checks (indexed columns, the three sync triggers, tokenizer) plus top-1 accuracy, body-word recall, two-character recall and zero false hits on a fixed corpus |
 
 Two properties make the gate trustworthy rather than decorative:
 
-- **Mutation testing.** 23 mutation scripts deliberately break one invariant at a time
+- **Mutation testing.** 24 mutation scripts deliberately break one invariant at a time
   (auth boundary, canonical URLs, database fixtures, payment webhooks, secret scanning,
-  …) and assert that the gate turns red. A check that never turns red is not a check.
+  the community search index …) and assert that the gate turns red. A check that never turns red is not a check.
 - **The gate checks itself.** Checks 6 and 7 exist because the instructions, the ADRs,
   the test strategy and the source comments point at each other, and a stale pointer
   turns no test red — it just keeps constraining the next reader. One real instance:
@@ -416,6 +417,7 @@ result of a real trade-off.
 | 0027 | The mind map has a fixed three-level structure; stored maps are rebuilt by a write migration |
 | 0028 | One platform model (`qwen3.7-flash`), providers configured by protocol, no fallback chain |
 | 0029 | The mind-map structure has one source of truth; the legacy rebuild also drops rows that exceed the limits |
+| 0030 | Community search indexes the body (summary and subtitle); two-character queries fall back to a bounded substring match |
 
 ---
 

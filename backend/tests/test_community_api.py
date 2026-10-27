@@ -661,14 +661,20 @@ class TestSearchByTag:
 
 
 # ── AC 8：搜索基于 FTS5 + trigram，不是朴素模糊匹配 ──────────
+#
+# 关键词查询有三条路径（ADR 0030）：≥3 字走 FTS5 MATCH，恰好 2 字走
+# 子串兜底，1 字判「太短」不查。下面的用例守的是**每条路径各自的边界**：
+# 把哪条路径换掉，都得有一条用例变红。
 
-class TestSearchIsFullTextNotLike:
+class TestSearchPaths:
     def test_latin_match_is_case_insensitive(self, client_app, seeded, make_user):
         """小写 python 能命中标题里的 Python。
 
         ⚠️ 这条**不能**用来区分 FTS 与 LIKE：SQLite 的 LIKE 对 ASCII 本来就是
-        大小写不敏感的，两种实现都会通过。真正的区分证据是下面那条
-        「2 字词召回 0」——已用变异验证过：把 FTS 换成 LIKE，它会立刻变红。
+        大小写不敏感的，两种实现都会通过。真正的区分证据在下面两条：
+        「只出现在总结里的词能搜到」（索引覆盖正文）与「清空索引后 2 字仍能
+        搜到、3 字搜不到」（两条路真的不同）——都已用变异验证过：
+        把 FTS 换成 LIKE，前者立刻变红。
         这里只守住「拉丁词条能正常召回」这条基本能力。
         """
         app, mk = client_app
@@ -677,48 +683,175 @@ class TestSearchIsFullTextNotLike:
             r = client.get("/api/community/search", params={"q": "python"}, headers=headers)
         assert r.json()["total"] == 1, "小写关键词搜不到标题里的 Python"
 
-    def test_two_character_term_is_below_the_trigram_floor(self, client_app, seeded, make_user):
-        """2 字中文召回 0——trigram 的下界，不是实现漏了。
+    def test_two_character_term_is_found_through_the_substring_fallback(
+        self, client_app, make_user
+    ):
+        """2 字词搜得到——它曾经搜不到。
 
-        这条是「FTS5 + trigram」与「朴素 LIKE」之间**真正**的区分证据
-        （已变异验证：把 MATCH 换成 LIKE，本条立刻变红）。LIKE 能匹配 2 字词，
-        trigram 不能——它在索引里根本没有 2 字词对应的三元组。
-        它钉住的是 trigram 存在的签名，不是缺陷：2 字词的入口是按标签精确筛选。
+        ⚠️ 这条用例**曾经是反的**：原断言是「2 字中文召回 0」，
+        钉的是 trigram 的下界（2 字词在索引里根本没有对应的三元组）。
+        ADR 0030 加了子串兜底之后，那条断言开始**强制缺陷存在**，
+        所以改写为「2 字词走兜底能搜到」，并在下面钉住兜底有下限
+        （1 字仍然拒绝）与兜底不经过索引。
+
+        用的是只出现在**总结正文**里的 2 字词「海鸥」：它同时证明
+        兜底搜的列与索引的列一致（标题、标签、链接、总结、字幕）。
         """
         app, mk = client_app
+        seed_community_video("https://example.com/v/short-term",
+                             title="短词样例", summary="正文里只有这两个字：海鸥")
         client, headers = as_user(app, mk())
         with client:
-            r = client.get("/api/community/search", params={"q": "编程"}, headers=headers)
+            r = client.get("/api/community/search", params={"q": "海鸥"}, headers=headers)
+        body = r.json()
         assert r.status_code == 200
-        assert r.json()["total"] == 0, (
-            "2 字中文命中了：全文检索被换成了 LIKE 之类的朴素匹配"
+        assert body["total"] == 1, (
+            "2 字词搜不到：子串兜底没生效，或兜底没搜总结列"
+        )
+        assert body["q_too_short"] is False, (
+            "2 字词被判成太短：总下限报错了，前端会劝退能搜的词"
+        )
+
+    def test_one_character_term_is_refused(self, client_app, make_user):
+        """1 字词仍然拒绝——兜底有下限，不是「LIKE 全放行」。
+
+        单个汉字在社区正文里到处都是，命中一片等于没筛。
+        守住的是「兜底没有退化成无限制的朴素匹配」。
+        """
+        app, mk = client_app
+        seed_community_video("https://example.com/v/one-char",
+                             title="单字样例", summary="正文里有海鸥两个字")
+        client, headers = as_user(app, mk())
+        with client:
+            r = client.get("/api/community/search", params={"q": "海"}, headers=headers)
+        body = r.json()
+        assert r.status_code == 200
+        assert body["total"] == 0, "1 字词命中了：兜底没有下限"
+        assert body["q_too_short"] is True, "1 字词没有告诉前端它必然召不回"
+
+    def test_body_only_word_is_found_in_the_summary(self, client_app, make_user):
+        """只出现在**总结正文**里的词要搜得到——索引覆盖正文。
+
+        这条是「正文入索引」这件事的行为证据：正文里的词在标题、标签、
+        链接里都没有，只可能从 summary_md 命中。
+        改动前这类词的召回是 0/51（实测）。
+        """
+        app, mk = client_app
+        seed_community_video("https://example.com/v/body-summary",
+                             title="标题不含关键词",
+                             summary="正文里写的是完全不同的东西：量子纠缠")
+        client, headers = as_user(app, mk())
+        with client:
+            r = client.get("/api/community/search",
+                           params={"q": "量子纠缠"}, headers=headers)
+        assert r.json()["total"] == 1, "总结正文里的词搜不到：索引没覆盖 summary_md"
+
+    def test_body_only_word_is_found_in_the_subtitle(self, client_app, make_user):
+        """只出现在**字幕**里的词要搜得到——索引覆盖字幕。
+
+        字幕是视频真正讲了什么。总结是模型压缩过的，字幕才是不失真的那份；
+        只索引总结时正文词召回只有 35.3%（实测），字幕一起进索引才是 100%。
+        """
+        app, mk = client_app
+        seed_community_video("https://example.com/v/body-subtitle",
+                             title="标题不含关键词",
+                             summary="总结里也不含这个词",
+                             subtitle="字幕里提到了稀释制冷机")
+        client, headers = as_user(app, mk())
+        with client:
+            r = client.get("/api/community/search",
+                           params={"q": "稀释制冷机"}, headers=headers)
+        assert r.json()["total"] == 1, "字幕里的词搜不到：索引没覆盖 subtitle_text"
+
+    def test_the_substring_fallback_reads_the_content_table_not_the_index(
+        self, client_app, seeded, make_user
+    ):
+        """2 字兜底与 ≥3 字的 MATCH 是**两套数据源**。
+
+        这里做一件很具体的事：把三个 FTS 同步触发器全摘掉，再直接往
+        ``videos`` 里插一行。于是这一行**在内容表里、不在索引里**。
+
+        结果：3 字查询（走 MATCH，只认索引）搜不到它；2 字查询（走子串兜底，
+        读内容表）搜得到它。
+
+        这条钉住的正是 ADR 0030 的那条理由：兜底必须落在**原始 videos 表**上。
+        写在 FTS5 表上会踩两个坑——一是口径含糊（索引与内容表成了两个真相源），
+        二是 LIKE 在 trigram 索引上会被索引反过来限制住，漏出该出现的行。
+
+        摘的是**三个**触发器，不是只摘 INSERT 那个：留着 UPDATE 触发器的话，
+        写入时 `videos_fill_canonical` 那条 BEFORE 触发器会连带 UPDATE videos，
+        于是 videos_fts_au 去 'delete' 一条**根本不在索引里**的行——
+        FTS5 的外部内容表遇到这种情况会把索引写坏（实测报
+        `database disk image is malformed`）。这是本次改动过程中踩过的坑，
+        记在这里是为了下一个人别再踩一遍。
+
+        **这里不能写 `with client:`**：lifespan 会跑 init_db()，
+        init_db() 会把触发器重新建回来并全量 rebuild——那一行就进了索引，
+        本测试测到的就不是「两套数据源」而是「有东西会重建索引」。
+        """
+        app, mk = client_app
+        with database.get_db() as conn:
+            conn.execute("DROP TRIGGER videos_fts_ai")
+            conn.execute("DROP TRIGGER videos_fts_au")
+            conn.execute("DROP TRIGGER videos_fts_ad")
+            conn.execute(
+                """INSERT INTO videos
+                   (video_url, status, video_title, tags, summary_md,
+                    mindmap_md, subtitle_text, parsed_by)
+                   VALUES (?, 'ready', ?, '["兜底"]', ?, '{}', ?, NULL)""",
+                (
+                    "https://example.com/v/not-in-index",
+                    "标题不含正文里的词",
+                    "总结正文里写着海鸥还有量子纠缠",
+                    "字幕里写着稀释制冷机",
+                ),
+            )
+        client, headers = as_user(app, mk())
+        three = client.get("/api/community/search",
+                           params={"q": "量子纠缠"}, headers=headers).json()
+        two = client.get("/api/community/search",
+                         params={"q": "海鸥"}, headers=headers).json()
+        assert three["total"] == 0, (
+            "索引里没有的 3 字词被搜到了：MATCH 路径没有只看索引"
+        )
+        assert two["total"] == 1, (
+            "索引里没有的 2 字词搜不到：兜底没有读内容表"
         )
 
     def test_short_query_says_why_it_found_nothing(
         self, client_app, seeded, make_user
     ):
-        """短查询查不到是 trigram 的地板，但界面必须把这件事说出来。
+        """太短的查询查不到，但界面必须把这件事说出来。
 
-        上一条钉住的是「不该发生什么」（不会静默退化成 LIKE 匹配）。
+        上一条钉住的是「不该发生什么」（1 字不会被兜底放行）。
         这条钉住该发生什么：接口照常 200 + 0 命中，同时把边界一起返回
         （q_too_short / min_chars）。不说的话，用户看到的就是「搜了没反应」，
         与「社区里真没有」在界面上完全一样。
 
         三个模式分开验：URL 精确定位走等值、浏览模式不过滤，
-        长度都不构成限制，只有走 FTS 的关键词模式受这个地板约束。
+        长度都不构成限制，只有走关键词的模式受这个地板约束。
+
+        地板是 **1 字**（MIN_SEARCH_TERM_CHARS=2）：2 字有子串兜底、搜得到，
+        报 3 会让前端把「机器」这种能搜的词也劝退。
         """
         app, mk = client_app
         client, headers = as_user(app, mk())
         with client:
-            short = client.get("/api/community/search",
-                               params={"q": "编程"}, headers=headers).json()
+            too_short = client.get("/api/community/search",
+                                   params={"q": "编"}, headers=headers).json()
+            short_enough = client.get("/api/community/search",
+                                      params={"q": "编程"}, headers=headers).json()
             long_enough = client.get("/api/community/search",
                                      params={"q": "机器学习"}, headers=headers).json()
             by_url = client.get("/api/community/search",
                                 params={"q": "https://youtu.be/dQw4w9WgXcQ"},
                                 headers=headers).json()
-        assert short["q_too_short"] is True, "2 字查询没有告诉前端它必然召不回"
-        assert short["min_chars"] == database.MIN_FTS_TERM_CHARS
+        assert too_short["total"] == 0, "1 字查询不该有任何命中"
+        assert too_short["q_too_short"] is True, "1 字查询没有告诉前端它必然召不回"
+        assert too_short["min_chars"] == database.MIN_SEARCH_TERM_CHARS
+        assert short_enough["q_too_short"] is False, (
+            "2 字词有子串兜底、搜得到，不该被判成太短"
+        )
         assert long_enough["q_too_short"] is False
         assert by_url["q_too_short"] is False, "URL 精确定位走等值匹配，不该被判成短查询"
 
@@ -766,9 +899,9 @@ class TestSearchIsFullTextNotLike:
     def test_index_is_fts5_with_trigram_tokenizer(self, client_app, seeded):
         """AC 原文点名了机制，这里就查机制本身。
 
-        这是本文件里唯一一条结构断言：AC 明确要求「SQLite 的 FTS5 与
+        这是本文件里最基础的一条结构断言：AC 明确要求「SQLite 的 FTS5 与
         trigram 分词器」，那么索引是不是一张 trigram 分词的 FTS5 表就是
-        契约的一部分，不是实现细节。上面几条行为断言负责证明它**能用**，
+        契约的一部分，不是实现细节。行为断言负责证明它**能用**，
         这条负责证明它**是那一个**。
         """
         with database.get_db() as conn:
@@ -779,6 +912,44 @@ class TestSearchIsFullTextNotLike:
         lowered = sql.lower()
         assert "using fts5" in lowered, f"搜索索引不是 FTS5 表：{sql}"
         assert "trigram" in lowered, f"搜索索引没用 trigram 分词器：{sql}"
+
+    def test_index_covers_the_five_documented_columns(self, client_app, seeded):
+        """索引的列集合必须是 ADR 0030 写死的那五个。
+
+        列集合是「哪段文字能被搜到」的唯一真相：实测三列时只出现在正文里的
+        词召回 0/51（0.0%），加总结列是 18/51（35.3%），总结与字幕一起才是
+        51/51（100%）。少一列，正文就有一大块搜不到。
+        """
+        with database.get_db() as conn:
+            cols = tuple(r["name"] for r in conn.execute(
+                "PRAGMA table_info(videos_fts)"
+            ))
+        assert cols == database._VIDEO_SEARCH_COLUMNS, (
+            f"索引列集合是 {cols}，应为 {database._VIDEO_SEARCH_COLUMNS}"
+        )
+        assert "summary_md" in cols and "subtitle_text" in cols, (
+            "总结与字幕必须进索引，否则正文里的词搜不到"
+        )
+
+    def test_fts_triggers_write_every_indexed_column(self, client_app, seeded):
+        """三个触发器必须把五列都写进去。
+
+        触发器是索引与内容表之间唯一的同步机制。列集合要写三处
+        （INSERT / DELETE / UPDATE），漏掉一处就是某条写路径上的索引
+        静默失效——症状是「刚更新的那条搜不到」，而且只在那一类操作后出现。
+        """
+        with database.get_db() as conn:
+            rows = conn.execute(
+                "SELECT name, sql FROM sqlite_master"
+                " WHERE type = 'trigger' AND name LIKE 'videos_fts_%'"
+            ).fetchall()
+        assert rows, "前提不成立：索引上没有任何触发器"
+        for row in rows:
+            for col in database._VIDEO_SEARCH_COLUMNS:
+                assert col in row["sql"], (
+                    f"触发器 {row['name']} 的 SQL 里没有 {col}："
+                    "这一列不会被同步进索引"
+                )
 
     def test_all_three_fts_triggers_exist(self, client_app, seeded):
         """三个同步触发器必须都在——这条直接查 sqlite_master。

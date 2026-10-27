@@ -1227,30 +1227,73 @@ _VIDEO_SEARCH_INDEX = "videos_fts"
 _VIDEO_SEARCH_TOKENIZER = "trigram"
 
 #: trigram 的最小可匹配长度：不足 3 个字符的词在索引里没有对应 trigram，
-#: 查了必然是空（实测 2 字中文词召回 0，3 字起正常）。
+#: 查了必然是空（实测 2 字中文词在 MATCH 路径召回 0，3 字起正常）。
 #: 按标签精确筛选不受此限——它走 json_each，不经 FTS。
+#:
+#: 注意：这是 **MATCH 路径**的地板，不是搜索能力的总下限。
+#: 总下限是 MIN_SEARCH_TERM_CHARS——2 字词另有子串兜底。
 MIN_FTS_TERM_CHARS = 3
+
+#: 关键词搜索的总下限：2 个字符。
+#:
+#: 2 字词走子串兜底（见 _search_substring），所以它搜得到；
+#: 1 字仍然没有意义——单个汉字在社区正文里到处都是，命中一片等于没筛。
+#: 与其给用户一片噪音，不如直说「太短」。
+MIN_SEARCH_TERM_CHARS = 2
+
+#: 索引覆盖的列集合（ADR 0030）。
+#:
+#: 为什么是这 5 列：原先只索引标题、标签、链接三列，于是**只出现在正文里
+#: 的词一条都搜不到**——同一份 96 条查询语料上的实测：正文词召回
+#: 0/51（0.0%）；加上总结列是 18/51（35.3%）；**总结与字幕一起**才是
+#: 51/51（100%）。字幕必须进索引：总结是模型压缩过的，字幕才是视频
+#: 真正讲了什么。
+#:
+#: 代价是索引体积 36KB → 68KB（约 1.9 倍），换来正文可检索。
+#: mindmap_md 刻意不索引：导图文本与总结大量重复，进索引只是同一段话
+#: 被索引两遍，体积再涨一分、召回不涨一分。
+#:
+#: 顺序即 CREATE VIRTUAL TABLE 的列顺序。老库的列集合与此不同时，
+#: _create_video_search_index 会重建整张索引表（那里有说明）。
+_VIDEO_SEARCH_COLUMNS = ("video_title", "tags", "video_url", "summary_md", "subtitle_text")
+
+#: 触发器 SQL 里要落的列。三个触发器共用同一份列清单——
+#: 写死三处的话，加列时漏掉一处就是某条写路径上的索引静默失效。
+_SEARCH_INDEX_COLS = ", ".join(_VIDEO_SEARCH_COLUMNS)
+_SEARCH_INDEX_NEW_VALS = ", ".join("new." + c for c in _VIDEO_SEARCH_COLUMNS)
+_SEARCH_INDEX_OLD_VALS = ", ".join("old." + c for c in _VIDEO_SEARCH_COLUMNS)
 
 _VIDEO_SEARCH_TRIGGER_SETUP = f"""
     CREATE TRIGGER IF NOT EXISTS videos_fts_ai AFTER INSERT ON videos BEGIN
-        INSERT INTO {_VIDEO_SEARCH_INDEX}(rowid, video_title, tags, video_url)
-        VALUES (new.id, new.video_title, new.tags, new.video_url);
+        INSERT INTO {_VIDEO_SEARCH_INDEX}(rowid, {_SEARCH_INDEX_COLS})
+        VALUES (new.id, {_SEARCH_INDEX_NEW_VALS});
     END;
 
     CREATE TRIGGER IF NOT EXISTS videos_fts_ad AFTER DELETE ON videos BEGIN
         INSERT INTO {_VIDEO_SEARCH_INDEX}({_VIDEO_SEARCH_INDEX}, rowid,
-            video_title, tags, video_url)
-        VALUES ('delete', old.id, old.video_title, old.tags, old.video_url);
+            {_SEARCH_INDEX_COLS})
+        VALUES ('delete', old.id, {_SEARCH_INDEX_OLD_VALS});
     END;
 
     CREATE TRIGGER IF NOT EXISTS videos_fts_au AFTER UPDATE ON videos BEGIN
         INSERT INTO {_VIDEO_SEARCH_INDEX}({_VIDEO_SEARCH_INDEX}, rowid,
-            video_title, tags, video_url)
-        VALUES ('delete', old.id, old.video_title, old.tags, old.video_url);
-        INSERT INTO {_VIDEO_SEARCH_INDEX}(rowid, video_title, tags, video_url)
-        VALUES (new.id, new.video_title, new.tags, new.video_url);
+            {_SEARCH_INDEX_COLS})
+        VALUES ('delete', old.id, {_SEARCH_INDEX_OLD_VALS});
+        INSERT INTO {_VIDEO_SEARCH_INDEX}(rowid, {_SEARCH_INDEX_COLS})
+        VALUES (new.id, {_SEARCH_INDEX_NEW_VALS});
     END;
 """
+
+
+def _video_search_index_columns(conn) -> tuple:
+    """索引表现在有哪些列。空元组 = 表还不存在。
+
+    FTS5 的虚表也吃 PRAGMA table_info（实测能列出列名），
+    所以老库的列集合是**问得出来的**——这是「要不要重建」的唯一判据，
+    不靠「有没有报错」猜。
+    """
+    rows = conn.execute(f"PRAGMA table_info({_VIDEO_SEARCH_INDEX})").fetchall()
+    return tuple(r["name"] for r in rows)
 
 
 def _create_video_search_index(conn) -> None:
@@ -1262,10 +1305,25 @@ def _create_video_search_index(conn) -> None:
 
     'rebuild' 幂等：老库里在触发器建立之前就有的行会被全量灌进索引，
     重复执行只是重建，不会重复插入。
+
+    **老库的列集合不同 → 重建整张索引表**（ADR 0030）。
+    FTS5 的外部内容表不支持 ALTER ADD COLUMN，加列只能 DROP 重建；
+    实测 DROP TABLE **不会**带走建在它上面的三个触发器，留着就会在重建时
+    报 `trigger videos_fts_ai already exists`。所以顺序是：
+    先删触发器 → 删表 → 建表 → 建触发器 → rebuild。
+    重建后存量行立刻可搜——rebuild 会把内容表的全量灌进索引。
     """
+    existing = _video_search_index_columns(conn)
+    if existing and existing != _VIDEO_SEARCH_COLUMNS:
+        conn.executescript(
+            "DROP TRIGGER IF EXISTS videos_fts_ai;"
+            "DROP TRIGGER IF EXISTS videos_fts_au;"
+            "DROP TRIGGER IF EXISTS videos_fts_ad;"
+        )
+        conn.execute(f"DROP TABLE IF EXISTS {_VIDEO_SEARCH_INDEX}")
     conn.executescript(f"""
         CREATE VIRTUAL TABLE IF NOT EXISTS {_VIDEO_SEARCH_INDEX} USING fts5(
-            video_title, tags, video_url,
+            {_SEARCH_INDEX_COLS},
             content='videos', content_rowid='id',
             tokenize='{_VIDEO_SEARCH_TOKENIZER}'
         );
@@ -1552,6 +1610,43 @@ def _fts_phrase(q: str) -> str:
     return '"' + q.translate(_SEARCH_STRIP_CHARS).replace('"', '""') + '"'
 
 
+def _escape_like(term: str) -> str:
+    """把 LIKE 的元字符转义掉。
+
+    LIKE 认三个元字符：`%`（任意长）、`_`（任意单字符）、`\\`（转义符本身）。
+    不转义的话，用户搜「100%」会命中一切含「100」的行，搜「C++」里的下划线
+    同理——实测「带 ESCAPE 且逐字符转义」与真值表完全一致，
+    「不带 ESCAPE」时 `%`/`_` 变成通配符，误召回一片。
+    """
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _search_substring(term: str, tag_clause: str, tag_params: tuple,
+                      page: int, page_size: int) -> dict:
+    """2 字词的子串兜底：在**原始 videos 表**上做 LIKE 子串匹配。
+
+    为什么不在 FTS5 表上做：FTS5 外部内容表上的 LIKE 会**穿过 content 表读值**
+    （实测：没同步进索引的行也会被 LIKE 命中），可见性口径与 MATCH 不一致。
+    原始表上匹配，口径才与「社区里能看到的行」一致。
+
+    为什么只给 2 字用：≥3 字一律走 MATCH——FTS5 的短语语义与 bm25 排序都在
+    那里。把 3 字以上也交给 LIKE，整个检索就退化成朴素扫描。
+
+    搜的列与索引的列**一致**（标题、标签、链接、总结、字幕），
+    否则「索引里搜得到、兜底里搜不到」会成为一条随口径漂移的规则。
+
+    顺序用时间倒序而非相关度：LIKE 没有相关度可言，硬排一个会骗人。
+    """
+    pattern = "%" + _escape_like(term) + "%"
+    like_clause = " OR ".join(
+        "COALESCE(v." + col + ", '') LIKE ? ESCAPE '\\'" for col in _VIDEO_SEARCH_COLUMNS
+    )
+    where = f"({like_clause}) AND {_COMMUNITY_VISIBLE}{tag_clause}"
+    params = [pattern] * len(_VIDEO_SEARCH_COLUMNS) + list(tag_params)
+    return _paginate("videos v", where, params, page, page_size,
+                     "v.created_at DESC, v.id DESC")
+
+
 def search_community_videos(q: str = "", page: int = 1,
                            page_size: int = COMMUNITY_PAGE_SIZE_DEFAULT,
                            tag: str = "") -> dict:
@@ -1560,7 +1655,11 @@ def search_community_videos(q: str = "", page: int = 1,
     - q 以 http(s):// 开头 → 按 video_url **精确**匹配。链接定位要的是「就是
       这一条」，而 FTS 只能在原文里找子串，搜到的是「包含这段链接的东西」，
       两者不是一回事。URL 规范化由前端负责（它已有 canonicalUrl）。
-    - 其余 q → FTS5 MATCH，索引覆盖标题、标签、链接三个字段。
+    - 其余 q 按**长度**分三条路（ADR 0030）：
+
+      1. ≥3 字 → FTS5 MATCH。索引覆盖标题、标签、链接、总结、字幕五列。
+      2. 恰好 2 字 → trigram 够不着，走子串兜底（_search_substring）。
+      3. 1 字 → 判「太短」，不查。单字在社区正文里到处都是，命中一片等于没筛。
     - tag → json_each 精确筛选，可与 q 取交集。
 
     调用方**必须已鉴权**：搜索是登录用户的能力，未登录返回 401（路由层
@@ -1575,19 +1674,30 @@ def search_community_videos(q: str = "", page: int = 1,
         result = _paginate("videos v", where, (canonical_video_url(q), *tag_params),
                            page, page_size, order)
     elif q:
-        phrase = _fts_phrase(q)
-        where = f"{_VIDEO_SEARCH_INDEX} MATCH ? AND {_COMMUNITY_VISIBLE}{tag_clause}"
-        # 相关度优先，其次按时间倒序——同分时让新内容在前，顺序稳定可测。
-        #
-        # bm25() 的参数必须写 FTS 表**名**，不能写 FROM 子句里的别名：
-        # 写成 bm25(f) 会报 no such column: f（SQLite 认不出这是个辅助函数，
-        # 就当成列引用去找）。MATCH 左侧同理，所以 FROM 里给了别名 f、
-        # 条件里仍写表名——这个不一致是实测逼出来的，不是笔误。
-        result = _paginate(
-            f"{_VIDEO_SEARCH_INDEX} f JOIN videos v ON v.id = f.rowid",
-            where, (phrase, *tag_params), page, page_size,
-            f"bm25({_VIDEO_SEARCH_INDEX}), v.created_at DESC, v.id DESC",
-        )
+        term = q.translate(_SEARCH_STRIP_CHARS)
+        if len(term) < MIN_SEARCH_TERM_CHARS:
+            # 1 字：命中一片等于没筛。直说太短，不给噪音。
+            result = _paginate(
+                "videos v", f"1 = 0 AND {_COMMUNITY_VISIBLE}{tag_clause}",
+                tag_params, page, page_size, "v.created_at DESC, v.id DESC",
+            )
+        elif len(term) < MIN_FTS_TERM_CHARS:
+            # 2 字：trigram 够不着，走子串兜底（ADR 0030）。
+            result = _search_substring(term, tag_clause, tag_params, page, page_size)
+        else:
+            phrase = _fts_phrase(q)
+            where = f"{_VIDEO_SEARCH_INDEX} MATCH ? AND {_COMMUNITY_VISIBLE}{tag_clause}"
+            # 相关度优先，其次按时间倒序——同分时让新内容在前，顺序稳定可测。
+            #
+            # bm25() 的参数必须写 FTS 表**名**，不能写 FROM 子句里的别名：
+            # 写成 bm25(f) 会报 no such column: f（SQLite 认不出这是个辅助函数，
+            # 就当成列引用去找）。MATCH 左侧同理，所以 FROM 里给了别名 f、
+            # 条件里仍写表名——这个不一致是实测逼出来的，不是笔误。
+            result = _paginate(
+                f"{_VIDEO_SEARCH_INDEX} f JOIN videos v ON v.id = f.rowid",
+                where, (phrase, *tag_params), page, page_size,
+                f"bm25({_VIDEO_SEARCH_INDEX}), v.created_at DESC, v.id DESC",
+            )
     else:
         where = f"{_COMMUNITY_VISIBLE}{tag_clause}"
         result = _paginate("videos v", where, tag_params, page, page_size,
@@ -1595,13 +1705,19 @@ def search_community_videos(q: str = "", page: int = 1,
 
     result["items"] = [_project_video(r, COMMUNITY_CARD_FIELDS) for r in result["items"]]
     result["mode"] = "url" if q.startswith(("http://", "https://")) else ("text" if q else "browse")
-    # 短查询的真相说给前端听：text 模式下不足 MIN_FTS_TERM_CHARS 个字符
-    # **必然**召回 0（trigram 不产生这种长度的滑窗），接口照常 200。
-    # 不把这个边界讲出来的话，用户搜「机器」看到的就是「没反应」——
-    # 与「社区里真没有」在界面上完全一样。URL 精确匹配与浏览模式不受
+    # 短查询的真相说给前端听：text 模式下不足 MIN_SEARCH_TERM_CHARS 个字符
+    # **必然**召回 0（1 个字在社区正文里到处都是，命中一片等于没筛），
+    # 接口照常 200。不把这个边界讲出来的话，用户搜「机」看到的就是「没反应」
+    # ——与「社区里真没有」在界面上完全一样。URL 精确匹配与浏览模式不受
     # 这个限制（前者走等值、后者不过滤），所以只在 text 模式置位。
-    result["min_chars"] = MIN_FTS_TERM_CHARS
-    result["q_too_short"] = result["mode"] == "text" and len(q) < MIN_FTS_TERM_CHARS
+    #
+    # min_chars 报的是**总下限**（2），不是 trigram 的 3：2 字词另有兜底，
+    # 它搜得到。报 3 会让前端把「机器」这种能搜的词也劝退。
+    result["min_chars"] = MIN_SEARCH_TERM_CHARS
+    result["q_too_short"] = (
+        result["mode"] == "text"
+        and len(q.translate(_SEARCH_STRIP_CHARS)) < MIN_SEARCH_TERM_CHARS
+    )
     return result
 
 
