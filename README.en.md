@@ -242,7 +242,7 @@ bash ./init.sh          # exit code 0 = verified
 | 2 | `backend: compileall` | Every backend module compiles |
 | 3 | `secrets: content-level scan` | No credential-shaped string in tracked files **or in reachable git history** — `.gitignore` is filename-level and does not stop a pasted key |
 | 4 | `frontend: npm test` | All static / contract assertions pass (node:test) |
-| 5 | `frontend: npm run test:mount` | 215 mounted-component tests (Vitest) — a separate runner on purpose, so a green layer cannot hide a red one |
+| 5 | `frontend: npm run test:mount` | 218 mounted-component tests (Vitest) — a separate runner on purpose, so a green layer cannot hide a red one |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` reports no type errors |
 | 7 | `frontend: npm run lint` | ESLint reports no problems |
 | 8 | `frontend: npm run format:check` | Every file matches Prettier |

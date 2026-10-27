@@ -78,6 +78,18 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
+   * 这个失败是不是「服务端说这个 token 不认了」（401）。
+   *
+   * 只看状态码，不看错误文案：文案是给用户看的，改一次就飘一次。
+   * 形状与 `HistoryPage.vue` / `api/community.ts` 里的同名判据一致
+   * （axios 的错误对象挂在 `response.status` 上）。
+   */
+  function isUnauthorized(err: unknown): boolean {
+    const e = err as { response?: { status?: number } }
+    return e?.response?.status === 401
+  }
+
+  /**
    * 回查 /api/auth/me，判定管理员身份。
    *
    * @param syncUser true = 顺带把服务端返回的用户写回本地（登出态复核用）
@@ -98,8 +110,15 @@ export const useSessionStore = defineStore('session', () => {
         token.value = getToken()
       }
       return isAdmin.value ? 'admin' : 'user'
-    } catch {
-      if (gen === adminFlagGen) isAdmin.value = false
+    } catch (err) {
+      if (gen === adminFlagGen) {
+        isAdmin.value = false
+        // 401 = 服务端不认这个 token（过期或无效）。本地那份会话就此作废：
+        // 不清的话，顶栏会一直按 localStorage 的种子渲染成一个「已登录」的
+        // 旧账号，而每个请求都在 401 —— 顶栏与实际状态对不上。
+        // 只清 401：网络抖动与 5xx 不该把人踢出登录态。
+        if (isUnauthorized(err)) signOut()
+      }
       return 'anonymous'
     }
   }
