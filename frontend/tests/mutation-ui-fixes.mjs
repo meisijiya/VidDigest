@@ -406,6 +406,23 @@ const MUTANTS = [
     failedTests: ['后端交来的 markdown 原样渲染：第三级节点不会在前端这一层消失'],
     keptGreen: ['对照组：后端形状的导图（# 根）第三级照样在第三层', '没有导图时是空态，一个节点都不画'],
   },
+  {
+    // 会话回查：服务端回 401 时本地会话必须作废。
+    // 断掉的症状不是报错，是「明明没登录，顶栏却显示着旧邮箱和「退出」」——
+    // 而同一刻服务端把每个请求都判成未登录。两处自相矛盾。
+    name: 'M36 401 不作废本地会话（顶栏显示成已登录，其实没登录）',
+    file: join(FE, 'src/stores/session.ts'),
+    from: '        if (isUnauthorized(err)) signOut()',
+    to: '        if (false) signOut()',
+    runner: 'vitest',
+    spec: 'tests/session-store.spec.mjs',
+    // 只该转红 401 那一条；500 与「本地没 token」两条反向对照必须保持绿。
+    failedTests: ['401：顶栏回到未登录态，localStorage 里的 token 与用户一起清掉'],
+    keptGreen: [
+      '反向对照：500 是「问不着」不是「被拒」，会话必须留着',
+      '本地本来就没有 token：不发请求，也不碰 localStorage',
+    ],
+  },
 ]
 
 let killed = 0
