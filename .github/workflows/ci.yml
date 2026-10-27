@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 门禁：本地那十件事，在 ubuntu 上原样跑一遍。
+  # 门禁：本地那 11 件事，在 ubuntu 上原样跑一遍。
   # 为什么用 bootstrap.sh 而不是手写安装步骤：本地和 CI 必须走同一条装环境的路，
   # 否则「本地绿、CI 红」只能靠猜。
   gate:
@@ -188,6 +188,7 @@ jobs:
           - scripts/mutation_payment_webhook.py
           - scripts/mutation_platform_routing.py
           - scripts/mutation_refs_gate.py
+          - scripts/mutation_search_index.py
           - scripts/mutation_secrets_gate.py
           - scripts/mutation_summarizer_pure.py
           - scripts/mutation_url_canonical.py

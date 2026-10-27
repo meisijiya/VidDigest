@@ -61,7 +61,7 @@ CASES = [
     ("G2 关卡块自报的序号错位",
      "gate", INIT, "before", "# 第 9 关\n", True),
     ("G3 反向对照：关卡数写对必须放行",
-     "gate", AGENTS, "append", "\n它依次跑十件真会失败的事。\n", False),
+     "gate", AGENTS, "append", "\n它依次跑11件真会失败的事。\n", False),
     ("G4 反向对照：自报序号正确必须放行",
      "gate", INIT, "before", "# 第 1 关\n", False),
 ]

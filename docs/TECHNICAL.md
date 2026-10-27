@@ -36,16 +36,16 @@
 | REST 端点 | 44 | 路由装饰器计数（A1） |
 | 挂鉴权依赖的端点 | 32（`get_current_user` 15 + `require_admin` 14 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
-| 后端用例 | 1505 | `pytest --collect-only`（A4） |
+| 后端用例 | 1520 | `pytest --collect-only`（A4） |
 | 前端静态 / 契约断言 | 538 | `npm test`（A5） |
 | 前端挂载用例 | 215 | `npm run test:mount`（A6） |
-| 变异脚本 | 23（后端 19 + 前端 4） | 文件清单（A7） |
-| 门禁 | 10 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
-| CI | 4 个 job 定义，展开 25 个实例 | `.github/workflows/ci.yml`（A9） |
+| 变异脚本 | 24（后端 20 + 前端 4） | 文件清单（A7） |
+| 门禁 | 11 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
+| CI | 4 个 job 定义，展开 26 个实例 | `.github/workflows/ci.yml`（A9） |
 | 业务表 | 7 张 + 1 个 FTS5 虚表 + 6 个触发器 | 建表语句（A10） |
 | 公开端点限流 | 6 个端点按来源 IP 限速，每分钟 20 / 10 / 30 / 60 / 10 / 5 | `backend/ratelimit.py`（A19、ADR 0020） |
-| 设计决策 | 28 篇 ADR（27 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
-| 受管理的 Markdown | 48 个 | `git ls-files '*.md'`（A12） |
+| 设计决策 | 29 篇 ADR（28 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
+| 受管理的 Markdown | 49 个 | `git ls-files '*.md'`（A12） |
 | 编码代理的工单 | 70 条（全部关闭） | `gh issue list --state all --limit 200 --json labels`（A13） |
 
 ### 1.2 两条主线
@@ -184,7 +184,7 @@
 ### 4.3 链路 C：社区与历史
 
 1. 解析完成即进 `videos` 表（全局表，不是个人历史表）。
-2. 社区浏览 / 搜索走 FTS5 虚表 + 触发器同步。
+2. 社区浏览 / 搜索走 FTS5 虚表 + 触发器同步。索引覆盖标题、标签、链接、**总结与字幕**；正文里的词也搜得到（ADR 0030）。
 3. `parse_history` 是个人记录：每用户保留 1000 条、单页 20 条，**收藏不参与滚动裁剪**。
 4. 覆盖权由 `parsed_by` 判定，作者本人可覆盖自己的那一份。
 
@@ -219,7 +219,7 @@
 | `chat_messages` | `backend/database.py` | 追问记录 |
 | `orders` | `backend/database.py` | 订单；`order_no` 与 `stripe_session_id` 各有唯一约束 |
 | `model_providers` | `backend/model_catalog.py` | 模型清单（**元数据表**，凭据永远留在 `backend/.env`） |
-| `videos_fts`（FTS5 虚表） | `backend/database.py` | 社区检索；由 3 个触发器与 `videos` 同步 |
+| `videos_fts`（FTS5 虚表） | `backend/database.py` | 社区检索；索引标题、标签、链接、总结、字幕 5 列，由 3 个触发器与 `videos` 同步（ADR 0030） |
 
 **仲裁的物理保证**：`videos` 上的唯一索引 `idx_videos_url`（`backend/database.py`）。同一链接并发插入时只有一个 INSERT 成功，另一个撞唯一索引后**另开事务重读**（不能在同一事务里读，否则读到的是已回滚的快照）。
 
@@ -254,11 +254,11 @@
 bash ./init.sh          # 退出码 0 = 已验证
 ```
 
-`init.sh` 里真跑 10 关，顺序即执行顺序：
+`init.sh` 里真跑 11 关，顺序即执行顺序：
 
 | # | 关卡 | 它证明什么 |
 | --- | --- | --- |
-| 1 | `backend: pytest` | 1505 条后端用例通过 |
+| 1 | `backend: pytest` | 1520 条后端用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
 | 4 | `frontend: npm test` | 538 条静态 / 契约断言通过 |
@@ -268,12 +268,15 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 8 | `frontend: npm run format:check` | Prettier 全部文件符合格式 |
 | 9 | `refs: ADR 与路径引用一致性` | 文档与注释里提到的 `ADR NNNN`、源码路径都还指得到 |
 | 10 | `gate: 关卡数口径一致性` | 文档里写的关卡数等于 `init.sh` 真跑的关卡数（真值从 `init.sh` 数，不硬编码） |
+| 11 | `eval: 社区检索质量` | 索引列集合与同步触发器的结构判定，加上固定语料上的 top-1 准确率、正文词召回、2 字词召回与零误召回 |
 
 **第 9、10 关守的是门禁自身。** 规约、决策记录、测试策略与源码注释之间互相指着，被改写时**没有任何既有用例会红**——用例断言的是行为，不是「你写的这句话还指得对」。这不是假设：本仓确实出现过源码注释指向一篇不相干的 ADR。
 
+**第 11 关守的是「搜得到」而不是「跑得通」。** 检索退化时的症状不是报错，而是「接口照常返 200，只是搜不出东西了」——索引少一列、正文没进索引、触发器漏写一列，三者的症状都是这个，任何「功能正常」的用例都发现不了。语料与阈值同源于 `scripts/eval/corpus.json`，合成语料不代表真实分布，它保证的是**可复算**。
+
 ### 6.2 变异装置
 
-19 个脚本各破坏一条不变量（鉴权边界、链接归一、数据库夹具、支付回调、敏感内容扫描、门禁自身的引用与口径检查……），断言关卡会转红。
+20 个脚本各破坏一条不变量（鉴权边界、链接归一、数据库夹具、支付回调、敏感内容扫描、门禁自身的引用与口径检查、社区检索的索引列与分词器……），断言关卡会转红。
 
 - **在 CI 矩阵里跑，不在 `init.sh` 里跑**：变异运行慢、会改写源码，且与并行开发冲突。
 - 每个脚本一个 job，互相独立、并行、互不污染（脚本自己按字节还原）。
@@ -323,6 +326,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 门禁第 3 关红（凭据形态） | `backend/venv/Scripts/python.exe scripts/check_secrets.py` | 凭据被抄进文档或提交说明 | 把内容从文件里拿掉，别只靠 `.gitignore` |
 | 门禁第 9 关红 | `backend/venv/Scripts/python.exe scripts/check_refs.py` | 文档或注释里的 `ADR NNNN`、路径锚点指不到 | 改引用或补文件；不要放宽检查 |
 | 门禁第 10 关红 | `backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | 某处写了与 `init.sh` 不一致的关卡数 | 以 `init.sh` 为准改文档 |
+| 门禁第 11 关红 | `backend/venv/Scripts/python.exe scripts/eval/check_search_quality.py` | 索引列集合与触发器不同步，或正文召不回 | 看输出里是哪一条 `<FAIL>`：结构轨红 = 索引与触发器不一致；质量轨红 = 召回掉了。ADR 0030 |
 | `database is locked` | `backend/venv/Scripts/python.exe scripts/ops/inspect_runtime.py` | 长事务占住写锁；SQLite 写入串行 | 缩事务；确认后端是单进程（§1.3） |
 | 解析报「解析失败」 | `backend/venv/Scripts/python.exe scripts/ops/inspect_runtime.py --health-url http://127.0.0.1:8000/api/health` | 平台侧变化、链接不支持、网络 | 先换已知可解析的链接验证通路；再升级 `yt-dlp` |
 | 总结不出字幕 | 看 SSE 事件序列里有没有 `subtitle` | 没有字幕轨道且 ASR 未配置 | 配 ASR，或用带字幕的视频 |
@@ -365,8 +369,11 @@ bash ./init.sh          # 退出码 0 = 已验证
 | [0020](adr/0020-public-endpoint-rate-limit.md) | 公开端点按来源 IP 限速 | 进程内计数，重启清零；多实例各数各的 |
 | [0021](adr/0021-public-endpoint-concurrency-gate.md) | 解析与下载再加一道并发闸门 | 进程内计数，重启清零；超限立刻拒，不排队 |
 | [0022](adr/0022-reverse-proxy-client-identity.md) | 边缘覆盖 `X-Forwarded-For`，后端取末段 | 前置多一层代理时不配 realip 会让所有用户同桶、集体误伤 429 |
+| [0030](adr/0030-community-search-body-indexing.md) | 社区检索索引正文与字幕，2 字词走子串兜底 | 索引体积翻近一倍；2 字兜底是全表扫描、没有相关度 |
 
 范围界定类：[0010](adr/0010-admin-console-scope-and-auth.md)（管理后台的边界；其后的账号生命周期与社区审核由 0012 / 0013 扩展）。实施层：[0008](adr/0008-graphite-lake-blue-visual-identity.md)（视觉）、[0009](adr/0009-theme-override-via-css-variables.md)（主题）、[0019](adr/0019-container-ops-evidence-chain.md)（运维）。已被取代：[0017](adr/0017-lightweight-routing-no-vue-router.md)（手写轻量路由，被 0018 取代）。
+
+上表只列与「数据、检索、限流、部署」这条主线相关的决策。其余决策按编号查原文：[0023](adr/0023-invite-code-registration.md)（注册要邀请码）、[0025](adr/0025-invite-codes-management-page.md)（邀请码管理页）、[0026](adr/0026-summary-template-catalog.md)（摘要模板清单单一真值）、[0027](adr/0027-mindmap-levels-and-legacy-rebuild.md)（思维导图层级与存量重建）、[0028](adr/0028-platform-model-and-provider-protocols.md)（平台模型与厂商协议）、[0029](adr/0029-mindmap-single-source-and-legacy-truncation.md)（思维导图单一真源与存量截断）。
 
 **判据**：对任一模块能问出「为什么是这样」并点到对应 ADR。
 
@@ -460,15 +467,15 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A1 | 44 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -vE 'venv\|tests' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
 | A2 | 32 | `get_current_user` 15 + `require_admin` 14 + `get_optional_user` 3（端点级：不含 `backend/auth.py` 里 `require_admin` 自身的 `Depends(get_current_user)`，也不含 `backend/api_community.py` 顶部文档里提到的 `Depends(get_current_user)`） | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -vE 'venv\|tests' \| grep -vE 'backend[/\\]auth\.py' \| grep -vE 'api_community\.py:17' \| wc -l` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -c 'response_class=EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1505 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A4 | 1520 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 538 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 215 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
-| A7 | 23 | `scripts/` 10 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
-| A8 | 10 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
-| A9 | 4 个 job 定义 / 25 个实例 | 1 个门禁 job + 1 个生产构建 job + 19 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
+| A7 | 24 | `scripts/` 11 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
+| A8 | 11 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
+| A9 | 4 个 job 定义 / 26 个实例 | 1 个门禁 job + 1 个生产构建 job + 20 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
 | A10 | 7 张业务表 + 1 张 FTS5 虚表 + 6 条触发器（3 条 `*_fill_canonical` + 3 条 `videos_fts_*`） | 库里实际存在的建表 / 建虚表 / 建触发器对象（FTS5 自带的 4 张影子表 `videos_fts_data` / `_idx` / `_docsize` / `_config` 不计） | `backend/venv/Scripts/python.exe -c "import sqlite3;print(sqlite3.connect('backend/data/app.db').execute(\"select type,name from sqlite_master where name not like 'sqlite_%'\").fetchall())"` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
-| A11 | 28 | `docs/adr/` 下的文件数（27 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
-| A12 | 48 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
+| A11 | 29 | `docs/adr/` 下的文件数（28 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
+| A12 | 49 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
 | A13 | 70（`ready-for-agent` 标签）/ 83（全部工单） | 编码代理可领的工单数 / 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number,labels --jq '[.[] \| select(any(.labels[]; .name=="ready-for-agent"))] \| length'` 与 `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
@@ -477,7 +484,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A18 | 55 / 8 / 24 | 前端 `.vue` 数 / `api/` 客户端数 / 后端 `.py` 模块数 | `find frontend/src -name '*.vue' \| wc -l`；`ls frontend/src/api/*.ts \| wc -l`；`ls backend/*.py \| wc -l` | 整个仓库 | 随文件增删 |
 | A19 | 20 / 10 / 30 / 60 / 10 / 5 | 六个公开端点的每分钟上限（解析 / 下载 / 直链 / 缩略图 / 登录 / 注册）；可用环境变量覆盖，0 表示不限流 | `grep -n 'VIDDIGEST_RATE_LIMIT' backend/ratelimit.py` | `backend/ratelimit.py`（ADR 0020） | 常量可改 |
 
-**两条口径说明**：①「10 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「4 个 job 定义，展开 25 个实例」与运维手册里的「四个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。③限流上限是「每个来源 IP 每个固定窗口」；计数在进程内，重启即清零，多实例部署时每个实例各算各的。
+**两条口径说明**：①「11 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「4 个 job 定义，展开 26 个实例」与运维手册里的「四个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。③限流上限是「每个来源 IP 每个固定窗口」；计数在进程内，重启即清零，多实例部署时每个实例各算各的。
 
 ---
 

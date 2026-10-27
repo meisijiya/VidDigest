@@ -268,8 +268,9 @@ describe('CommunityPage 把故障与空结果分开', () => {
 /**
  * 短查询的真相由后端说。
  *
- * trigram 滑窗至少 3 字符，2 字查询**必然**召回 0。后端把这条边界
- * 一起返回（q_too_short / min_chars）；前端照着显示即可。
+ * 1 个字的查询**必然**召回 0；2 个字是例外——后端对 2 字走子串兜底，
+ * 所以它搜得到。后端把这条边界一起返回（q_too_short / min_chars）；
+ * 前端照着显示即可。
  *
  * 前端自己判断长度是不允许的：那等于把分词器的实现细节复制一份到
  * 客户端，后端哪天换分词器，两边就各说各话了。
@@ -283,12 +284,12 @@ describe('短查询提示由后端说了算', () => {
     assert.match(pageVue, /v-if="tooShort"/, '模板里没有 tooShort 提示分支')
   })
 
-  test('前端没有把 trigram 的下限写死', () => {
-    const hardcoded = pageCode.match(/length\s*<\s*3|min_chars\s*[:=]\s*3/g) || []
+  test('前端没有把检索下限写死', () => {
+    const hardcoded = pageCode.match(/length\s*<\s*2|min_chars\s*[:=]\s*2/g) || []
     assert.deepEqual(
       hardcoded,
       [],
-      `前端把分词器下限写死成了 3：${JSON.stringify(hardcoded)}。` + '换分词器时前后端会各说各话',
+      `前端把检索下限写死成了 2：${JSON.stringify(hardcoded)}。` + '换分词器时前后端会各说各话',
     )
   })
 })

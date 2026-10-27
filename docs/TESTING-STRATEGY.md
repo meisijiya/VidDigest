@@ -48,7 +48,7 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 ### 0.3 变异装置不在 `init.sh` 里，但都在 CI 矩阵里
 
-仓库里跟踪着 23 个变异装置（以 `glob **/mutation*` 的实际结果为准）：`scripts/` 下 10 个、`backend/tests/` 下 9 个、`frontend/tests/` 下 4 个。
+仓库里跟踪着 24 个变异装置（以 `glob **/mutation*` 的实际结果为准）：`scripts/` 下 11 个、`backend/tests/` 下 9 个、`frontend/tests/` 下 4 个。
 
 `init.sh` 里的 pytest 与两套前端 runner 都**不收集** `tests/` 目录下这几个文件——目录位置不决定收集行为，文件名模式才决定：
 
@@ -65,7 +65,7 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 前端那三个**两套 runner 都不收**：`*.test.mjs` 走 `node --test`，`*.spec.mjs` 走 `vitest run`（`vitest.config.js` 的 `include` 写死了），而变异装置两个后缀都不匹配。
 
-`scripts/` 下的变异装置分两类：门禁自己的变异测试（`scripts/mutation_secrets_gate.py`、`scripts/mutation_refs_gate.py`）由对应关卡直接调用；其余 8 个针对具体机制，由 CI 的后端变异矩阵逐个跑。
+`scripts/` 下的变异装置分两类：门禁自身的关卡（`scripts/mutation_secrets_gate.py`、`scripts/mutation_refs_gate.py`、`scripts/mutation_search_index.py`）各自证明一道关卡真能转红；其余 8 个针对具体机制。两类都由 CI 的后端变异矩阵逐个跑，不在 `init.sh` 里跑。
 
 含义有二：
 
@@ -78,7 +78,7 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 
 ## 1. 现状快照
 
-**门禁跑 10 关**（`init.sh`，退出 0 才算通过）：
+**门禁跑 11 关**（`init.sh`，退出 0 才算通过）：
 
 | # | 关卡 | 判什么 |
 |---:|---|---|
@@ -92,12 +92,15 @@ backend/database.py:249              CREATE TABLE IF NOT EXISTS users (
 | 8 | `frontend: npm run format:check` | Prettier 格式 |
 | 9 | `scripts/check_refs.py` | 源码注释与文档里的 ADR 编号、路径锚点指向真实存在的东西 |
 | 10 | `scripts/check_gate_consistency.py` | 文档里写的关卡数等于 `init.sh` 真跑的关卡数 |
+| 11 | `scripts/eval/check_search_quality.py` | 社区检索的结构判定与召回质量 |
 
 第 3 关扫的是**内容**不是文件名——`.gitignore` 挡得住 `.env`，挡不住「把口令抄进文档」。第 4、5 关是两套独立 runner、分开计数，理由见 3.5。
 
 第 6、7、8 关是前端搬完 TypeScript 之后接上的三关：类型、写法、格式各判一类，混在一处就看不出是哪一类红了。它们的判据与前两关不同——前两关判「行为对不对」，这三关判「写法过不过关」，后者换一个实现也会红。
 
 第 9、10 关守的是**门禁自身**：第 9 关查「指令与注释指着的东西还在不在」——AGENTS.md、ADR、源码注释互指着，那一头没了，没有任何一条既有用例会红；第 10 关查「文档里写的关卡数是不是真的关卡数」——真值只在 `init.sh` 里，脚本从那里数，不硬编码。
+
+第 11 关判的是**「搜得到」而不是「跑得通」**：检索退化的症状是接口照常返 200、只是搜不出东西，索引少一列、正文没进索引、触发器漏写一列都长这样，任何「功能正常」的用例都发现不了。它与 `scripts/ops/probe_ai_e2e.py` 那类端到端探针的差别是：后者要花钱、要联网、产出是质量不是对错，所以不进 `init.sh`；这一关本地、无网络、无 key、判据是确定的对错，所以进。
 
 **跑之前先装环境**：`bash scripts/bootstrap.sh` 建虚拟环境、装后端依赖、前端按锁文件安装；
 `init.sh` 自己只管跑，不负责装。门禁的解释器路径按存在性挑选（Windows 走 `venv/Scripts/python.exe`，
@@ -176,12 +179,15 @@ Linux/macOS 走 `venv/bin/python`），挑不到就拒绝通过——它不静�
 
 ### 3.2 社区搜索（FTS5 + trigram）
 
-**风险**：SQLite 的 FTS5 不可用时**必须报错，不许降级成 `LIKE`**。降级了功能还在，但 trigram 分词能力没了 —— 症状是「某些中文查询搜不到」，极难定位。
+**风险**：SQLite 的 FTS5 不可用时**必须报错，不许把 MATCH 路径降级成 `LIKE`**。降级了功能还在，但 trigram 分词能力没了 —— 症状是「某些中文查询搜不到」，极难定位。
+
+**唯一的例外是 2 字词**：trigram 按 3 字符滑窗切，2 字中文词在 MATCH 路径恒为 0 命中，所以 2 字走**显式、限定**的子串兜底（原始 `videos` 表上 `LIKE ? ESCAPE '\'`，ADR 0030）。它是有意设计的第二路径，不是降级：兜底的列集合与索引一致、可见性口径与 MATCH 一致、元字符逐个转义，且 1 字仍然拒绝。
 
 **测法**：
 - 单元：`search_community_videos` 的真实 SQLite 库测试（不是 mock）。
 - 构造性：FTS5 不可用的环境里必须抛错。**这条要靠变异确认**（删触发器看测试是否转红）。
-- 已验证：5 条变异全杀，包括 `bm25()` 缺表名、触发器被删。
+- 召回：固定语料上的正文词召回、2 字词召回、零误召回（`scripts/eval/check_search_quality.py`，门禁第 11 关）。**只断言「能搜到」的用例发现不了索引少一列**——症状是「该搜到的没搜到」，不是「报错」。
+- 已验证：5 条变异全杀，包括 `bm25()` 缺表名、触发器被删；检索索引另有 3 条变异全杀（索引退回三列、触发器只写三列、分词器被换掉），见 `scripts/mutation_search_index.py`。
 
 ### 3.3 追问会话（跨用户隔离）
 

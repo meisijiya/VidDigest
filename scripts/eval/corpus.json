@@ -1,0 +1,610 @@
+{
+  "note": "合成检索评测语料。真实字幕属平台内容（著作权归发布方，ADR 0002），公开仓库不收录真实正文；这里的正文为人工合成，用来度量「社区检索能否命中正文里的词」，不度量任何真实视频的内容质量。",
+  "documents": [
+    {
+      "id": "d01",
+      "video_url": "https://example.com/v/quantum-intro",
+      "title": "量子计算入门第一讲",
+      "tags": [
+        "技术开发",
+        "学习成长"
+      ],
+      "summary_md": "这期讲的是量子比特与经典比特的差别，以及为什么纠错码是量子计算真正的门槛。纠错码带来的开销决定能造出多少可用比特。",
+      "subtitle_text": "量子计算不是更快的经典计算 它换掉的是问题的表达方式 经典比特只有零和一二两种状态 量子比特可以处在叠加态上 叠加态一旦被测量就坍缩 所以设计算法要绕开测量 这里提到幺正变换这个词 幺正变换保持整体概率不变 纠错码的开销是工程上最贵的一环 这一期先给一张概念地图"
+    },
+    {
+      "id": "d02",
+      "video_url": "https://example.com/v/deep-sea",
+      "title": "深海探秘：马里亚纳海沟",
+      "tags": [
+        "学习成长",
+        "生活兴趣"
+      ],
+      "summary_md": "深渊热泉附近的生态系统靠化学能活着，而不是靠阳光，这是深海探秘里最反直觉的一处设定。",
+      "subtitle_text": "马里亚纳海沟最深处接近一万一米 这里的压强计量方式也和别人不一样 潜水器要按海水密度算压强 深渊热泉喷出的水接近沸腾 喷口周围的管虫能自己合成养分 整个系统没有阳光参与 我们能看到的生物大多自带灯 深海探秘的画面大多靠照明"
+    },
+    {
+      "id": "d03",
+      "video_url": "https://example.com/v/hong-shaorou",
+      "title": "十分钟学会做红烧肉",
+      "tags": [
+        "生活兴趣"
+      ],
+      "summary_md": "关键在炒糖色，火候到了颜色自然就出来，这一步比放多少酱油重要得多。",
+      "subtitle_text": "先把五花肉切成麻将块 冷水下锅焯掉血沫 然后另起一锅冰糖炒枣红 冰糖炒枣红就立刻下肉 翻炒到每块肉都裹上糖色 加热水没过肉面 小火慢炖四十分钟 最后大火收汁"
+    },
+    {
+      "id": "d04",
+      "video_url": "https://example.com/v/city-hike",
+      "title": "城市徒步路线怎么选",
+      "tags": [
+        "生活兴趣"
+      ],
+      "summary_md": "选路线先看补给点和累计爬升，风景排第三，不然走到一半才发现没水喝。",
+      "subtitle_text": "城市徒步不需要多专业的装备 一双合脚的鞋比什么都重要 路书最好提前写好分段节点 补给点按小时算而不是按公里算 爬升比距离更容易被低估 周末的补给点中午会关门 带一件薄外套，山顶风大"
+    },
+    {
+      "id": "d05",
+      "video_url": "https://example.com/v/carbon-bike",
+      "title": "碳纤维公路车值不值得买",
+      "tags": [
+        "消费决策"
+      ],
+      "summary_md": "碳纤维车架让圈速和整备重量都好看，但牙盘的选型才决定日常骑得顺不顺。",
+      "subtitle_text": "碳纤维主要是减重和抗疲劳 同价位钢架也能骑得很快 牙盘齿比要看常用坡度 牙盘齿比选错膝盖会抗议 圈速提升多半来自骑姿 别被营销里的圈速数字带走 整车重量比单看车架更有意义"
+    },
+    {
+      "id": "d06",
+      "video_url": "https://example.com/v/interview-review",
+      "title": "面试复盘：怎么回答职业规划",
+      "tags": [
+        "产品与职场"
+      ],
+      "summary_md": "职业规划这类问题要落到结构化表达上：说清现在在哪、下一步做什么、凭什么是你。",
+      "subtitle_text": "面试官问职业规划不是要听口号 他想听的是你如何做选择 复盘稿要写下当时答了什么 复盘稿写完再对一遍真实经历 结构化表达分三段就够 第一段讲现在的积累 第二段讲下一步的动作 第三段讲你比别人多的是什么"
+    },
+    {
+      "id": "d07",
+      "video_url": "https://example.com/v/sqlite-site",
+      "title": "用 SQLite 撑起一个小站",
+      "tags": [
+        "技术开发"
+      ],
+      "summary_md": "小站用 SQLite 完全够：写日志模式让读写不互相卡，再配上备份脚本就能扛住日常流量。",
+      "subtitle_text": "很多人第一反应是上数据库服务 单机小站其实不需要那么重 写日志模式让读不阻塞写 写不阻塞读这个说法更准确 页缓存默认够用不用去调 真要调那也是看命中率 备份脚本每天跑一次就行 备份要落到另一块盘上"
+    },
+    {
+      "id": "d08",
+      "video_url": "https://example.com/v/emergency-fund",
+      "title": "家庭理财：应急金怎么留",
+      "tags": [
+        "财经与时事"
+      ],
+      "summary_md": "应急金的核心是流动性，不是收益率。放在货币基金里随时能取，就满足了应急金的第一要求。",
+      "subtitle_text": "应急金先算三个月开销 三个月是底线不是理想值 流动性优先于收益率 货币基金赎回当天到账 别买锁定期很长的产品 放在单独一张卡里 不要和日常消费卡混在一起"
+    },
+    {
+      "id": "d09",
+      "video_url": "https://example.com/v/knee-brace",
+      "title": "跑步护膝选购指南",
+      "tags": [
+        "消费决策"
+      ],
+      "summary_md": "髌骨带和支撑型护膝解决的是两个问题，先判断自己是哪种疼再挑产品。",
+      "subtitle_text": "护膝要先分清疼在哪儿 髌骨下方疼通常是髌骨带的事 侧面疼才需要支撑型 步幅太大会一直压到膝盖 步幅小一点比戴护膝更管用 别指望护膝替代力量训练"
+    },
+    {
+      "id": "d10",
+      "video_url": "https://example.com/v/read-papers",
+      "title": "读论文的方法",
+      "tags": [
+        "学习成长"
+      ],
+      "summary_md": "精读一篇论文的顺序是先读摘要和图，再读方法和实验，最后才去抠每一行推导。",
+      "subtitle_text": "打开论文先看摘要和图 图看不完就先换一篇 预印本版本通常是最新的 方法部分先看它假设了什么 实验部分先看基线选得对不对 精读才值得抠每一步推导 读完写三句话总结"
+    },
+    {
+      "id": "d11",
+      "video_url": "https://example.com/v/balcony-garden",
+      "title": "阳台种菜一年",
+      "tags": [
+        "生活兴趣"
+      ],
+      "summary_md": "小空间的产量瓶颈是土而不是阳光，一年下来我靠换土和堆肥把产量翻了一倍。",
+      "subtitle_text": "阳台光照最多四个小时 徒手换盆比想象中费腰 蚯蚓堆肥在阳台上味道很冲 蚯蚓堆肥要密封发酵 土每年换一次就够 叶菜比果菜更适合小空间 浇水改成早上一次"
+    },
+    {
+      "id": "d12",
+      "video_url": "https://example.com/v/old-laptop",
+      "title": "把旧笔记本改成开发机",
+      "tags": [
+        "技术开发"
+      ],
+      "summary_md": "旧机器做开发机，先看内存条能不能加，再考虑双系统还是直接换系统；同一块盘上再摆一台碳纤维车架当参照不合适，但思路可以借：先算清成本再动手。",
+      "subtitle_text": "先看内存条插槽还剩几个 内存条加到八G就够用了 固态换掉比加内存更划算 双系统分区容易搞混 直接装一个系统更省心 开发环境用容器隔离 编译缓存放在固态上"
+    }
+  ],
+  "queries": [
+    {
+      "q": "量子计算入门",
+      "kind": "top1",
+      "expect": "d01"
+    },
+    {
+      "q": "马里亚纳海沟",
+      "kind": "top1",
+      "expect": "d02"
+    },
+    {
+      "q": "十分钟学会做红烧肉",
+      "kind": "top1",
+      "expect": "d03"
+    },
+    {
+      "q": "城市徒步路线怎么选",
+      "kind": "top1",
+      "expect": "d04"
+    },
+    {
+      "q": "碳纤维公路车值不值得买",
+      "kind": "top1",
+      "expect": "d05"
+    },
+    {
+      "q": "怎么回答职业规划",
+      "kind": "top1",
+      "expect": "d06"
+    },
+    {
+      "q": "用 SQLite 撑起一个小站",
+      "kind": "top1",
+      "expect": "d07"
+    },
+    {
+      "q": "应急金怎么留",
+      "kind": "top1",
+      "expect": "d08"
+    },
+    {
+      "q": "跑步护膝选购指南",
+      "kind": "top1",
+      "expect": "d09"
+    },
+    {
+      "q": "读论文的方法",
+      "kind": "top1",
+      "expect": "d10"
+    },
+    {
+      "q": "阳台种菜一年",
+      "kind": "top1",
+      "expect": "d11"
+    },
+    {
+      "q": "旧笔记本改成开发机",
+      "kind": "top1",
+      "expect": "d12"
+    },
+    {
+      "q": "碳纤维",
+      "kind": "top1",
+      "expect": "d05"
+    },
+    {
+      "q": "纠错码",
+      "kind": "hit",
+      "expect": "d01"
+    },
+    {
+      "q": "量子比特",
+      "kind": "hit",
+      "expect": "d01"
+    },
+    {
+      "q": "幺正变换",
+      "kind": "hit",
+      "expect": "d01"
+    },
+    {
+      "q": "叠加态",
+      "kind": "hit",
+      "expect": "d01"
+    },
+    {
+      "q": "深渊热泉",
+      "kind": "hit",
+      "expect": "d02"
+    },
+    {
+      "q": "化学能",
+      "kind": "hit",
+      "expect": "d02"
+    },
+    {
+      "q": "压强计量",
+      "kind": "hit",
+      "expect": "d02"
+    },
+    {
+      "q": "潜水器",
+      "kind": "hit",
+      "expect": "d02"
+    },
+    {
+      "q": "炒糖色",
+      "kind": "hit",
+      "expect": "d03"
+    },
+    {
+      "q": "火候",
+      "kind": "hit",
+      "expect": "d03"
+    },
+    {
+      "q": "五花肉",
+      "kind": "hit",
+      "expect": "d03"
+    },
+    {
+      "q": "冰糖炒枣红",
+      "kind": "hit",
+      "expect": "d03"
+    },
+    {
+      "q": "补给点",
+      "kind": "hit",
+      "expect": "d04"
+    },
+    {
+      "q": "累计爬升",
+      "kind": "hit",
+      "expect": "d04"
+    },
+    {
+      "q": "合脚的鞋",
+      "kind": "hit",
+      "expect": "d04"
+    },
+    {
+      "q": "薄外套",
+      "kind": "hit",
+      "expect": "d04"
+    },
+    {
+      "q": "圈速",
+      "kind": "hit",
+      "expect": "d05"
+    },
+    {
+      "q": "整备重量",
+      "kind": "hit",
+      "expect": "d05"
+    },
+    {
+      "q": "齿比",
+      "kind": "hit",
+      "expect": "d05"
+    },
+    {
+      "q": "营销",
+      "kind": "hit",
+      "expect": "d05"
+    },
+    {
+      "q": "整车重量",
+      "kind": "hit",
+      "expect": "d05"
+    },
+    {
+      "q": "结构化表达",
+      "kind": "hit",
+      "expect": "d06"
+    },
+    {
+      "q": "面试官",
+      "kind": "hit",
+      "expect": "d06"
+    },
+    {
+      "q": "复盘稿",
+      "kind": "hit",
+      "expect": "d06"
+    },
+    {
+      "q": "积累",
+      "kind": "hit",
+      "expect": "d06"
+    },
+    {
+      "q": "备份脚本",
+      "kind": "hit",
+      "expect": "d07"
+    },
+    {
+      "q": "数据库服务",
+      "kind": "hit",
+      "expect": "d07"
+    },
+    {
+      "q": "页缓存",
+      "kind": "hit",
+      "expect": "d07"
+    },
+    {
+      "q": "命中率",
+      "kind": "hit",
+      "expect": "d07"
+    },
+    {
+      "q": "收益率",
+      "kind": "hit",
+      "expect": "d08"
+    },
+    {
+      "q": "货币基金",
+      "kind": "hit",
+      "expect": "d08"
+    },
+    {
+      "q": "赎回",
+      "kind": "hit",
+      "expect": "d08"
+    },
+    {
+      "q": "锁定期",
+      "kind": "hit",
+      "expect": "d08"
+    },
+    {
+      "q": "髌骨带",
+      "kind": "hit",
+      "expect": "d09"
+    },
+    {
+      "q": "支撑型",
+      "kind": "hit",
+      "expect": "d09"
+    },
+    {
+      "q": "力量训练",
+      "kind": "hit",
+      "expect": "d09"
+    },
+    {
+      "q": "疼在哪儿",
+      "kind": "hit",
+      "expect": "d09"
+    },
+    {
+      "q": "预印本",
+      "kind": "hit",
+      "expect": "d10"
+    },
+    {
+      "q": "方法部分",
+      "kind": "hit",
+      "expect": "d10"
+    },
+    {
+      "q": "基线",
+      "kind": "hit",
+      "expect": "d10"
+    },
+    {
+      "q": "三句话",
+      "kind": "hit",
+      "expect": "d10"
+    },
+    {
+      "q": "徒手换盆",
+      "kind": "hit",
+      "expect": "d11"
+    },
+    {
+      "q": "蚯蚓堆肥",
+      "kind": "hit",
+      "expect": "d11"
+    },
+    {
+      "q": "密封发酵",
+      "kind": "hit",
+      "expect": "d11"
+    },
+    {
+      "q": "换土",
+      "kind": "hit",
+      "expect": "d11"
+    },
+    {
+      "q": "叶菜",
+      "kind": "hit",
+      "expect": "d11"
+    },
+    {
+      "q": "双系统",
+      "kind": "hit",
+      "expect": "d12"
+    },
+    {
+      "q": "固态换掉",
+      "kind": "hit",
+      "expect": "d12"
+    },
+    {
+      "q": "分区",
+      "kind": "hit",
+      "expect": "d12"
+    },
+    {
+      "q": "容器隔离",
+      "kind": "hit",
+      "expect": "d12"
+    },
+    {
+      "q": "编译缓存",
+      "kind": "hit",
+      "expect": "d12"
+    },
+    {
+      "q": "量子",
+      "kind": "short2",
+      "expect": "d01"
+    },
+    {
+      "q": "热泉",
+      "kind": "short2",
+      "expect": "d02"
+    },
+    {
+      "q": "红烧",
+      "kind": "short2",
+      "expect": "d03"
+    },
+    {
+      "q": "糖色",
+      "kind": "short2",
+      "expect": "d03"
+    },
+    {
+      "q": "冰糖",
+      "kind": "short2",
+      "expect": "d03"
+    },
+    {
+      "q": "徒步",
+      "kind": "short2",
+      "expect": "d04"
+    },
+    {
+      "q": "路书",
+      "kind": "short2",
+      "expect": "d04"
+    },
+    {
+      "q": "爬升",
+      "kind": "short2",
+      "expect": "d04"
+    },
+    {
+      "q": "牙盘",
+      "kind": "short2",
+      "expect": "d05"
+    },
+    {
+      "q": "圈速",
+      "kind": "short2",
+      "expect": "d05"
+    },
+    {
+      "q": "复盘",
+      "kind": "short2",
+      "expect": "d06"
+    },
+    {
+      "q": "口号",
+      "kind": "short2",
+      "expect": "d06"
+    },
+    {
+      "q": "备份",
+      "kind": "short2",
+      "expect": "d07"
+    },
+    {
+      "q": "小站",
+      "kind": "short2",
+      "expect": "d07"
+    },
+    {
+      "q": "理财",
+      "kind": "short2",
+      "expect": "d08"
+    },
+    {
+      "q": "赎回",
+      "kind": "short2",
+      "expect": "d08"
+    },
+    {
+      "q": "护膝",
+      "kind": "short2",
+      "expect": "d09"
+    },
+    {
+      "q": "膝盖",
+      "kind": "short2",
+      "expect": "d09"
+    },
+    {
+      "q": "髌骨",
+      "kind": "short2",
+      "expect": "d09"
+    },
+    {
+      "q": "论文",
+      "kind": "short2",
+      "expect": "d10"
+    },
+    {
+      "q": "精读",
+      "kind": "short2",
+      "expect": "d10"
+    },
+    {
+      "q": "种菜",
+      "kind": "short2",
+      "expect": "d11"
+    },
+    {
+      "q": "蚯蚓",
+      "kind": "short2",
+      "expect": "d11"
+    },
+    {
+      "q": "堆肥",
+      "kind": "short2",
+      "expect": "d11"
+    },
+    {
+      "q": "笔记本",
+      "kind": "short2",
+      "expect": "d12"
+    },
+    {
+      "q": "固态",
+      "kind": "short2",
+      "expect": "d12"
+    },
+    {
+      "q": "内存",
+      "kind": "short2",
+      "expect": "d12"
+    },
+    {
+      "q": "航空母舰",
+      "kind": "none"
+    },
+    {
+      "q": "碳酸饮料",
+      "kind": "none"
+    },
+    {
+      "q": "光合作用",
+      "kind": "none"
+    },
+    {
+      "q": "雪山攀登",
+      "kind": "none"
+    },
+    {
+      "q": "绝缘体",
+      "kind": "none"
+    }
+  ],
+  "thresholds": {
+    "top1_accuracy": 0.9,
+    "hit_recall": 1.0,
+    "short2_recall": 1.0,
+    "none_miss": 0
+  }
+}

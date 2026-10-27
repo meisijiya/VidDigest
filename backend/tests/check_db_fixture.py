@@ -44,6 +44,10 @@ DB_FUNCS = {
     "list_community_videos", "get_community_video",
     "publish_video_card", "_paginate",
     "search_community_videos",
+    # 2 字词的子串兜底（ADR 0030）：它自己 `with get_db()`，
+    # 闭包算出来是「传递地触库」。它与 search_community_videos 是两条路径，
+    # 只登记后者就等于对兜底路径失明。
+    "_search_substring",
     # 追问会话（工单 #8）：append_chat_history 已退役，追问记录改存 chat_messages
     "append_chat_turn", "get_recent_chat_messages", "get_chat_session",
     "upsert_parse_history", "get_parse_histories", "get_parse_history_detail",

@@ -153,6 +153,21 @@ echo "=== gate: 关卡数口径一致性 ==="
 "$PY" scripts/check_gate_consistency.py
 RAN=$((RAN + 1))
 
+# 第 11 关：社区检索质量（结构轨 + 质量轨）。
+#
+# 为什么单独一关，而不是塞进后端 pytest：这一关回答的是
+# **「社区搜索还能不能把视频找出来」**。它退化时的症状不是报错，
+# 而是「接口照常返 200，只是搜不出东西了」——索引少一列、正文没进索引、
+# 触发器漏写一列，三者的症状都是这个。这类退化不会被任何
+# 「功能正常」的用例发现：搜索还是能搜，只是搜不全。
+#
+# 判据在两处，都可复算：语料与阈值同源于 scripts/eval/corpus.json，
+# 命令是本地一条 python，无网络、无 key、秒级跑完。
+echo ""
+echo "=== eval: 社区检索质量（结构 + 召回） ==="
+"$PY" scripts/eval/check_search_quality.py
+RAN=$((RAN + 1))
+
 if [ "$RAN" -eq 0 ]; then
   echo ""
   echo "ERROR: 一条检查都没真跑过。"

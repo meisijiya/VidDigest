@@ -65,6 +65,7 @@ universal-video-downloader/
 │   ├── tests/        # 两套 runner 的用例与变异装置
 │   └── Dockerfile    # 构建产物 → nginx 运行段
 ├── scripts/          # 门禁脚本、变异装置、运维脚本（备份 / 巡检）
+│   └── eval/         # 固定语料的评测集与检索质量判据（门禁第 11 关）
 ├── docs/             # 文档
 │   ├── adr/         # 架构决策记录
 │   ├── agents/      # 编码代理约定
